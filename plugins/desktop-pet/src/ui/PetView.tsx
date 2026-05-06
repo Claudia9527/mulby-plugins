@@ -80,6 +80,7 @@ export default function PetView() {
   const pomodoroStartRef = useRef(0)
   const chatWindowOpenRef = useRef(false)
   const chatInputProxyRef = useRef<any>(null)
+  const clickTimerRef = useRef<number>(0)
 
   const positionBubble = useCallback((pos: { x: number; y: number }, bubbleWidth: number, bubbleHeight: number) => {
     const winCenterX = pos.x + WIN_SIZE / 2
@@ -687,7 +688,19 @@ export default function PetView() {
     >
       <div
         ref={containerRef}
-        onClick={() => { openChatInput(); statsRef.current.recordInteraction() }}
+        onClick={() => {
+          if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current)
+            clickTimerRef.current = 0
+            openChatInput()
+          } else {
+            clickTimerRef.current = window.setTimeout(() => {
+              clickTimerRef.current = 0
+              triggerSpeak('user_click')
+              statsRef.current.recordInteraction()
+            }, 250)
+          }
+        }}
         onContextMenu={e => { e.preventDefault(); showContextMenu() }}
         style={{
           width: PET_SIZE,
