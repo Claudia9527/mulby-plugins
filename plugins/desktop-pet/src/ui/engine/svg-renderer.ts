@@ -224,10 +224,6 @@ export class SvgPetRenderer {
     this.applySprite()
   }
 
-  getSpriteSet(): PetSpriteSet | null {
-    return this.spriteSet
-  }
-
   setExpression(expression: PetExpression) {
     if (this.state.expression === expression) return
     this.state.expression = expression
@@ -336,14 +332,6 @@ export class SvgPetRenderer {
       this.blinkTimer = 0
       this.doBlink()
     }
-  }
-
-  startWalk() {
-    this.state.pose = 'walk_1'
-    this.walkFrame = 0
-    this.walkTimer = 0
-    this.applySprite()
-    this.updateAnimation()
   }
 
   private updateAnimation() {

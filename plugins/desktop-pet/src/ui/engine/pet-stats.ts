@@ -134,14 +134,6 @@ export class PetStatsController {
     return this.stats
   }
 
-  getIntimacyLevel(): 'cold' | 'normal' | 'warm' | 'close' {
-    const i = this.stats.intimacy
-    if (i < 20) return 'cold'
-    if (i < 50) return 'normal'
-    if (i < 80) return 'warm'
-    return 'close'
-  }
-
   signIn(): boolean {
     const today = todayStr()
     if (this.stats.lastSignInDate === today) return false
@@ -212,7 +204,7 @@ export class PetStatsController {
     const effective = Math.min(amount, MAX_DAILY - this.stats.dailyIntimacyGain)
     this.stats.intimacy = Math.min(100, this.stats.intimacy + effective)
     this.stats.dailyIntimacyGain += effective
-    this.updateMood()
+    this.refreshMood()
     this.dirty = true
   }
 
@@ -220,14 +212,6 @@ export class PetStatsController {
     const delta = EMOTION_MOOD_DELTA[emotion.toLowerCase()] ?? 0
     if (delta === 0) return
     this.stats.moodScore = Math.max(-100, Math.min(100, this.stats.moodScore + delta))
-    this.stats.moodUpdatedAt = Date.now()
-    this.refreshMood()
-    this.dirty = true
-    this.save()
-  }
-
-  setMoodScore(score: number) {
-    this.stats.moodScore = Math.max(-100, Math.min(100, score))
     this.stats.moodUpdatedAt = Date.now()
     this.refreshMood()
     this.dirty = true
@@ -262,19 +246,11 @@ export class PetStatsController {
     return this.stats.mood
   }
 
-  getMoodScore(): number {
-    return this.stats.moodScore
-  }
-
   private refreshMood() {
     const hour = new Date().getHours()
     const intimacyBonus = Math.floor((this.stats.intimacy - 50) / 10)
     const effectiveScore = this.stats.moodScore + intimacyBonus
     this.stats.mood = moodFromScore(effectiveScore, hour)
-  }
-
-  private updateMood() {
-    this.refreshMood()
   }
 
   async save() {

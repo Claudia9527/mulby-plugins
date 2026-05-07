@@ -2,7 +2,7 @@ import type { BehaviorType } from './types'
 import type { PetExpression } from './pet-standard'
 import { emotionToExpression } from './pet-standard'
 import { PetMemoryController } from './pet-memory'
-import type { PetStats, PetMood } from './pet-stats'
+import type { PetStats } from './pet-stats'
 import type { PetStatsController } from './pet-stats'
 
 export interface PetPersonality {
@@ -156,10 +156,6 @@ export class AIChatController {
     this.memory.load()
   }
 
-  setStatsGetter(getter: () => PetStats) {
-    this.statsGetter = getter
-  }
-
   setStatsController(controller: PetStatsController) {
     this.statsController = controller
     this.statsGetter = () => controller.getStats()
@@ -167,14 +163,6 @@ export class AIChatController {
 
   setGeoContext(geo: GeoContext) {
     this.geoContext = geo
-  }
-
-  getGeoContext(): GeoContext | null {
-    return this.geoContext
-  }
-
-  getMemoryController(): PetMemoryController {
-    return this.memory
   }
 
   private async loadHistory() {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { SvgPetRenderer } from './engine/svg-renderer'
-import { PixelCatRenderer, DEFAULT_COLORS, type PetColorScheme } from './engine/sprite'
+import { PixelCatRenderer, DEFAULT_COLORS } from './engine/sprite'
 import {
   createInitialState,
   decideBehavior,
@@ -11,7 +11,7 @@ import {
 import type { PetState, DisplayBounds, BehaviorType } from './engine/types'
 import { PET_SIZE } from './engine/types'
 import { AIChatController, DEFAULT_PERSONALITY, type PetPersonality, type TriggerReason, type GeoContext } from './engine/ai-chat'
-import type { PetSpriteSet, PetExpression, PetPose } from './engine/pet-standard'
+import type { PetExpression, PetPose } from './engine/pet-standard'
 import { SLIME_SPRITE_SET } from './engine/slime-sprites'
 import { PetStatsController, type PetMood } from './engine/pet-stats'
 
@@ -101,7 +101,6 @@ export default function PetView() {
   const pomodoroStartRef = useRef(0)
   const chatWindowOpenRef = useRef(false)
   const chatInputProxyRef = useRef<any>(null)
-  const clickTimerRef = useRef<number>(0)
   const longPressRef = useRef<number>(0)
   const longPressFiredRef = useRef(false)
   const geoMissingRef = useRef(false)
@@ -333,7 +332,6 @@ export default function PetView() {
       { label: '退出', id: 'close' },
     ])
 
-    const state = stateRef.current
     if (!result) return
 
     switch (result) {
