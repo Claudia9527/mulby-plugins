@@ -14,6 +14,7 @@ import { AchievementController } from './engine/achievements'
 import { PetDiaryController } from './engine/pet-diary'
 import { startGame, checkAnswer, getGameAnswer, type GameType, type GameSession } from './engine/mini-games'
 import type { PetExpression, PetPose } from './engine/pet-standard'
+import type { PresentationIntent } from './engine/presentation'
 import { SLIME_SPRITE_SET } from './engine/slime-sprites'
 import { PetStatsController, type PetMood } from './engine/pet-stats'
 
@@ -129,6 +130,7 @@ export default function PetView() {
   const weatherTimerRef = useRef<number>(0)
   const weatherGeoRef = useRef<GeoContext | null>(null)
   const gameSessionRef = useRef<GameSession | null>(null)
+  const presentationPoseRef = useRef<{ pose: PetPose; until: number } | null>(null)
 
   const calcBubbleSize = useCallback((text: string) => {
     const len = text.length
@@ -146,6 +148,11 @@ export default function PetView() {
     const bx = Math.round(winCenterX - bubbleWidth / 2)
     const by = Math.max(0, Math.round(pos.y - bubbleHeight - 4))
     return { x: bx, y: by }
+  }, [])
+
+  const bubbleMeasureString = useCallback((reply: string, reasoning: string) => {
+    const cap = reasoning.length > 1200 ? `${reasoning.slice(0, 1200)}…` : reasoning
+    return cap ? `${cap}\n\n${reply}` : reply
   }, [])
 
   const showBubble = useCallback((text: string) => {
@@ -174,11 +181,14 @@ export default function PetView() {
     }, duration)
   }, [positionBubble, calcBubbleSize])
 
-  const updateBubbleText = useCallback((text: string) => {
+  const updateBubbleText = useCallback((payload: string | { reply: string; reasoning?: string }) => {
     const proxy = bubbleProxyRef.current
     if (!proxy) return
 
-    const { width: bubbleWidth, height: bubbleHeight } = calcBubbleSize(text)
+    const reply = typeof payload === 'string' ? payload : payload.reply
+    const reasoning = typeof payload === 'string' ? '' : (payload.reasoning ?? '')
+    const measure = bubbleMeasureString(reply, reasoning)
+    const { width: bubbleWidth, height: bubbleHeight } = calcBubbleSize(measure)
     const prev = bubbleSizeRef.current
     const pos = lastWinPosRef.current
 
@@ -197,14 +207,20 @@ export default function PetView() {
       proxy.setBounds({ x, y, width: bubbleWidth, height: bubbleHeight })
     }
 
-    proxy.postMessage('bubble-update', text)
+    if (typeof payload === 'string') {
+      proxy.postMessage('bubble-update', payload)
+    } else {
+      proxy.postMessage('bubble-update', { reply, reasoning })
+    }
 
     clearTimeout(bubbleTimerRef.current)
+    const len = measure.length
+    const duration = len > 200 ? 14000 : len > 80 ? 10000 : 7000
     bubbleTimerRef.current = window.setTimeout(() => {
       proxy.setOpacity(0)
       bubbleVisibleRef.current = false
-    }, 5000)
-  }, [positionBubble, calcBubbleSize])
+    }, duration)
+  }, [positionBubble, calcBubbleSize, bubbleMeasureString])
 
   const setExpression = useCallback((expression: PetExpression, durationMs = 5000) => {
     currentExpressionRef.current = expression
@@ -222,6 +238,17 @@ export default function PetView() {
     }
   }, [])
 
+  const applyPresentationIntent = useCallback((intent: PresentationIntent, _source: 'tool' | 'fallback') => {
+    const face = intent.face === 'love' ? ('love' as unknown as PetExpression) : intent.face
+    setExpression(face, 8000)
+    if (intent.pose) {
+      presentationPoseRef.current = { pose: intent.pose, until: Date.now() + 6000 }
+    }
+    if (intent.emotion) {
+      statsRef.current.applyEmotion(intent.emotion)
+    }
+  }, [setExpression])
+
   const triggerSpeak = useCallback(async (reason: TriggerReason) => {
     if (pomodoroRef.current && reason !== 'user_click') return
     const chat = chatRef.current
@@ -229,16 +256,16 @@ export default function PetView() {
     if (!chat || !state) return
     if (!chat.canSpeak(reason)) return
 
-    const result = await chat.speak(reason, state.behavior, (partial) => {
-      updateBubbleText(partial)
+    const result = await chat.speak(reason, state.behavior, {
+      onBubble: ({ reply, reasoning }) => updateBubbleText({ reply, reasoning }),
+      onPresentation: applyPresentationIntent,
     })
 
     if (result) {
       showBubble(result.text)
-      setExpression(result.expression)
       statsRef.current.recordChat()
     }
-  }, [])
+  }, [applyPresentationIntent, updateBubbleText, showBubble])
 
   const CHAT_INPUT_WIDTH = 220
   const CHAT_INPUT_HEIGHT = 44
@@ -305,17 +332,17 @@ export default function PetView() {
     const chat = chatRef.current
     if (!chat) return
 
-    const result = await chat.chat(text.trim(), (partial) => {
-      updateBubbleText(partial)
+    const result = await chat.chat(text.trim(), {
+      onBubble: ({ reply, reasoning }) => updateBubbleText({ reply, reasoning }),
+      onPresentation: applyPresentationIntent,
     })
 
     if (result) {
       showBubble(result.text)
-      setExpression(result.expression)
       statsRef.current.recordChat()
       statsRef.current.recordInteraction()
     }
-  }, [])
+  }, [applyPresentationIntent, updateBubbleText, showBubble])
 
   const openSettings = useCallback(async () => {
     try {
@@ -882,13 +909,12 @@ export default function PetView() {
           const now = Date.now()
           if (now - lastClipCommentTime < 300_000) return
           lastClipCommentTime = now
-          const result = await chat.chat(
-            `[用户刚刚复制了一段文字："${text.slice(0, 80)}"]`,
-            (partial) => updateBubbleText(partial)
-          )
+          const result = await chat.chat(`[用户刚刚复制了一段文字："${text.slice(0, 80)}"]`, {
+            onBubble: ({ reply, reasoning }) => updateBubbleText({ reply, reasoning }),
+            onPresentation: applyPresentationIntent,
+          })
           if (result) {
             showBubble(result.text)
-            setExpression(result.expression)
           }
         }
       } catch {}
@@ -922,7 +948,11 @@ export default function PetView() {
     updatePosition(state, bounds)
 
     if (svgRendererRef.current) {
-      const pose = behaviorToPose(state.behavior)
+      const po = presentationPoseRef.current
+      let pose = behaviorToPose(state.behavior)
+      if (po && Date.now() < po.until) pose = po.pose
+      else if (po && Date.now() >= po.until) presentationPoseRef.current = null
+
       const behaviorExpr = behaviorToExpression(state.behavior)
       let expr: PetExpression
       if (currentExpressionRef.current !== 'neutral') {

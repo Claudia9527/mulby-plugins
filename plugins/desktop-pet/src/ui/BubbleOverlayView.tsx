@@ -1,17 +1,25 @@
 import { useState, useEffect } from 'react'
 
 export default function BubbleOverlayView() {
-  const [text, setText] = useState('')
+  const [reply, setReply] = useState('')
+  const [reasoning, setReasoning] = useState('')
 
   useEffect(() => {
     window.mulby.window.onChildMessage((channel: string, ...args: any[]) => {
-      if (channel === 'bubble-update' && args[0]) {
-        setText(typeof args[0] === 'string' ? args[0] : '')
+      if (channel === 'bubble-update' && args[0] != null) {
+        const raw = args[0]
+        if (typeof raw === 'string') {
+          setReply(raw)
+          setReasoning('')
+        } else if (typeof raw === 'object' && typeof raw.reply === 'string') {
+          setReply(raw.reply)
+          setReasoning(typeof raw.reasoning === 'string' ? raw.reasoning : '')
+        }
       }
     })
   }, [])
 
-  if (!text) return null
+  if (!reply && !reasoning) return null
 
   return (
     <div style={{
@@ -24,8 +32,13 @@ export default function BubbleOverlayView() {
       background: 'transparent',
     }}>
       <div className="bubble-container bubble-enter">
-        <div className="bubble-box">
-          <span className="bubble-text">{text}</span>
+        <div className="bubble-box" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '6px' }}>
+          {reasoning ? (
+            <div className="bubble-reasoning">
+              {reasoning}
+            </div>
+          ) : null}
+          {reply ? <span className="bubble-text">{reply}</span> : null}
         </div>
         <div className="bubble-arrow" />
       </div>
