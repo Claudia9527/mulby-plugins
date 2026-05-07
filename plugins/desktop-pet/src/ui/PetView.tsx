@@ -137,10 +137,11 @@ export default function PetView() {
   const calcBubbleSize = useCallback((text: string) => {
     const len = text.length
     const width = len <= 12 ? 120 : len <= 25 ? 160 : len <= 50 ? 200 : Math.min(260, 200 + Math.ceil((len - 50) / 20) * 10)
-    const charsPerLine = Math.floor((width - 16) / 11)
+    // 略保守的每行字数，减少中英文混排、标点换行与估算不一致导致的裁切
+    const charsPerLine = Math.max(4, Math.floor((width - 16) / 12))
     const lines = Math.max(1, Math.ceil(len / charsPerLine))
     const textHeight = Math.ceil(lines * 15.4)
-    const height = textHeight + 10 + 8
+    const height = textHeight + 10 + 8 + 12
     return { width, height }
   }, [])
 
@@ -180,14 +181,15 @@ export default function PetView() {
   const updateBubbleText = useCallback((text: string) => {
     const proxy = bubbleProxyRef.current
     if (!proxy) return
-    proxy.postMessage('bubble-update', text)
 
     const { width: bubbleWidth, height: bubbleHeight } = calcBubbleSize(text)
     const prev = bubbleSizeRef.current
+    const pos = lastWinPosRef.current
 
+    // 必须先调整子窗口尺寸与位置，再下发文字；否则流式阶段仍为小窗时
+    // BubbleOverlayView 使用 flex-end，新内容会从底部堆叠导致上方被裁切。
     if (!bubbleVisibleRef.current) {
       bubbleSizeRef.current = { width: bubbleWidth, height: bubbleHeight }
-      const pos = lastWinPosRef.current
       const { x, y } = positionBubble(pos, bubbleWidth, bubbleHeight)
       proxy.setBounds({ x, y, width: bubbleWidth, height: bubbleHeight })
       proxy.setOpacity(1)
@@ -195,17 +197,18 @@ export default function PetView() {
       bubbleVisibleRef.current = true
     } else if (bubbleWidth !== prev.width || bubbleHeight !== prev.height) {
       bubbleSizeRef.current = { width: bubbleWidth, height: bubbleHeight }
-      const pos = lastWinPosRef.current
       const { x, y } = positionBubble(pos, bubbleWidth, bubbleHeight)
       proxy.setBounds({ x, y, width: bubbleWidth, height: bubbleHeight })
     }
+
+    proxy.postMessage('bubble-update', text)
 
     clearTimeout(bubbleTimerRef.current)
     bubbleTimerRef.current = window.setTimeout(() => {
       proxy.setOpacity(0)
       bubbleVisibleRef.current = false
     }, 5000)
-  }, [positionBubble])
+  }, [positionBubble, calcBubbleSize])
 
   const setExpression = useCallback((expression: PetExpression, durationMs = 5000) => {
     currentExpressionRef.current = expression
