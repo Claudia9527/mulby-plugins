@@ -39,7 +39,7 @@ export interface PetReminder {
 }
 
 export const DEFAULT_PERSONALITY: PetPersonality = {
-  name: '小猫',
+  name: '小幽灵',
   trait: 'lively',
   model: '',
   frequency: 'medium',
@@ -58,13 +58,13 @@ export const DEFAULT_PERSONALITY: PetPersonality = {
 
 const TRAIT_PROMPTS: Record<string, { desc: string; examples: string }> = {
   lively: {
-    desc: '你性格活泼开朗，喜欢用短句和语气词表达情感，偶尔会发出"喵~"的声音，充满活力。',
-    examples: `[joy]今天天气真好喵~出去玩吧！
-[curiosity]你在写什么呀？看起来好忙！
+    desc: '你性格活泼开朗，喜欢用短句和语气词表达情感，偶尔会发出"嘿嘿~"的笑声，充满活力，像一只好奇的小幽灵。',
+    examples: `[joy]今天天气真好嘿嘿~出去飘一圈吧！
+[curiosity]你在写什么呀？让我瞅瞅！
 [excitement]哇！新消息新消息！`,
   },
   quiet: {
-    desc: '你性格安静温柔，说话简短但温暖，像一只慵懒的猫，惜字如金。',
+    desc: '你性格安静温柔，说话简短但温暖，像一只慵懒的小幽灵，惜字如金。',
     examples: `[calm]嗯。
 [calm]在呢。
 [joy]……挺好的。`,

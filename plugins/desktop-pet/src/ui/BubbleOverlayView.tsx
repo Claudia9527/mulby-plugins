@@ -21,7 +21,7 @@ export default function BubbleOverlayView() {
       alignItems: 'flex-end',
       justifyContent: 'center',
       padding: '4px',
-      background: 'rgba(255, 100, 100, 0.3)',
+      background: 'transparent',
     }}>
       <div className="bubble-container bubble-enter">
         <div className="bubble-box">

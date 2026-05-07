@@ -38,7 +38,7 @@ const MOOD_LABELS: Record<PetMood, string> = {
 }
 
 const TRAITS = [
-  { id: 'lively', label: '活泼', desc: '开朗爱说话，偶尔喵一下' },
+  { id: 'lively', label: '活泼', desc: '开朗爱说话，好奇心满满' },
   { id: 'quiet', label: '安静', desc: '温柔少语，慵懒可爱' },
   { id: 'sarcastic', label: '毒舌', desc: '吐槽但关心，犀利有趣' },
   { id: 'warm', label: '暖心', desc: '温暖治愈，总是鼓励你' },
