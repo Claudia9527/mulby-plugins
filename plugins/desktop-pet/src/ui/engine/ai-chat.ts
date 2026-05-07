@@ -2,7 +2,8 @@ import type { BehaviorType } from './types'
 import type { PetExpression } from './pet-standard'
 import { emotionToExpression } from './pet-standard'
 import { PetMemoryController } from './pet-memory'
-import type { PetStats } from './pet-stats'
+import type { PetStats, PetMood } from './pet-stats'
+import type { PetStatsController } from './pet-stats'
 
 export interface PetPersonality {
   name: string
@@ -23,6 +24,7 @@ export interface PetPersonality {
 export interface SpeakResult {
   text: string
   expression: PetExpression
+  emotion: string
 }
 
 export const DEFAULT_PERSONALITY: PetPersonality = {
@@ -47,7 +49,7 @@ const TRAIT_PROMPTS: Record<string, string> = {
   warm: '你性格温暖治愈，总是鼓励和关心用户，说话像拥抱一样让人安心，是最贴心的小伙伴。',
 }
 
-function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null): string {
+function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null, geo?: GeoContext | null): string {
   const traitDesc = personality.trait === 'custom'
     ? (personality.customPrompt || '你是一只可爱的桌面宠物。')
     : TRAIT_PROMPTS[personality.trait]
@@ -56,21 +58,39 @@ function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null)
   if (stats) {
     const days = Math.max(1, Math.ceil((Date.now() - (stats.createdAt || Date.now())) / 86_400_000))
     const level = stats.intimacy >= 80 ? '亲密' : stats.intimacy >= 50 ? '温暖' : stats.intimacy >= 20 ? '普通' : '冷淡'
+    const moodDesc: Record<string, string> = {
+      ecstatic: '欣喜若狂', happy: '开心', content: '满足', neutral: '平静',
+      bored: '无聊', lonely: '孤独', sad: '难过', grumpy: '暴躁', sleepy: '困倦',
+    }
     statsBlock = `\n【你和用户的关系】
 - 亲密度: ${stats.intimacy}/100 (${level})
 - 相伴天数: ${days}天
 - 连续签到: ${stats.streakDays}天
 - 今日番茄: ${stats.pomodoroToday}个
 - 累计互动: ${stats.totalInteractions}次
-- 心情: ${stats.mood}
-（亲密度越低你越傲娇冷淡，亲密度越高你越主动热情。根据关系深度调整语气）\n`
+
+【你当前的心情】
+- 心情: ${moodDesc[stats.mood] || stats.mood} (心情值: ${stats.moodScore})
+- 你的回复应该自然地体现当前心情。心情好时更活泼热情，心情差时更沉默或抱怨
+- 亲密度越低你越傲娇冷淡，亲密度越高你越主动热情
+- 用户的互动会影响你的心情：被关注会开心，被忽略会难过\n`
+  }
+
+  let geoBlock = ''
+  if (geo) {
+    geoBlock = `\n【位置环境】\n- 经纬度: ${geo.latitude.toFixed(2)}, ${geo.longitude.toFixed(2)}`
+    if (geo.city) geoBlock += `\n- 城市: ${geo.city}`
+    if (geo.region) geoBlock += ` (${geo.region})`
+    if (geo.weather) geoBlock += `\n- 天气: ${geo.weather}`
+    if (geo.temperature != null) geoBlock += `, ${geo.temperature}°C`
+    geoBlock += '\n- 你可以根据位置和天气自然地融入对话，但不要每次都提\n'
   }
 
   return `你是"${personality.name}"，一只住在用户桌面上的像素风格小幽灵宠物。
 
 【核心性格（最重要，严格遵守）】
 ${traitDesc}
-${statsBlock}
+${statsBlock}${geoBlock}
 【格式规则】
 - 回复格式必须是: [emotion]文字内容
 - emotion 必须是以下之一: joy, sadness, surprise, anger, excitement, sleepiness, calm, shyness, love, curiosity
@@ -108,6 +128,15 @@ const HISTORY_STORAGE_KEY = 'pet-chat-history'
 const MAX_HISTORY = 100
 const CONTEXT_WINDOW = 50
 
+export interface GeoContext {
+  latitude: number
+  longitude: number
+  city?: string
+  region?: string
+  weather?: string
+  temperature?: number
+}
+
 export class AIChatController {
   private personality: PetPersonality
   private context: ChatContext = { history: [] }
@@ -118,6 +147,8 @@ export class AIChatController {
   private memory = new PetMemoryController()
   private extractCounter = 0
   private statsGetter: (() => PetStats) | null = null
+  private statsController: PetStatsController | null = null
+  private geoContext: GeoContext | null = null
 
   constructor(personality?: PetPersonality) {
     this.personality = personality || DEFAULT_PERSONALITY
@@ -127,6 +158,19 @@ export class AIChatController {
 
   setStatsGetter(getter: () => PetStats) {
     this.statsGetter = getter
+  }
+
+  setStatsController(controller: PetStatsController) {
+    this.statsController = controller
+    this.statsGetter = () => controller.getStats()
+  }
+
+  setGeoContext(geo: GeoContext) {
+    this.geoContext = geo
+  }
+
+  getGeoContext(): GeoContext | null {
+    return this.geoContext
   }
 
   getMemoryController(): PetMemoryController {
@@ -198,7 +242,7 @@ export class AIChatController {
     const contextKeywords = this.extractKeywords(userMessage)
     const memoryPrompt = this.memory.buildMemoryPrompt(contextKeywords)
     const stats = this.statsGetter?.() ?? null
-    const systemPrompt = buildSystemPrompt(this.personality, stats) + memoryPrompt
+    const systemPrompt = buildSystemPrompt(this.personality, stats, this.geoContext) + memoryPrompt
 
     const messages = [
       { role: 'system' as const, content: systemPrompt },
@@ -249,8 +293,11 @@ export class AIChatController {
       }
 
       if (!result) return null
-      const { text, expression } = parseEmotionResponse(result)
-      return text ? { text, expression } : null
+      const { text, expression, emotion } = parseEmotionResponse(result)
+      if (emotion && this.statsController) {
+        this.statsController.applyEmotion(emotion)
+      }
+      return text ? { text, expression, emotion } : null
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError'
         || String(err?.message).toLowerCase().includes('aborted')
@@ -276,7 +323,7 @@ export class AIChatController {
     const contextKeywords = this.extractKeywords(userText)
     const memoryPrompt = this.memory.buildMemoryPrompt(contextKeywords)
     const stats = this.statsGetter?.() ?? null
-    const systemPrompt = buildSystemPrompt(this.personality, stats) + memoryPrompt
+    const systemPrompt = buildSystemPrompt(this.personality, stats, this.geoContext) + memoryPrompt
 
     const messages = [
       { role: 'system' as const, content: systemPrompt },
@@ -325,8 +372,11 @@ export class AIChatController {
       }
 
       if (!result) return null
-      const { text, expression } = parseEmotionResponse(result)
-      return text ? { text, expression } : null
+      const { text, expression, emotion } = parseEmotionResponse(result)
+      if (emotion && this.statsController) {
+        this.statsController.applyEmotion(emotion)
+      }
+      return text ? { text, expression, emotion } : null
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError'
         || String(err?.message).toLowerCase().includes('aborted')
@@ -382,12 +432,12 @@ export class AIChatController {
   }
 }
 
-function parseEmotionResponse(raw: string): { text: string; expression: PetExpression } {
+function parseEmotionResponse(raw: string): { text: string; expression: PetExpression; emotion: string } {
   const match = raw.match(/^\[(\w+)\](.*)/)
   if (match) {
     const emotion = match[1]
     const text = match[2].trim()
-    return { text, expression: emotionToExpression(emotion) }
+    return { text, expression: emotionToExpression(emotion), emotion }
   }
-  return { text: raw.trim(), expression: 'neutral' }
+  return { text: raw.trim(), expression: 'neutral', emotion: '' }
 }

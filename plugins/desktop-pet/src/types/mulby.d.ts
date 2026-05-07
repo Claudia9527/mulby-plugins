@@ -119,6 +119,7 @@ interface MulbyWindow {
   close(): void
   detach(): void
   setAlwaysOnTop(flag: boolean): void
+  setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): Promise<void>
   setOpacity(opacity: number): Promise<void>
   getOpacity(): Promise<number>
   getMode(): Promise<'attached' | 'detached'>

@@ -10,12 +10,24 @@ import {
 } from './engine/behavior'
 import type { PetState, DisplayBounds, BehaviorType } from './engine/types'
 import { PET_SIZE } from './engine/types'
-import { AIChatController, DEFAULT_PERSONALITY, type PetPersonality, type TriggerReason } from './engine/ai-chat'
+import { AIChatController, DEFAULT_PERSONALITY, type PetPersonality, type TriggerReason, type GeoContext } from './engine/ai-chat'
 import type { PetSpriteSet, PetExpression, PetPose } from './engine/pet-standard'
 import { SLIME_SPRITE_SET } from './engine/slime-sprites'
-import { PetStatsController } from './engine/pet-stats'
+import { PetStatsController, type PetMood } from './engine/pet-stats'
 
 const WIN_SIZE = 80
+
+const MOOD_EXPRESSION: Record<PetMood, PetExpression> = {
+  ecstatic: 'excited',
+  happy: 'happy',
+  content: 'neutral',
+  neutral: 'neutral',
+  bored: 'sleepy',
+  lonely: 'sad',
+  sad: 'sad',
+  grumpy: 'angry',
+  sleepy: 'sleepy',
+}
 
 function behaviorToPose(behavior: BehaviorType): PetPose {
   switch (behavior) {
@@ -40,13 +52,21 @@ function behaviorToPose(behavior: BehaviorType): PetPose {
 function behaviorToExpression(behavior: BehaviorType): PetExpression {
   switch (behavior) {
     case 'happy':
+      return 'happy'
     case 'cheer':
+      return 'excited'
     case 'celebrate':
       return 'happy'
     case 'surprised':
       return 'surprised'
+    case 'wobble':
+      return 'surprised'
     case 'sleep':
       return 'sleepy'
+    case 'sit':
+      return 'sleepy'
+    case 'chase':
+      return 'excited'
     default:
       return 'neutral'
   }
@@ -75,12 +95,16 @@ export default function PetView() {
   const bubbleTimerRef = useRef<number>(0)
   const bubbleProxyRef = useRef<any>(null)
   const bubbleVisibleRef = useRef(false)
+  const bubbleSizeRef = useRef({ width: 120, height: 44 })
   const initedRef = useRef(false)
   const pomodoroRef = useRef<number>(0)
   const pomodoroStartRef = useRef(0)
   const chatWindowOpenRef = useRef(false)
   const chatInputProxyRef = useRef<any>(null)
   const clickTimerRef = useRef<number>(0)
+  const longPressRef = useRef<number>(0)
+  const longPressFiredRef = useRef(false)
+  const geoMissingRef = useRef(false)
   const mouseMoveSumRef = useRef(0)
   const mouseMoveResetRef = useRef(0)
   const clickBurstRef = useRef<number[]>([])
@@ -99,6 +123,7 @@ export default function PetView() {
 
     const bubbleWidth = text.length <= 15 ? 120 : text.length <= 40 ? 160 : 200
     const bubbleHeight = text.length <= 15 ? 44 : text.length <= 40 ? 64 : 100
+    bubbleSizeRef.current = { width: bubbleWidth, height: bubbleHeight }
 
     const pos = lastWinPosRef.current
     const { x, y } = positionBubble(pos, bubbleWidth, bubbleHeight)
@@ -124,15 +149,23 @@ export default function PetView() {
     if (!proxy) return
     proxy.postMessage('bubble-update', text)
 
+    const bubbleWidth = text.length <= 15 ? 120 : text.length <= 40 ? 160 : 200
+    const bubbleHeight = text.length <= 15 ? 44 : text.length <= 40 ? 64 : 100
+    const prev = bubbleSizeRef.current
+
     if (!bubbleVisibleRef.current) {
-      const bubbleWidth = text.length <= 15 ? 120 : text.length <= 40 ? 160 : 200
-      const bubbleHeight = text.length <= 15 ? 44 : text.length <= 40 ? 64 : 100
+      bubbleSizeRef.current = { width: bubbleWidth, height: bubbleHeight }
       const pos = lastWinPosRef.current
       const { x, y } = positionBubble(pos, bubbleWidth, bubbleHeight)
       proxy.setBounds({ x, y, width: bubbleWidth, height: bubbleHeight })
       proxy.setOpacity(1)
       proxy.showInactive?.() ?? proxy.show()
       bubbleVisibleRef.current = true
+    } else if (bubbleWidth !== prev.width || bubbleHeight !== prev.height) {
+      bubbleSizeRef.current = { width: bubbleWidth, height: bubbleHeight }
+      const pos = lastWinPosRef.current
+      const { x, y } = positionBubble(pos, bubbleWidth, bubbleHeight)
+      proxy.setBounds({ x, y, width: bubbleWidth, height: bubbleHeight })
     }
 
     clearTimeout(bubbleTimerRef.current)
@@ -282,11 +315,16 @@ export default function PetView() {
     const pomodoroLabel = pomodoroRef.current
       ? '停止专注'
       : '开始专注 (25分钟)'
+    const moodLabels: Record<string, string> = {
+      ecstatic: '欣喜若狂', happy: '开心', content: '满足', neutral: '平静',
+      bored: '无聊', lonely: '孤独', sad: '难过', grumpy: '暴躁', sleepy: '困倦',
+    }
 
     const result = await window.mulby.menu.showContextMenu([
       { label: '对话', id: 'chat' },
       { label: pomodoroLabel, id: 'pomodoro' },
       { type: 'separator', label: '' },
+      { label: `心情: ${moodLabels[stats.mood] || stats.mood}`, id: 'mood', enabled: false },
       { label: `亲密度: ${stats.intimacy}`, id: 'stats', enabled: false },
       { label: `今日番茄: ${stats.pomodoroToday} 个`, id: 'stats2', enabled: false },
       { type: 'separator', label: '' },
@@ -361,7 +399,21 @@ export default function PetView() {
     }
 
     chatRef.current = new AIChatController(personality)
-    chatRef.current.setStatsGetter(() => statsRef.current.getStats())
+    chatRef.current.setStatsController(statsRef.current)
+
+    try {
+      const savedGeo = await window.mulby.storage.get('pet-geo')
+      if (savedGeo && typeof savedGeo === 'object') {
+        chatRef.current.setGeoContext(savedGeo as GeoContext)
+      } else {
+        geoMissingRef.current = true
+        setTimeout(() => {
+          if (geoMissingRef.current) {
+            showBubble('去设置页开启定位，我就能知道你在哪儿啦~')
+          }
+        }, signedIn ? 12000 : 8000)
+      }
+    } catch {}
 
     const display = await window.mulby.screen.getPrimaryDisplay()
     const bounds: DisplayBounds = display.workArea
@@ -384,6 +436,8 @@ export default function PetView() {
       Math.round(state.position.x),
       Math.round(state.position.y)
     )
+
+    await window.mulby.window.setIgnoreMouseEvents(true, { forward: true })
 
     try {
       const bubbleProxy = await window.mulby.window.create('?view=bubble-overlay', {
@@ -554,6 +608,7 @@ export default function PetView() {
       try {
         window.mulby.storage.set('pet-position', { x: s.position.x, y: s.position.y })
       } catch {}
+      statsRef.current.decayMood()
       if (s.idleTimer > 300_000) {
         s.idleTimer = 0
         triggerSpeak('idle')
@@ -665,10 +720,16 @@ export default function PetView() {
 
     if (useSvgRef.current && svgRendererRef.current) {
       const pose = behaviorToPose(state.behavior)
-      const baseExpr = behaviorToExpression(state.behavior)
-      const expr = currentExpressionRef.current !== 'neutral'
-        ? currentExpressionRef.current
-        : baseExpr
+      const behaviorExpr = behaviorToExpression(state.behavior)
+      let expr: PetExpression
+      if (currentExpressionRef.current !== 'neutral') {
+        expr = currentExpressionRef.current
+      } else if (behaviorExpr !== 'neutral') {
+        expr = behaviorExpr
+      } else {
+        const mood = statsRef.current.getMood()
+        expr = MOOD_EXPRESSION[mood] ?? 'neutral'
+      }
       svgRendererRef.current.setPose(pose)
       svgRendererRef.current.setExpression(expr)
       svgRendererRef.current.setFlipped(state.facing === 'left')
@@ -691,11 +752,9 @@ export default function PetView() {
       window.mulby.window.setPosition(newX, newY)
 
       if (bubbleVisibleRef.current && bubbleProxyRef.current) {
-        const proxy = bubbleProxyRef.current
-        proxy.setPosition(
-          Math.round(newX + WIN_SIZE / 2 - 80),
-          Math.round(newY - 52)
-        )
+        const { width: bw, height: bh } = bubbleSizeRef.current
+        const bp = positionBubble({ x: newX, y: newY }, bw, bh)
+        bubbleProxyRef.current.setPosition(bp.x, bp.y)
       }
 
       if (chatWindowOpenRef.current && chatInputProxyRef.current) {
@@ -735,22 +794,38 @@ export default function PetView() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'rgba(255, 100, 100, 0.3)',
       }}
     >
       <div
         ref={containerRef}
-        onClick={() => {
-          if (clickTimerRef.current) {
-            clearTimeout(clickTimerRef.current)
-            clickTimerRef.current = 0
+        onMouseEnter={() => {
+          window.mulby.window.setIgnoreMouseEvents(false)
+        }}
+        onMouseLeave={() => {
+          window.mulby.window.setIgnoreMouseEvents(true, { forward: true })
+        }}
+        onPointerDown={() => {
+          longPressFiredRef.current = false
+          longPressRef.current = window.setTimeout(() => {
+            longPressFiredRef.current = true
+            longPressRef.current = 0
             openChatInput()
-          } else {
-            clickTimerRef.current = window.setTimeout(() => {
-              clickTimerRef.current = 0
-              triggerSpeak('user_click')
-              statsRef.current.recordInteraction()
-            }, 250)
+          }, 400)
+        }}
+        onPointerUp={() => {
+          if (longPressRef.current) {
+            clearTimeout(longPressRef.current)
+            longPressRef.current = 0
+          }
+          if (!longPressFiredRef.current) {
+            triggerSpeak('user_click')
+            statsRef.current.recordInteraction()
+          }
+        }}
+        onPointerLeave={() => {
+          if (longPressRef.current) {
+            clearTimeout(longPressRef.current)
+            longPressRef.current = 0
           }
         }}
         onContextMenu={e => { e.preventDefault(); showContextMenu() }}

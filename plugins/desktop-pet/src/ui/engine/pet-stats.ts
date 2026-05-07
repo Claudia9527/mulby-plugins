@@ -3,13 +3,17 @@
  * Tracks interactions, focus time, streaks, and affects AI personality tone.
  */
 
+export type PetMood = 'ecstatic' | 'happy' | 'content' | 'neutral' | 'bored' | 'lonely' | 'sad' | 'grumpy' | 'sleepy'
+
 export interface PetStats {
   intimacy: number
   totalInteractions: number
   totalFocusMinutes: number
   streakDays: number
   lastSignInDate: string
-  mood: 'happy' | 'neutral' | 'sad' | 'sleepy'
+  mood: PetMood
+  moodScore: number
+  moodUpdatedAt: number
   createdAt: number
   pomodoroToday: number
   pomodoroTotal: number
@@ -39,6 +43,8 @@ function createDefaultStats(): PetStats {
     streakDays: 0,
     lastSignInDate: '',
     mood: 'neutral',
+    moodScore: 0,
+    moodUpdatedAt: Date.now(),
     createdAt: Date.now(),
     pomodoroToday: 0,
     pomodoroTotal: 0,
@@ -47,6 +53,29 @@ function createDefaultStats(): PetStats {
     ignoredCount: 0,
     dailyIntimacyGain: 0,
   }
+}
+
+const EMOTION_MOOD_DELTA: Record<string, number> = {
+  joy: 15, love: 20, excitement: 18, amusement: 12, gratitude: 10, pride: 10,
+  curiosity: 8, surprise: 5, calm: 3,
+  shyness: -2, nervousness: -5, confusion: -5,
+  disappointment: -8, worry: -10, sadness: -15, anger: -12, annoyance: -8,
+  sleepiness: -3, tiredness: -5, fear: -10,
+}
+
+function moodFromScore(score: number, hour: number): PetMood {
+  if (hour >= 23 || hour < 5) {
+    if (score >= 30) return 'happy'
+    return 'sleepy'
+  }
+  if (score >= 70) return 'ecstatic'
+  if (score >= 40) return 'happy'
+  if (score >= 15) return 'content'
+  if (score > -15) return 'neutral'
+  if (score > -35) return 'bored'
+  if (score > -60) return 'lonely'
+  if (score > -80) return 'sad'
+  return 'grumpy'
 }
 
 export class PetStatsController {
@@ -127,6 +156,7 @@ export class PetStatsController {
     const streakBonus = Math.min(this.stats.streakDays, 7)
     this.addIntimacy(3 + streakBonus)
     this.stats.lastSignInDate = today
+    this.boostMood(8 + Math.min(streakBonus, 5))
     this.dirty = true
     this.save()
     return true
@@ -138,6 +168,7 @@ export class PetStatsController {
     this.lastInteractionTime = now
     this.stats.totalInteractions++
     this.addIntimacy(1)
+    this.boostMood(3)
     this.save()
   }
 
@@ -148,11 +179,13 @@ export class PetStatsController {
     this.stats.lastChatDate = todayStr()
     this.stats.ignoredCount = 0
     this.addIntimacy(1)
+    this.boostMood(5)
     this.save()
   }
 
   recordIgnored() {
     this.stats.ignoredCount++
+    this.boostMood(-4)
     this.dirty = true
     this.save()
   }
@@ -162,7 +195,15 @@ export class PetStatsController {
     this.stats.pomodoroTotal++
     this.stats.totalFocusMinutes += minutes
     this.addIntimacy(5)
+    this.boostMood(10 + Math.min(Math.floor(minutes / 10), 5))
     this.save()
+  }
+
+  private boostMood(delta: number) {
+    this.stats.moodScore = Math.max(-100, Math.min(100, this.stats.moodScore + delta))
+    this.stats.moodUpdatedAt = Date.now()
+    this.refreshMood()
+    this.dirty = true
   }
 
   private addIntimacy(amount: number) {
@@ -175,12 +216,65 @@ export class PetStatsController {
     this.dirty = true
   }
 
+  applyEmotion(emotion: string) {
+    const delta = EMOTION_MOOD_DELTA[emotion.toLowerCase()] ?? 0
+    if (delta === 0) return
+    this.stats.moodScore = Math.max(-100, Math.min(100, this.stats.moodScore + delta))
+    this.stats.moodUpdatedAt = Date.now()
+    this.refreshMood()
+    this.dirty = true
+    this.save()
+  }
+
+  setMoodScore(score: number) {
+    this.stats.moodScore = Math.max(-100, Math.min(100, score))
+    this.stats.moodUpdatedAt = Date.now()
+    this.refreshMood()
+    this.dirty = true
+    this.save()
+  }
+
+  decayMood() {
+    const now = Date.now()
+    const elapsed = now - this.stats.moodUpdatedAt
+    if (elapsed < 300_000) return
+
+    const decaySteps = Math.floor(elapsed / 300_000)
+    const decayRate = 2
+    if (this.stats.moodScore > 0) {
+      this.stats.moodScore = Math.max(0, this.stats.moodScore - decaySteps * decayRate)
+    } else if (this.stats.moodScore < 0) {
+      this.stats.moodScore = Math.min(0, this.stats.moodScore + decaySteps * decayRate)
+    }
+
+    const idleMinutes = Math.floor((now - this.lastInteractionTime) / 60_000)
+    if (this.lastInteractionTime > 0 && idleMinutes >= 30) {
+      const lonelyPenalty = Math.min(Math.floor((idleMinutes - 30) / 15), 8)
+      this.stats.moodScore = Math.max(-100, this.stats.moodScore - lonelyPenalty)
+    }
+
+    this.stats.moodUpdatedAt = now
+    this.refreshMood()
+    this.dirty = true
+  }
+
+  getMood(): PetMood {
+    return this.stats.mood
+  }
+
+  getMoodScore(): number {
+    return this.stats.moodScore
+  }
+
+  private refreshMood() {
+    const hour = new Date().getHours()
+    const intimacyBonus = Math.floor((this.stats.intimacy - 50) / 10)
+    const effectiveScore = this.stats.moodScore + intimacyBonus
+    this.stats.mood = moodFromScore(effectiveScore, hour)
+  }
+
   private updateMood() {
-    const i = this.stats.intimacy
-    if (i >= 80) this.stats.mood = 'happy'
-    else if (i >= 40) this.stats.mood = 'neutral'
-    else if (i >= 20) this.stats.mood = 'sleepy'
-    else this.stats.mood = 'sad'
+    this.refreshMood()
   }
 
   async save() {

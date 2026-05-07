@@ -1,8 +1,35 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { DEFAULT_PERSONALITY, type PetPersonality } from '../engine/ai-chat'
-import type { PetStats } from '../engine/pet-stats'
+import type { PetStats, PetMood } from '../engine/pet-stats'
 import type { PetMemory } from '../engine/pet-memory'
 import './settings.css'
+
+function Icon({ d, color = 'currentColor', size = 16 }: { d: string; color?: string; size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
+}
+
+const ICONS = {
+  heart: 'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z',
+  calendar: 'M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM16 2v4M8 2v4M3 10h18',
+  clock: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 6v6l4 2',
+  target: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 12h0',
+  hand: 'M18 11V6a2 2 0 0 0-4 0v1M14 10V4a2 2 0 0 0-4 0v6M10 10V5a2 2 0 0 0-4 0v9',
+  gift: 'M20 12v10H4V12M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z',
+  smile: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01',
+  pin: 'M12 2l3 9h-6zM12 11v11M8 22h8',
+  trash: 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
+  mapPin: 'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0zM12 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+  refresh: 'M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15',
+} as const
+
+function StatsIcon({ icon, children }: { icon: keyof typeof ICONS; children: ReactNode }) {
+  return <span className="stats-icon"><Icon d={ICONS[icon]} color="var(--accent)" />{children}</span>
+}
+
+const MOOD_LABELS: Record<PetMood, string> = {
+  ecstatic: '欣喜若狂', happy: '开心', content: '满足', neutral: '平静',
+  bored: '无聊', lonely: '孤独', sad: '难过', grumpy: '暴躁', sleepy: '困倦',
+}
 
 const TRAITS = [
   { id: 'lively', label: '活泼', desc: '开朗爱说话，偶尔喵一下' },
@@ -26,6 +53,8 @@ export default function SettingsView() {
   const [stats, setStats] = useState<PetStats | null>(null)
   const [memories, setMemories] = useState<PetMemory[]>([])
   const [memoryFilter, setMemoryFilter] = useState<'all' | 'pinned'>('all')
+  const [geoInfo, setGeoInfo] = useState<{ latitude: number; longitude: number; city?: string; region?: string } | null>(null)
+  const [geoLoading, setGeoLoading] = useState(false)
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -59,9 +88,68 @@ export default function SettingsView() {
         const savedMems = await window.mulby.storage.get('pet-memories')
         if (Array.isArray(savedMems)) setMemories(savedMems as PetMemory[])
       } catch {}
+
+      try {
+        const savedGeo = await window.mulby.storage.get('pet-geo')
+        if (savedGeo && typeof savedGeo === 'object') {
+          setGeoInfo(savedGeo as typeof geoInfo)
+        }
+      } catch {}
     }
     load()
   }, [])
+
+  const handleFetchGeo = async () => {
+    setGeoLoading(true)
+    try {
+      const status = await window.mulby.geolocation.getAccessStatus()
+      let canGet = status === 'granted'
+      if (status === 'not-determined') {
+        const newStatus = await window.mulby.geolocation.requestAccess()
+        canGet = newStatus === 'granted'
+      }
+      if (!canGet) {
+        showToast('未获得定位权限')
+        setGeoLoading(false)
+        return
+      }
+
+      const pos = await window.mulby.geolocation.getCurrentPosition()
+      if (!pos) {
+        showToast('无法获取位置')
+        setGeoLoading(false)
+        return
+      }
+
+      const geo: NonNullable<typeof geoInfo> = { latitude: pos.latitude, longitude: pos.longitude }
+
+      try {
+        const resp = await window.mulby.http.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.latitude}&lon=${pos.longitude}&zoom=10&accept-language=zh`,
+          { 'User-Agent': 'MulbyDesktopPet/1.0' }
+        )
+        if (resp.status === 200) {
+          const data = JSON.parse(resp.data)
+          geo.city = data.address?.city || data.address?.town || data.address?.county || ''
+          geo.region = data.address?.state || data.address?.province || ''
+        }
+      } catch {}
+
+      await window.mulby.storage.set('pet-geo', geo)
+      setGeoInfo(geo)
+      showToast(geo.city ? `已定位到 ${geo.city}` : '定位已保存')
+    } catch (e) {
+      console.error('Geo error:', e)
+      showToast('获取定位失败')
+    }
+    setGeoLoading(false)
+  }
+
+  const handleClearGeo = async () => {
+    await window.mulby.storage.set('pet-geo', null)
+    setGeoInfo(null)
+    showToast('定位已清除')
+  }
 
   const handleSave = async () => {
     try {
@@ -134,13 +222,13 @@ export default function SettingsView() {
                   onClick={() => handleTogglePin(m.id)}
                   title={m.pinned ? '取消固定' : '固定'}
                 >
-                  {m.pinned ? '📌 取消固定' : '📌 固定'}
+                  <Icon d={ICONS.pin} size={12} /> {m.pinned ? '取消固定' : '固定'}
                 </button>
                 <button
                   className="mem-action-btn delete"
                   onClick={() => handleDeleteMemory(m.id)}
                 >
-                  🗑️ 删除
+                  <Icon d={ICONS.trash} size={12} /> 删除
                 </button>
               </div>
             </div>
@@ -153,16 +241,56 @@ export default function SettingsView() {
   const renderStats = () => {
     if (!stats) return <div className="panel-content"><p style={{ opacity: 0.6 }}>暂无数据</p></div>
     const days = Math.floor((Date.now() - stats.createdAt) / 86_400_000)
+    const moodScore = stats.moodScore ?? 0
+    const moodPercent = Math.round((moodScore + 100) / 2)
+    const moodName = MOOD_LABELS[(stats.mood as PetMood) ?? 'neutral'] || '平静'
+
     return (
       <div className="panel-content">
+        <div className="mood-bar">
+          <div className="mood-label">
+            <StatsIcon icon="smile">心情</StatsIcon>
+            <span>{moodName}</span>
+          </div>
+          <div className="mood-track">
+            <div className="mood-fill" style={{ width: `${moodPercent}%` }} />
+          </div>
+        </div>
+
+        <div className="geo-card">
+          <div className="geo-header">
+            <StatsIcon icon="mapPin">位置信息</StatsIcon>
+          </div>
+          {geoInfo ? (
+            <div className="geo-body">
+              <span className="geo-text">{geoInfo.city && geoInfo.region ? `${geoInfo.region} · ${geoInfo.city}` : `${geoInfo.latitude.toFixed(2)}, ${geoInfo.longitude.toFixed(2)}`}</span>
+              <div className="geo-actions">
+                <button className="gen-btn" onClick={handleFetchGeo} disabled={geoLoading}>
+                  <Icon d={ICONS.refresh} size={12} /> 刷新
+                </button>
+                <button className="mem-action-btn delete" onClick={handleClearGeo}>
+                  <Icon d={ICONS.trash} size={12} /> 清除
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="geo-body">
+              <span className="geo-text" style={{ opacity: 0.5 }}>未设置定位</span>
+              <button className="gen-btn" onClick={handleFetchGeo} disabled={geoLoading}>
+                {geoLoading ? '获取中...' : '获取当前位置'}
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="stats-card">
-          <div className="stats-row"><span>❤️ 亲密度</span><span className="stats-value">{stats.intimacy}/100</span></div>
-          <div className="stats-row"><span>📅 连续签到</span><span className="stats-value">{stats.streakDays} 天</span></div>
-          <div className="stats-row"><span>🍅 今日番茄</span><span className="stats-value">{stats.pomodoroToday} 个</span></div>
-          <div className="stats-row"><span>🍅 累计番茄</span><span className="stats-value">{stats.pomodoroTotal} 个</span></div>
-          <div className="stats-row"><span>⏱️ 专注时长</span><span className="stats-value">{stats.totalFocusMinutes} 分钟</span></div>
-          <div className="stats-row"><span>👆 累计互动</span><span className="stats-value">{stats.totalInteractions} 次</span></div>
-          <div className="stats-row"><span>🎂 相伴天数</span><span className="stats-value">{days} 天</span></div>
+          <div className="stats-row"><StatsIcon icon="heart">亲密度</StatsIcon><span className="stats-value">{stats.intimacy}/100</span></div>
+          <div className="stats-row"><StatsIcon icon="calendar">连续签到</StatsIcon><span className="stats-value">{stats.streakDays} 天</span></div>
+          <div className="stats-row"><StatsIcon icon="target">今日番茄</StatsIcon><span className="stats-value">{stats.pomodoroToday} 个</span></div>
+          <div className="stats-row"><StatsIcon icon="target">累计番茄</StatsIcon><span className="stats-value">{stats.pomodoroTotal} 个</span></div>
+          <div className="stats-row"><StatsIcon icon="clock">专注时长</StatsIcon><span className="stats-value">{stats.totalFocusMinutes} 分钟</span></div>
+          <div className="stats-row"><StatsIcon icon="hand">累计互动</StatsIcon><span className="stats-value">{stats.totalInteractions} 次</span></div>
+          <div className="stats-row"><StatsIcon icon="gift">相伴天数</StatsIcon><span className="stats-value">{days} 天</span></div>
         </div>
       </div>
     )

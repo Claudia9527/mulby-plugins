@@ -13,7 +13,8 @@
     "ai": true,
     "accessibility": true,
     "clipboard": true,
-    "screen": true
+    "screen": true,
+    "geolocation": true
   },
   "features": [
     {
