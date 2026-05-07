@@ -544,6 +544,30 @@
   justify-content: space-between;
   gap: 8px;
 }
+.geo-summary-line {
+  margin-bottom: 6px;
+}
+.geo-intro-hint {
+  margin-bottom: 8px;
+}
+.geo-manual-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.geo-card .geo-field-tight {
+  margin-bottom: 8px;
+}
+.geo-footer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.geo-actions-row {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
 .geo-text {
   font-size: 12px;
   color: var(--text);

@@ -160,19 +160,3 @@ export function updatePosition(state: PetState, bounds: DisplayBounds): void {
   if (state.velocity.x < -0.1) state.facing = 'left'
 }
 
-export function behaviorToAnimation(behavior: BehaviorType, facing: 'left' | 'right'): string {
-  switch (behavior) {
-    case 'idle': return 'idle'
-    case 'chase': return facing === 'right' ? 'run_right' : 'run_left'
-    case 'look': return facing === 'right' ? 'look_right' : 'look_left'
-    case 'wander': return facing === 'right' ? 'walk_right' : 'walk_left'
-    case 'sit': return 'sit'
-    case 'sleep': return 'sleep'
-    case 'jump': return 'jump'
-    case 'surprised': return 'surprised'
-    case 'happy': return 'happy'
-    case 'cheer': return 'cheer'
-    case 'wobble': return 'wobble'
-    case 'celebrate': return 'celebrate'
-  }
-}

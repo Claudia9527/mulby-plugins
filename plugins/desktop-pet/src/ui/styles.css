@@ -11,10 +11,6 @@ html, body, #root {
   background: transparent;
 }
 
-canvas {
-  display: block;
-}
-
 /* Inline bubble styles (rendered in same window as pet) */
 .bubble-container {
   display: flex;

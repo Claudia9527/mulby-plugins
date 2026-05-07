@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { DEFAULT_PERSONALITY, type PetPersonality, type PetReminder } from '../engine/ai-chat'
+import { DEFAULT_PERSONALITY, type PetPersonality, type PetReminder, type GeoContext } from '../engine/ai-chat'
 import type { PetStats, PetMood } from '../engine/pet-stats'
 import type { PetMemory } from '../engine/pet-memory'
 import { ALL_ACHIEVEMENTS, type UnlockedAchievement } from '../engine/achievements'
@@ -71,8 +71,12 @@ export default function SettingsView() {
   const [stats, setStats] = useState<PetStats | null>(null)
   const [memories, setMemories] = useState<PetMemory[]>([])
   const [memoryFilter, setMemoryFilter] = useState<'all' | 'pinned'>('all')
-  const [geoInfo, setGeoInfo] = useState<{ latitude: number; longitude: number; city?: string; region?: string } | null>(null)
+  const [geoInfo, setGeoInfo] = useState<GeoContext | null>(null)
   const [geoLoading, setGeoLoading] = useState(false)
+  const [manualLat, setManualLat] = useState('')
+  const [manualLon, setManualLon] = useState('')
+  const [manualCity, setManualCity] = useState('')
+  const [manualRegion, setManualRegion] = useState('')
   const [unlocked, setUnlocked] = useState<UnlockedAchievement[]>([])
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([])
   const [newReminderLabel, setNewReminderLabel] = useState('')
@@ -114,7 +118,12 @@ export default function SettingsView() {
       try {
         const savedGeo = await window.mulby.storage.get('pet-geo')
         if (savedGeo && typeof savedGeo === 'object') {
-          setGeoInfo(savedGeo as typeof geoInfo)
+          const g = savedGeo as GeoContext
+          setGeoInfo(g)
+          setManualLat(String(g.latitude))
+          setManualLon(String(g.longitude))
+          setManualCity(g.city ?? '')
+          setManualRegion(g.region ?? '')
         }
       } catch {}
 
@@ -165,7 +174,7 @@ export default function SettingsView() {
         return
       }
 
-      const geo: NonNullable<typeof geoInfo> = { latitude: pos.latitude, longitude: pos.longitude }
+      const geo: GeoContext = { latitude: pos.latitude, longitude: pos.longitude }
 
       try {
         const resp = await window.mulby.http.get(
@@ -181,6 +190,11 @@ export default function SettingsView() {
 
       await window.mulby.storage.set('pet-geo', geo)
       setGeoInfo(geo)
+      setManualLat(String(geo.latitude))
+      setManualLon(String(geo.longitude))
+      setManualCity(geo.city ?? '')
+      setManualRegion(geo.region ?? '')
+      window.mulby.window.sendToParent('geo-updated', geo)
       showToast(geo.city ? `已定位到 ${geo.city}` : '定位已保存')
     } catch (e) {
       console.error('Geo error:', e)
@@ -192,7 +206,41 @@ export default function SettingsView() {
   const handleClearGeo = async () => {
     await window.mulby.storage.set('pet-geo', null)
     setGeoInfo(null)
+    setManualLat('')
+    setManualLon('')
+    setManualCity('')
+    setManualRegion('')
+    window.mulby.window.sendToParent('geo-updated', null)
     showToast('定位已清除')
+  }
+
+  const handleSaveManualGeo = async () => {
+    const norm = (s: string) => s.trim().replace(/，/g, '.').replace(',', '.')
+    const lat = parseFloat(norm(manualLat))
+    const lon = parseFloat(norm(manualLon))
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      showToast('请输入有效的纬度、经度（数字）')
+      return
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      showToast('纬度需在 -90～90，经度需在 -180～180')
+      return
+    }
+    const geo: GeoContext = {
+      latitude: lat,
+      longitude: lon,
+      city: manualCity.trim() || undefined,
+      region: manualRegion.trim() || undefined,
+    }
+    try {
+      await window.mulby.storage.set('pet-geo', geo)
+      setGeoInfo(geo)
+      window.mulby.window.sendToParent('geo-updated', geo)
+      showToast('位置已保存')
+    } catch (e) {
+      console.error('Save manual geo failed:', e)
+      showToast('保存失败')
+    }
   }
 
   const handleSave = async () => {
@@ -332,25 +380,75 @@ export default function SettingsView() {
             <StatsIcon icon="mapPin">位置信息</StatsIcon>
           </div>
           {geoInfo ? (
-            <div className="geo-body">
-              <span className="geo-text">{geoInfo.city && geoInfo.region ? `${geoInfo.region} · ${geoInfo.city}` : `${geoInfo.latitude.toFixed(2)}, ${geoInfo.longitude.toFixed(2)}`}</span>
-              <div className="geo-actions">
-                <button className="gen-btn" onClick={handleFetchGeo} disabled={geoLoading}>
-                  <Icon d={ICONS.refresh} size={12} /> 刷新
-                </button>
-                <button className="mem-action-btn delete" onClick={handleClearGeo}>
-                  <Icon d={ICONS.trash} size={12} /> 清除
-                </button>
-              </div>
+            <div className="geo-summary-line">
+              <span className="geo-text">
+                {geoInfo.region && geoInfo.city
+                  ? `${geoInfo.region} · ${geoInfo.city}`
+                  : geoInfo.city || `${geoInfo.latitude.toFixed(4)}, ${geoInfo.longitude.toFixed(4)}`}
+              </span>
             </div>
           ) : (
-            <div className="geo-body">
-              <span className="geo-text" style={{ opacity: 0.5 }}>未设置定位</span>
-              <button className="gen-btn" onClick={handleFetchGeo} disabled={geoLoading}>
-                {geoLoading ? '获取中...' : '获取当前位置'}
-              </button>
-            </div>
+            <p className="field-hint geo-intro-hint">未设置。可填写下方坐标与城市后点「保存位置」，或使用 GPS 自动获取。</p>
           )}
+
+          <div className="geo-manual-grid">
+            <div className="field geo-field-tight">
+              <label className="field-label">纬度</label>
+              <input
+                className="field-input"
+                inputMode="decimal"
+                value={manualLat}
+                onChange={e => setManualLat(e.target.value)}
+                placeholder="如 39.9042"
+              />
+            </div>
+            <div className="field geo-field-tight">
+              <label className="field-label">经度</label>
+              <input
+                className="field-input"
+                inputMode="decimal"
+                value={manualLon}
+                onChange={e => setManualLon(e.target.value)}
+                placeholder="如 116.4074"
+              />
+            </div>
+          </div>
+          <div className="field geo-field-tight">
+            <label className="field-label">城市</label>
+            <input
+              className="field-input"
+              value={manualCity}
+              onChange={e => setManualCity(e.target.value)}
+              placeholder="如 北京"
+              maxLength={40}
+            />
+          </div>
+          <div className="field geo-field-tight">
+            <label className="field-label">省份 / 地区（选填）</label>
+            <input
+              className="field-input"
+              value={manualRegion}
+              onChange={e => setManualRegion(e.target.value)}
+              placeholder="如 北京市"
+              maxLength={40}
+            />
+          </div>
+
+          <div className="geo-footer-actions">
+            <button type="button" className="gen-btn full-width" onClick={handleSaveManualGeo}>
+              保存位置
+            </button>
+            <div className="geo-actions geo-actions-row">
+              <button type="button" className="gen-btn" onClick={handleFetchGeo} disabled={geoLoading}>
+                <Icon d={ICONS.refresh} size={12} /> {geoLoading ? '获取中...' : (geoInfo ? 'GPS 定位' : '获取当前位置')}
+              </button>
+              {geoInfo && (
+                <button type="button" className="mem-action-btn delete" onClick={handleClearGeo}>
+                  <Icon d={ICONS.trash} size={12} /> 清除
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="stats-card">

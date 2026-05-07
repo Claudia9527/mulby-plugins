@@ -196,7 +196,7 @@ export class AIChatController {
     this.statsGetter = () => controller.getStats()
   }
 
-  setGeoContext(geo: GeoContext) {
+  setGeoContext(geo: GeoContext | null) {
     this.geoContext = geo
   }
 

@@ -1,12 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { SvgPetRenderer } from './engine/svg-renderer'
-import { PixelCatRenderer, DEFAULT_COLORS } from './engine/sprite'
 import {
   createInitialState,
   decideBehavior,
   getVelocity,
   updatePosition,
-  behaviorToAnimation,
 } from './engine/behavior'
 import type { PetState, DisplayBounds, BehaviorType } from './engine/types'
 import { PET_SIZE } from './engine/types'
@@ -93,12 +91,9 @@ function weatherCodeToName(code: number): string {
 
 export default function PetView() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
   const stateRef = useRef<PetState | null>(null)
   const boundsRef = useRef<DisplayBounds | null>(null)
   const svgRendererRef = useRef<SvgPetRenderer | null>(null)
-  const canvasRendererRef = useRef<PixelCatRenderer | null>(null)
-  const useSvgRef = useRef(false)
   const lastTimeRef = useRef(0)
   const inputSessionRef = useRef<string | null>(null)
   const chatRef = useRef<AIChatController | null>(null)
@@ -132,6 +127,7 @@ export default function PetView() {
   const reminderTimersRef = useRef<number[]>([])
   const festivalCheckedRef = useRef(false)
   const weatherTimerRef = useRef<number>(0)
+  const weatherGeoRef = useRef<GeoContext | null>(null)
   const gameSessionRef = useRef<GameSession | null>(null)
 
   const calcBubbleSize = useCallback((text: string) => {
@@ -417,6 +413,7 @@ export default function PetView() {
         const code = data.current?.weather_code ?? -1
         const weatherName = weatherCodeToName(code)
         const updatedGeo: GeoContext = { ...geo, temperature: temp, weather: weatherName }
+        weatherGeoRef.current = updatedGeo
         chatRef.current?.setGeoContext(updatedGeo)
         await window.mulby.storage.set('pet-geo', updatedGeo)
       }
@@ -512,16 +509,13 @@ export default function PetView() {
     initedRef.current = true
 
     const container = containerRef.current
-    const canvas = canvasRef.current
-    if (!container || !canvas) return
+    if (!container) return
 
     let personality = DEFAULT_PERSONALITY
     try {
       const savedP = await window.mulby.storage.get('pet-personality')
       if (savedP) personality = { ...DEFAULT_PERSONALITY, ...(savedP as Partial<PetPersonality>) }
     } catch {}
-    const colors = DEFAULT_COLORS
-
     await statsRef.current.load()
     await achieveRef.current.load()
     await diaryRef.current.load()
@@ -538,19 +532,13 @@ export default function PetView() {
     setTimeout(() => checkAchievements(), signedIn ? 5000 : 2000)
 
     const spriteSet = SLIME_SPRITE_SET
-
-    if (spriteSet && spriteSet.sprites['stand_neutral']) {
-      useSvgRef.current = true
-      canvas.style.display = 'none'
-      const svgRenderer = new SvgPetRenderer(container, PET_SIZE)
-      svgRenderer.loadSpriteSet(spriteSet)
-      svgRendererRef.current = svgRenderer
-    } else {
-      useSvgRef.current = false
-      const canvasRenderer = new PixelCatRenderer(canvas)
-      canvasRenderer.setColors(colors)
-      canvasRendererRef.current = canvasRenderer
+    if (!spriteSet?.sprites['stand_neutral']) {
+      console.error('[pet] built-in sprite set is missing stand_neutral')
+      return
     }
+    const svgRenderer = new SvgPetRenderer(container, PET_SIZE)
+    svgRenderer.loadSpriteSet(spriteSet)
+    svgRendererRef.current = svgRenderer
 
     chatRef.current = new AIChatController(personality)
     chatRef.current.setStatsController(statsRef.current)
@@ -559,9 +547,13 @@ export default function PetView() {
       const savedGeo = await window.mulby.storage.get('pet-geo')
       if (savedGeo && typeof savedGeo === 'object') {
         const geo = savedGeo as GeoContext
+        weatherGeoRef.current = geo
         chatRef.current.setGeoContext(geo)
         fetchWeather(geo)
-        weatherTimerRef.current = window.setInterval(() => fetchWeather(geo), 30 * 60_000)
+        weatherTimerRef.current = window.setInterval(() => {
+          const g = weatherGeoRef.current
+          if (g) fetchWeather(g)
+        }, 30 * 60_000)
       } else {
         geoMissingRef.current = true
         setTimeout(() => {
@@ -734,6 +726,32 @@ export default function PetView() {
     }
 
     window.mulby.window.onChildMessage((channel: string, ...args: any[]) => {
+      if (channel === 'geo-updated') {
+        const payload = args[0]
+        clearInterval(weatherTimerRef.current)
+        weatherTimerRef.current = 0
+        if (
+          payload
+          && typeof payload === 'object'
+          && typeof payload.latitude === 'number'
+          && typeof payload.longitude === 'number'
+          && !Number.isNaN(payload.latitude)
+          && !Number.isNaN(payload.longitude)
+        ) {
+          const geo = payload as GeoContext
+          weatherGeoRef.current = geo
+          chatRef.current?.setGeoContext(geo)
+          fetchWeather(geo)
+          weatherTimerRef.current = window.setInterval(() => {
+            const g = weatherGeoRef.current
+            if (g) fetchWeather(g)
+          }, 30 * 60_000)
+          geoMissingRef.current = false
+        } else {
+          weatherGeoRef.current = null
+          chatRef.current?.setGeoContext(null)
+        }
+      }
       if (channel === 'settings-updated' && args[0]) {
         const { personality: newP } = args[0]
         if (newP) {
@@ -754,23 +772,13 @@ export default function PetView() {
       if (channel === 'sprites-updated' && args[0]) {
         const { spriteSet: newS } = args[0]
         if (newS && newS.sprites['stand_neutral']) {
-          useSvgRef.current = true
-          if (canvas) canvas.style.display = 'none'
           if (!svgRendererRef.current) {
             svgRendererRef.current = new SvgPetRenderer(container, PET_SIZE)
           }
           svgRendererRef.current.loadSpriteSet(newS)
-        } else {
-          useSvgRef.current = false
-          if (canvas) canvas.style.display = 'block'
-          if (svgRendererRef.current) {
-            svgRendererRef.current.destroy()
-            svgRendererRef.current = null
-          }
-          if (!canvasRendererRef.current) {
-            canvasRendererRef.current = new PixelCatRenderer(canvas)
-            canvasRendererRef.current.setColors(colors)
-          }
+        } else if (svgRendererRef.current) {
+          svgRendererRef.current.destroy()
+          svgRendererRef.current = null
         }
       }
     })
@@ -913,7 +921,7 @@ export default function PetView() {
     state.velocity = getVelocity(state, bounds)
     updatePosition(state, bounds)
 
-    if (useSvgRef.current && svgRendererRef.current) {
+    if (svgRendererRef.current) {
       const pose = behaviorToPose(state.behavior)
       const behaviorExpr = behaviorToExpression(state.behavior)
       let expr: PetExpression
@@ -929,15 +937,6 @@ export default function PetView() {
       svgRendererRef.current.setExpression(expr)
       svgRendererRef.current.setFlipped(state.facing === 'left')
       svgRendererRef.current.update(delta)
-    } else if (canvasRendererRef.current) {
-      const canvas = canvasRef.current
-      if (canvas) {
-        const animName = behaviorToAnimation(state.behavior, state.facing)
-        canvasRendererRef.current.play(animName)
-        canvasRendererRef.current.setFlipped(state.facing === 'left')
-        canvasRendererRef.current.update(delta)
-        canvasRendererRef.current.render()
-      }
     }
 
     const newX = Math.round(state.position.x)
@@ -1042,19 +1041,7 @@ export default function PetView() {
           cursor: 'pointer',
           position: 'relative',
         }}
-      >
-        <canvas
-          ref={canvasRef}
-          width={PET_SIZE}
-          height={PET_SIZE}
-          style={{
-            display: 'block',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-          }}
-        />
-      </div>
+      />
     </div>
   )
 }

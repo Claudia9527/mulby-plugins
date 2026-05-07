@@ -12,23 +12,6 @@ export type BehaviorType =
   | 'wobble'
   | 'celebrate'
 
-export type AnimationName =
-  | 'idle'
-  | 'walk_left'
-  | 'walk_right'
-  | 'run_left'
-  | 'run_right'
-  | 'jump'
-  | 'sit'
-  | 'sleep'
-  | 'surprised'
-  | 'happy'
-  | 'cheer'
-  | 'look_left'
-  | 'look_right'
-  | 'wobble'
-  | 'celebrate'
-
 export interface Point {
   x: number
   y: number
