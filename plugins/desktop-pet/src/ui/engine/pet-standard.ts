@@ -14,6 +14,7 @@ export type PetExpression =
   | 'angry'
   | 'excited'
   | 'shy'
+  | 'love'
 
 export type PetPose =
   | 'stand'
@@ -27,7 +28,7 @@ export type PetPose =
 export type PetSpriteKey = `${PetPose}_${PetExpression}`
 
 export const ALL_EXPRESSIONS: PetExpression[] = [
-  'neutral', 'happy', 'sad', 'surprised', 'sleepy', 'angry', 'excited', 'shy'
+  'neutral', 'happy', 'sad', 'surprised', 'sleepy', 'angry', 'excited', 'shy', 'love'
 ]
 
 export const ALL_POSES: PetPose[] = [
@@ -47,6 +48,7 @@ export const CORE_SPRITES: PetSpriteKey[] = [
   'stand_angry',
   'stand_excited',
   'stand_shy',
+  'stand_love',
   'walk_1_neutral',
   'walk_2_neutral',
   'sit_neutral',

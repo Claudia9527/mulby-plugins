@@ -28,6 +28,20 @@ const EXPR_ANIMATIONS: Record<string, string> = {
   shy: 'pet-hide 0.5s ease-out forwards',
 }
 
+const NAMED_ANIMATIONS: Record<string, string> = {
+  bounce: 'pet-bounce 0.5s ease-out',
+  spin_bounce: 'pet-spin-bounce 0.6s ease-out',
+  droop: 'pet-droop 0.6s ease-out forwards',
+  flicker: 'pet-flicker 0.4s ease-in-out 3',
+  phase: 'pet-phase 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
+  glow_pulse: 'pet-glow-pulse 1s ease-in-out 2',
+  hide: 'pet-hide 0.5s ease-out forwards',
+  wiggle: 'pet-wiggle 0.6s ease-in-out 3',
+  ascend: 'pet-ascend 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)',
+  wobble: 'pet-wobble 0.8s ease-in-out',
+  celebrate: 'pet-celebrate 1s ease-in-out',
+}
+
 const POSE_OPACITY: Record<string, number> = {
   stand: 0.7,
   walk_1: 0.65,
@@ -185,6 +199,8 @@ export class SvgPetRenderer {
   private targetOpacity = 0.7
   private currentOpacity = 0.7
   private isMoving = false
+  private transientAnimationActive = false
+  private transientAnimationToken = 0
 
   constructor(container: HTMLElement, size: number) {
     this.container = container
@@ -232,12 +248,15 @@ export class SvgPetRenderer {
   }
 
   private exprAnimTimer = 0
+  private namedAnimTimer = 0
 
   private playExpressionAnim(expression: PetExpression) {
     const exprAnim = EXPR_ANIMATIONS[expression]
     if (!exprAnim) return
 
     clearTimeout(this.exprAnimTimer)
+    const token = ++this.transientAnimationToken
+    this.transientAnimationActive = true
     this.svgWrap.style.animation = 'none'
     void this.svgWrap.offsetHeight
     this.svgWrap.style.animation = exprAnim
@@ -254,14 +273,38 @@ export class SvgPetRenderer {
 
     if (!isFwd) {
       this.exprAnimTimer = window.setTimeout(() => {
+        if (token !== this.transientAnimationToken) return
+        this.transientAnimationActive = false
         this.svgWrap.style.filter = ''
         this.updateAnimation()
       }, dur * count + 50)
     } else {
       this.exprAnimTimer = window.setTimeout(() => {
+        if (token !== this.transientAnimationToken) return
+        this.transientAnimationActive = false
         this.svgWrap.style.filter = ''
       }, dur * count + 500)
     }
+  }
+
+  playAnimation(animation: string) {
+    const anim = NAMED_ANIMATIONS[animation]
+    if (!anim) return
+
+    clearTimeout(this.namedAnimTimer)
+    const token = ++this.transientAnimationToken
+    this.transientAnimationActive = true
+    this.svgWrap.style.animation = 'none'
+    void this.svgWrap.offsetHeight
+    this.svgWrap.style.animation = anim
+
+    const dur = parseFloat(anim.match(/[\d.]+s/)?.[0] || '0.6') * 1000
+    const count = parseInt(anim.match(/(\d+)$/)?.[1] || '1')
+    this.namedAnimTimer = window.setTimeout(() => {
+      if (token !== this.transientAnimationToken) return
+      this.transientAnimationActive = false
+      this.updateAnimation()
+    }, dur * count + 80)
   }
 
   setPose(pose: PetPose) {
@@ -335,6 +378,8 @@ export class SvgPetRenderer {
   }
 
   private updateAnimation() {
+    if (this.transientAnimationActive) return
+
     const flipStr = this.state.flipped ? 'scaleX(-1)' : ''
 
     this.styleEl.textContent = ANIM_KEYFRAMES.replace(/VAR_FLIP/g, flipStr)
@@ -380,6 +425,8 @@ export class SvgPetRenderer {
   }
 
   destroy() {
+    clearTimeout(this.exprAnimTimer)
+    clearTimeout(this.namedAnimTimer)
     this.container.removeChild(this.svgWrap)
     this.container.removeChild(this.ghostTrail)
     document.head.removeChild(this.styleEl)

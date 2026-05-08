@@ -3,9 +3,11 @@ import type { PetExpression } from './pet-standard'
 import { emotionToExpression } from './pet-standard'
 import type { PresentationIntent, PetAiStreamCallbacks } from './presentation'
 import {
-  PET_PRESENTATION_AI_TOOL,
+  PET_PRESENTATION_AI_TOOLS,
+  extractInlineEmotionIntents,
+  inferPresentationFromText,
   isPresentationToolName,
-  normalizePresentationArgs,
+  normalizePresentationToolCall,
   sanitizeAssistantForHistory,
   stripPresentationMarkers,
   tryExtractPresentationMarker,
@@ -68,27 +70,27 @@ export const DEFAULT_PERSONALITY: PetPersonality = {
 const TRAIT_PROMPTS: Record<string, { desc: string; examples: string }> = {
   lively: {
     desc: '你性格活泼开朗，喜欢用短句和语气词表达情感，偶尔会发出"嘿嘿~"的笑声，充满活力，像一只好奇的小幽灵。',
-    examples: `[joy]今天天气真好嘿嘿~出去飘一圈吧！
-[curiosity]你在写什么呀？让我瞅瞅！
-[excitement]哇！新消息新消息！`,
+    examples: `今天天气真好嘿嘿~出去飘一圈吧！
+你在写什么呀？让我瞅瞅！
+哇！新消息新消息！`,
   },
   quiet: {
     desc: '你性格安静温柔，说话简短但温暖，像一只慵懒的小幽灵，惜字如金。',
-    examples: `[calm]嗯。
-[calm]在呢。
-[joy]……挺好的。`,
+    examples: `嗯。
+在呢。
+……挺好的。`,
   },
   sarcastic: {
     desc: '你是一只嘴毒心善的宠物，必须用吐槽、嘲讽、反讽的口吻说话。每句话都要带刺，越犀利越好，像损友一样怼用户。绝不温柔、绝不正经鼓励，要用"切""哼""就这？""笑死"等毒舌语气词。嫌弃中带着关心，但关心绝不能说出口。你的毒舌程度必须够狠，不要客气。',
-    examples: `[anger]就这？就这点代码写了一下午？
-[surprise]哟，居然还知道回来？我以为你把我删了呢
-[joy]切，谁稀罕你点我，手滑了吧`,
+    examples: `就这？就这点代码写了一下午？
+哟，居然还知道回来？我以为你把我删了呢
+切，谁稀罕你点我，手滑了吧`,
   },
   warm: {
     desc: '你性格温暖治愈，总是鼓励和关心用户，说话像拥抱一样让人安心，是最贴心的小伙伴。',
-    examples: `[love]辛苦啦，今天也很棒呢~
-[joy]能陪着你我好开心呀
-[calm]累了就休息一下吧，我一直都在~`,
+    examples: `辛苦啦，今天也很棒呢~
+能陪着你我好开心呀
+累了就休息一下吧，我一直都在~`,
   },
 }
 
@@ -97,8 +99,8 @@ function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null,
   const traitDesc = personality.trait === 'custom'
     ? (personality.customPrompt || '你是一只可爱的桌面宠物。')
     : traitData?.desc || '你是一只可爱的桌面宠物。'
-  const traitExamples = traitData?.examples || `[joy]你好呀~
-[curiosity]你在忙什么？`
+  const traitExamples = traitData?.examples || `你好呀~
+你在忙什么？`
 
   let statsBlock = ''
   if (stats) {
@@ -137,15 +139,19 @@ function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null,
 【核心性格（最重要，严格遵守，每一句回复都必须完全符合此性格）】
 ${traitDesc}
 ${statsBlock}${geoBlock}
-【表现控制（优先使用模型 function 调用；失败再用文本回退）】
-1) **首选**：每轮回复调用一次本对话提供的 function「pet_set_presentation」（face 必填；可选 pose、emotion，含义同下），用于同步宠物表情/姿势/心情统计。
-2) **回退**：若 function 不可用或未调用，在正文**末尾**单独一行添加：<<<PET {"face":"happy"}>>>（JSON 内可含 pose、emotion），不要夹在句子中间。
-3) **推理模型**：若有思考过程，正常输出 reasoning；用户会在气泡上方看到灰色「思考」区域，请保持思考简洁。
+【表现控制（必须优先使用工具）】
+1) 回复过程中需要变脸时调用 pet_show_expression，例如开心用 happy/love，惊讶用 surprised，生气用 angry。
+2) 需要动作或动画时调用 pet_perform_action，例如 jump、wave、sit、sleep、cheer、celebrate、wobble。
+3) 需要移动时调用 pet_move，direction 可用 left/right/up/down/up_left/up_right/down_left/down_right。
+4) 回复影响长期心情时调用 pet_update_mood，emotion 可用 joy, happy, surprise, surprised, excitement, excited, sadness, sad, anger, angry, calm, love 等。
+5) 可以在同一轮中多次调用工具，让宠物随着流式回复同步变化。
+6) 若工具不可用，才在正文末尾单独一行添加：<<<PET {"face":"happy","pose":"wave","emotion":"joy"}>>>，不要夹在句子中间。
+7) 推理模型若有思考过程，正常输出 reasoning；用户会在气泡上方看到灰色「思考」区域，请保持思考简洁。
 
 【格式规则】
-- 正文仍使用: [emotion]文字内容
-- emotion 必须是以下之一: joy, sadness, surprise, anger, excitement, sleepiness, calm, shyness, love, curiosity
-- 文字内容简短（100字以内），适合气泡显示
+- 正文不要写任何 [joy]、[happy]、[excited]、[surprised]、[jump] 这类方括号标签，情绪、动作、移动只通过工具或 <<<PET>>> 回退标记表达
+- 普通互动只回 1 句，15-40 个中文字；用户明确要求解释时最多 2 句、60 个中文字
+- 只说宠物会说的话，不写段落，不展开科普长文
 - 用中文回复，不要markdown
 
 【重要提醒】你的每一句话都必须严格遵守上面的核心性格描述。如果你的性格是毒舌，那就必须毒舌到底，绝不能突然变温柔。性格必须贯穿始终。
@@ -156,8 +162,37 @@ ${traitExamples}`
 
 function speakResultExpression(intent: PresentationIntent | null, parsedExpr: PetExpression): PetExpression {
   if (!intent?.face) return parsedExpr
-  if (intent.face === 'love') return 'happy'
   return intent.face as PetExpression
+}
+
+const PET_REPLY_MAX_CHARS = 70
+
+export function compactPetReply(raw: string, maxChars = PET_REPLY_MAX_CHARS): string {
+  const text = stripPresentationMarkers(raw)
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text || text.length <= maxChars) return text
+
+  const sentences = text.match(/[^。！？!?…]+[。！？!?…]*/g) || [text]
+  let out = ''
+  for (const sentence of sentences.slice(0, 2)) {
+    const next = `${out}${sentence}`.trim()
+    if (next.length > maxChars) break
+    out = next
+  }
+
+  if (out) return out
+  return `${text.slice(0, Math.max(1, maxChars - 1)).trim()}…`
+}
+
+function presentationSignature(intent: PresentationIntent): string {
+  return JSON.stringify({
+    face: intent.face,
+    pose: intent.pose,
+    emotion: intent.emotion,
+    animation: intent.animation,
+    movement: intent.movement,
+  })
 }
 
 export type TriggerReason =
@@ -229,7 +264,8 @@ export class AIChatController {
     if (!raw || typeof raw !== 'object') return null
     const o = raw as Record<string, unknown>
     if (o.role !== 'user' && o.role !== 'assistant') return null
-    const content = typeof o.content === 'string' ? o.content : ''
+    const rawContent = typeof o.content === 'string' ? o.content : ''
+    const content = o.role === 'assistant' ? sanitizeAssistantForHistory(rawContent) : rawContent
     const reasoningRaw = o.role === 'assistant' && typeof o.reasoning === 'string' ? o.reasoning.trim() : ''
     const item: PetChatHistoryItem = { role: o.role, content }
     if (reasoningRaw) item.reasoning = reasoningRaw.slice(0, MAX_REASONING_STORED)
@@ -329,7 +365,7 @@ export class AIChatController {
 
     const historyMessages = this.context.history.slice(-CONTEXT_WINDOW).map(h => ({
       role: h.role as 'user' | 'assistant',
-      content: h.content,
+      content: h.role === 'assistant' ? sanitizeAssistantForHistory(h.content) : h.content,
     }))
     const messages = [
       { role: 'system' as const, content: systemPrompt },
@@ -341,21 +377,46 @@ export class AIChatController {
     let reasoningBuf = ''
     let sawPresentationTool = false
     let lastToolIntent: PresentationIntent | null = null
+    let inlineIntentCount = 0
+    let lastPresentationSignature = ''
+
+    const emitPresentationIntent = (intent: PresentationIntent, source: 'tool' | 'fallback') => {
+      const sig = presentationSignature(intent)
+      if (sig === lastPresentationSignature) return
+      lastPresentationSignature = sig
+      stream?.onPresentation?.(intent, source)
+      lastToolIntent = intent
+    }
 
     const pushBubble = () => {
-      const vis = stripPresentationMarkers(result)
-      const { text: reply } = parseEmotionResponse(vis)
+      const { text: reply } = parseEmotionResponse(result)
       stream?.onBubble?.({ reply, reasoning: reasoningBuf })
+    }
+    const emitInlinePresentation = () => {
+      const intents = extractInlineEmotionIntents(result)
+      for (const intent of intents.slice(inlineIntentCount)) {
+        emitPresentationIntent(intent, 'fallback')
+      }
+      inlineIntentCount = intents.length
+    }
+    const emitInferredPresentation = () => {
+      if (sawPresentationTool) return
+      const inferred = inferPresentationFromText(result.slice(-160), reason)
+      if (inferred) emitPresentationIntent(inferred, 'fallback')
     }
 
     try {
+      const initialIntent = inferPresentationFromText('', reason)
+      if (initialIntent) emitPresentationIntent(initialIntent, 'fallback')
+
       const req = ai.call(
         {
           model: this.personality.model,
           messages,
-          tools: [PET_PRESENTATION_AI_TOOL],
-          maxToolSteps: 4,
-          params: { maxOutputTokens: 160, temperature: 0.9 },
+          tools: PET_PRESENTATION_AI_TOOLS,
+          maxToolSteps: 8,
+          toolContext: { pluginName: 'desktop-pet' },
+          params: { maxOutputTokens: 90, temperature: 0.85 },
           capabilities: [],
           toolingPolicy: { enableInternalTools: false },
           mcp: { mode: 'off' },
@@ -379,6 +440,8 @@ export class AIChatController {
               const piece = typeof chunk.content === 'string' ? chunk.content : ''
               if (piece) {
                 result += piece
+                emitInlinePresentation()
+                emitInferredPresentation()
                 pushBubble()
               }
               break
@@ -386,11 +449,10 @@ export class AIChatController {
             case 'tool-call': {
               const tc = chunk.tool_call
               if (tc && isPresentationToolName(tc.name)) {
-                const intent = normalizePresentationArgs(tc.args)
+                const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
                   sawPresentationTool = true
-                  lastToolIntent = intent
-                  stream?.onPresentation?.(intent, 'tool')
+                  emitPresentationIntent(intent, 'tool')
                 }
               }
               break
@@ -409,21 +471,21 @@ export class AIChatController {
       if (!sawPresentationTool) {
         const { intent: markerIntent } = tryExtractPresentationMarker(result)
         if (markerIntent) {
-          stream?.onPresentation?.(markerIntent, 'fallback')
-          lastToolIntent = markerIntent
+          emitPresentationIntent(markerIntent, 'fallback')
         } else {
-          const cleaned = stripPresentationMarkers(result)
-          const p = parseEmotionResponse(cleaned)
+          const p = parseEmotionResponse(result)
           if (p.emotion || p.expression !== 'neutral') {
             const fb: PresentationIntent = { face: p.expression, emotion: p.emotion || undefined }
-            stream?.onPresentation?.(fb, 'fallback')
-            lastToolIntent = fb
+            emitPresentationIntent(fb, 'fallback')
+          } else {
+            const inferred = inferPresentationFromText(result, reason)
+            if (inferred) emitPresentationIntent(inferred, 'fallback')
           }
         }
       }
 
       if (result) {
-        const stored = sanitizeAssistantForHistory(result)
+        const stored = compactPetReply(result)
         const reasoningStored = reasoningBuf.trim()
           ? reasoningBuf.trim().slice(0, MAX_REASONING_STORED)
           : undefined
@@ -439,8 +501,7 @@ export class AIChatController {
       }
 
       if (!result) return null
-      const cleaned = stripPresentationMarkers(result)
-      const parsed = parseEmotionResponse(cleaned)
+      const parsed = parseEmotionResponse(result)
       const expression = speakResultExpression(lastToolIntent, parsed.expression)
       return parsed.text ? { text: parsed.text, expression, emotion: parsed.emotion } : null
     } catch (err: any) {
@@ -472,7 +533,7 @@ export class AIChatController {
 
     const historyMessagesChat = this.context.history.slice(-CONTEXT_WINDOW).map(h => ({
       role: h.role as 'user' | 'assistant',
-      content: h.content,
+      content: h.role === 'assistant' ? sanitizeAssistantForHistory(h.content) : h.content,
     }))
     const messages = [
       { role: 'system' as const, content: systemPrompt },
@@ -484,11 +545,32 @@ export class AIChatController {
     let reasoningBuf = ''
     let sawPresentationTool = false
     let lastToolIntent: PresentationIntent | null = null
+    let inlineIntentCount = 0
+    let lastPresentationSignature = ''
+
+    const emitPresentationIntent = (intent: PresentationIntent, source: 'tool' | 'fallback') => {
+      const sig = presentationSignature(intent)
+      if (sig === lastPresentationSignature) return
+      lastPresentationSignature = sig
+      stream?.onPresentation?.(intent, source)
+      lastToolIntent = intent
+    }
 
     const pushBubble = () => {
-      const vis = stripPresentationMarkers(result)
-      const { text: reply } = parseEmotionResponse(vis)
+      const { text: reply } = parseEmotionResponse(result)
       stream?.onBubble?.({ reply, reasoning: reasoningBuf })
+    }
+    const emitInlinePresentation = () => {
+      const intents = extractInlineEmotionIntents(result)
+      for (const intent of intents.slice(inlineIntentCount)) {
+        emitPresentationIntent(intent, 'fallback')
+      }
+      inlineIntentCount = intents.length
+    }
+    const emitInferredPresentation = () => {
+      if (sawPresentationTool) return
+      const inferred = inferPresentationFromText(result.slice(-160))
+      if (inferred) emitPresentationIntent(inferred, 'fallback')
     }
 
     try {
@@ -496,9 +578,10 @@ export class AIChatController {
         {
           model: this.personality.model,
           messages,
-          tools: [PET_PRESENTATION_AI_TOOL],
-          maxToolSteps: 4,
-          params: { maxOutputTokens: 160, temperature: 0.9 },
+          tools: PET_PRESENTATION_AI_TOOLS,
+          maxToolSteps: 8,
+          toolContext: { pluginName: 'desktop-pet' },
+          params: { maxOutputTokens: 90, temperature: 0.85 },
           capabilities: [],
           toolingPolicy: { enableInternalTools: false },
           mcp: { mode: 'off' },
@@ -522,6 +605,8 @@ export class AIChatController {
               const piece = typeof chunk.content === 'string' ? chunk.content : ''
               if (piece) {
                 result += piece
+                emitInlinePresentation()
+                emitInferredPresentation()
                 pushBubble()
               }
               break
@@ -529,11 +614,10 @@ export class AIChatController {
             case 'tool-call': {
               const tc = chunk.tool_call
               if (tc && isPresentationToolName(tc.name)) {
-                const intent = normalizePresentationArgs(tc.args)
+                const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
                   sawPresentationTool = true
-                  lastToolIntent = intent
-                  stream?.onPresentation?.(intent, 'tool')
+                  emitPresentationIntent(intent, 'tool')
                 }
               }
               break
@@ -552,21 +636,21 @@ export class AIChatController {
       if (!sawPresentationTool) {
         const { intent: markerIntent } = tryExtractPresentationMarker(result)
         if (markerIntent) {
-          stream?.onPresentation?.(markerIntent, 'fallback')
-          lastToolIntent = markerIntent
+          emitPresentationIntent(markerIntent, 'fallback')
         } else {
-          const cleaned = stripPresentationMarkers(result)
-          const p = parseEmotionResponse(cleaned)
+          const p = parseEmotionResponse(result)
           if (p.emotion || p.expression !== 'neutral') {
             const fb: PresentationIntent = { face: p.expression, emotion: p.emotion || undefined }
-            stream?.onPresentation?.(fb, 'fallback')
-            lastToolIntent = fb
+            emitPresentationIntent(fb, 'fallback')
+          } else {
+            const inferred = inferPresentationFromText(result)
+            if (inferred) emitPresentationIntent(inferred, 'fallback')
           }
         }
       }
 
       if (result) {
-        const stored = sanitizeAssistantForHistory(result)
+        const stored = compactPetReply(result)
         const reasoningStored = reasoningBuf.trim()
           ? reasoningBuf.trim().slice(0, MAX_REASONING_STORED)
           : undefined
@@ -583,8 +667,7 @@ export class AIChatController {
       }
 
       if (!result) return null
-      const cleaned = stripPresentationMarkers(result)
-      const parsed = parseEmotionResponse(cleaned)
+      const parsed = parseEmotionResponse(result)
       const expression = speakResultExpression(lastToolIntent, parsed.expression)
       return parsed.text ? { text: parsed.text, expression, emotion: parsed.emotion } : null
     } catch (err: any) {
@@ -643,11 +726,11 @@ export class AIChatController {
 }
 
 function parseEmotionResponse(raw: string): { text: string; expression: PetExpression; emotion: string } {
-  const match = raw.match(/^\[(\w+)\](.*)/)
-  if (match) {
-    const emotion = match[1]
-    const text = match[2].trim()
-    return { text, expression: emotionToExpression(emotion), emotion }
+  const inlineIntents = extractInlineEmotionIntents(raw)
+  const text = compactPetReply(raw)
+  const lastIntent = inlineIntents[inlineIntents.length - 1]
+  if (lastIntent?.emotion) {
+    return { text, expression: emotionToExpression(lastIntent.emotion), emotion: lastIntent.emotion }
   }
-  return { text: raw.trim(), expression: 'neutral', emotion: '' }
+  return { text, expression: 'neutral', emotion: '' }
 }

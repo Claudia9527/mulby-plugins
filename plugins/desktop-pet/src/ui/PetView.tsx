@@ -131,6 +131,14 @@ export default function PetView() {
   const weatherGeoRef = useRef<GeoContext | null>(null)
   const gameSessionRef = useRef<GameSession | null>(null)
   const presentationPoseRef = useRef<{ pose: PetPose; until: number } | null>(null)
+  const presentationMoveRef = useRef<{
+    startX: number
+    startY: number
+    targetX: number
+    targetY: number
+    startedAt: number
+    durationMs: number
+  } | null>(null)
 
   const calcBubbleSize = useCallback((text: string) => {
     const len = text.length
@@ -238,16 +246,51 @@ export default function PetView() {
     }
   }, [])
 
+  const startPresentationMove = useCallback((movement: { dx: number; dy: number }, durationMs: number) => {
+    const state = stateRef.current
+    const bounds = boundsRef.current
+    if (!state || !bounds) return
+
+    const minX = bounds.x
+    const maxX = bounds.x + bounds.width - PET_SIZE
+    const minY = bounds.y + 80
+    const maxY = bounds.y + bounds.height - PET_SIZE
+    const targetX = Math.max(minX, Math.min(maxX, state.position.x + movement.dx))
+    const targetY = Math.max(minY, Math.min(maxY, state.position.y + movement.dy))
+
+    presentationMoveRef.current = {
+      startX: state.position.x,
+      startY: state.position.y,
+      targetX,
+      targetY,
+      startedAt: performance.now(),
+      durationMs,
+    }
+    state.velocity = { x: 0, y: 0 }
+    state.behavior = 'wander'
+    state.animTimer = 0
+    if (targetX < state.position.x) state.facing = 'left'
+    if (targetX > state.position.x) state.facing = 'right'
+  }, [])
+
   const applyPresentationIntent = useCallback((intent: PresentationIntent, _source: 'tool' | 'fallback') => {
-    const face = intent.face === 'love' ? ('love' as unknown as PetExpression) : intent.face
-    setExpression(face, 8000)
+    const face = intent.face as PetExpression
+    const durationMs = intent.durationMs ?? 8000
+    setExpression(face, durationMs)
     if (intent.pose) {
-      presentationPoseRef.current = { pose: intent.pose, until: Date.now() + 6000 }
+      presentationPoseRef.current = { pose: intent.pose, until: Date.now() + durationMs }
+      svgRendererRef.current?.setPose(intent.pose)
     }
     if (intent.emotion) {
       statsRef.current.applyEmotion(intent.emotion)
     }
-  }, [setExpression])
+    if (intent.animation) {
+      svgRendererRef.current?.playAnimation(intent.animation)
+    }
+    if (intent.movement) {
+      startPresentationMove(intent.movement, durationMs)
+    }
+  }, [setExpression, startPresentationMove])
 
   const triggerSpeak = useCallback(async (reason: TriggerReason) => {
     if (pomodoroRef.current && reason !== 'user_click') return
@@ -263,9 +306,10 @@ export default function PetView() {
 
     if (result) {
       showBubble(result.text)
+      if (result.expression !== 'neutral') setExpression(result.expression)
       statsRef.current.recordChat()
     }
-  }, [applyPresentationIntent, updateBubbleText, showBubble])
+  }, [applyPresentationIntent, updateBubbleText, showBubble, setExpression])
 
   const CHAT_INPUT_WIDTH = 220
   const CHAT_INPUT_HEIGHT = 44
@@ -339,10 +383,11 @@ export default function PetView() {
 
     if (result) {
       showBubble(result.text)
+      if (result.expression !== 'neutral') setExpression(result.expression)
       statsRef.current.recordChat()
       statsRef.current.recordInteraction()
     }
-  }, [applyPresentationIntent, updateBubbleText, showBubble])
+  }, [applyPresentationIntent, updateBubbleText, showBubble, setExpression])
 
   const openSettings = useCallback(async () => {
     try {
@@ -918,6 +963,7 @@ export default function PetView() {
           })
           if (result) {
             showBubble(result.text)
+            if (result.expression !== 'neutral') setExpression(result.expression)
           }
         }
       } catch {}
@@ -941,14 +987,31 @@ export default function PetView() {
     state.idleTimer += delta
     state.animTimer += delta
 
-    const timeBehavior = decideBehavior(state, null)
-    if (timeBehavior !== state.behavior) {
-      state.behavior = timeBehavior
-      state.animTimer = 0
-    }
+    const move = presentationMoveRef.current
+    if (move) {
+      const progress = Math.min(1, Math.max(0, (timestamp - move.startedAt) / move.durationMs))
+      const eased = 1 - Math.pow(1 - progress, 3)
+      state.position.x = move.startX + (move.targetX - move.startX) * eased
+      state.position.y = move.startY + (move.targetY - move.startY) * eased
+      state.velocity = { x: 0, y: 0 }
+      state.behavior = 'wander'
+      if (move.targetX < move.startX) state.facing = 'left'
+      if (move.targetX > move.startX) state.facing = 'right'
+      if (progress >= 1) {
+        state.position.x = move.targetX
+        state.position.y = move.targetY
+        presentationMoveRef.current = null
+      }
+    } else {
+      const timeBehavior = decideBehavior(state, null)
+      if (timeBehavior !== state.behavior) {
+        state.behavior = timeBehavior
+        state.animTimer = 0
+      }
 
-    state.velocity = getVelocity(state, bounds)
-    updatePosition(state, bounds)
+      state.velocity = getVelocity(state, bounds)
+      updatePosition(state, bounds)
+    }
 
     if (svgRendererRef.current) {
       const po = presentationPoseRef.current
