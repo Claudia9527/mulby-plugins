@@ -1,5 +1,6 @@
 import type { PetExpression, PetPose, PetSpriteKey, PetSpriteSet } from './pet-standard'
 import { resolveSpriteKey } from './pet-standard'
+import { logPetPresentation } from './presentation-debug'
 
 export interface SvgRendererState {
   pose: PetPose
@@ -237,11 +238,22 @@ export class SvgPetRenderer {
     this.availableKeys = new Set(
       Object.keys(spriteSet.sprites) as PetSpriteKey[]
     )
+    logPetPresentation('renderer.sprite-set.load', {
+      id: spriteSet.id,
+      name: spriteSet.name,
+      spriteCount: this.availableKeys.size,
+      keys: [...this.availableKeys],
+    })
     this.applySprite()
   }
 
   setExpression(expression: PetExpression) {
     if (this.state.expression === expression) return
+    logPetPresentation('renderer.expression.set', {
+      from: this.state.expression,
+      to: expression,
+      pose: this.state.pose,
+    })
     this.state.expression = expression
     this.applySprite()
     this.playExpressionAnim(expression)
@@ -254,6 +266,7 @@ export class SvgPetRenderer {
     const exprAnim = EXPR_ANIMATIONS[expression]
     if (!exprAnim) return
 
+    logPetPresentation('renderer.expression.animation', { expression, animation: exprAnim })
     clearTimeout(this.exprAnimTimer)
     const token = ++this.transientAnimationToken
     this.transientAnimationActive = true
@@ -289,8 +302,12 @@ export class SvgPetRenderer {
 
   playAnimation(animation: string) {
     const anim = NAMED_ANIMATIONS[animation]
-    if (!anim) return
+    if (!anim) {
+      logPetPresentation('renderer.animation.missing', { animation })
+      return
+    }
 
+    logPetPresentation('renderer.animation.play', { animation, css: anim })
     clearTimeout(this.namedAnimTimer)
     const token = ++this.transientAnimationToken
     this.transientAnimationActive = true
@@ -310,6 +327,11 @@ export class SvgPetRenderer {
   setPose(pose: PetPose) {
     if (this.state.pose === pose) return
     const wasMoving = this.state.pose === 'walk_1' || this.state.pose === 'walk_2'
+    logPetPresentation('renderer.pose.set', {
+      from: this.state.pose,
+      to: pose,
+      expression: this.state.expression,
+    })
     this.state.pose = pose
     this.targetOpacity = POSE_OPACITY[pose] ?? 0.7
     this.applySprite()
@@ -402,14 +424,33 @@ export class SvgPetRenderer {
   }
 
   private applySprite() {
-    if (!this.spriteSet) return
+    if (!this.spriteSet) {
+      logPetPresentation('renderer.sprite.skipped', {
+        reason: 'missing-sprite-set',
+        pose: this.state.pose,
+        expression: this.state.expression,
+      })
+      return
+    }
 
     const key = resolveSpriteKey(this.availableKeys, this.state.pose, this.state.expression)
     if (key === this.currentKey) return
     this.currentKey = key
 
     const svg = this.spriteSet.sprites[key]
-    if (!svg) return
+    if (!svg) {
+      logPetPresentation('renderer.sprite.missing', {
+        key,
+        pose: this.state.pose,
+        expression: this.state.expression,
+      })
+      return
+    }
+    logPetPresentation('renderer.sprite.apply', {
+      requested: `${this.state.pose}_${this.state.expression}`,
+      applied: key,
+      fallback: key !== `${this.state.pose}_${this.state.expression}`,
+    })
 
     this.svgWrap.innerHTML = svg
     const svgEl = this.svgWrap.querySelector('svg')

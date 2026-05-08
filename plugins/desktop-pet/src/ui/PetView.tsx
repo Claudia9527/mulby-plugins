@@ -15,6 +15,7 @@ import { PetDiaryController } from './engine/pet-diary'
 import { startGame, checkAnswer, getGameAnswer, type GameType, type GameSession } from './engine/mini-games'
 import type { PetExpression, PetPose } from './engine/pet-standard'
 import type { PresentationIntent } from './engine/presentation'
+import { logPetPresentation } from './engine/presentation-debug'
 import { SLIME_SPRITE_SET } from './engine/slime-sprites'
 import { PetStatsController, type PetMood } from './engine/pet-stats'
 
@@ -231,6 +232,11 @@ export default function PetView() {
   }, [positionBubble, calcBubbleSize, bubbleMeasureString])
 
   const setExpression = useCallback((expression: PetExpression, durationMs = 5000) => {
+    logPetPresentation('pet.set-expression', {
+      expression,
+      durationMs,
+      rendererReady: !!svgRendererRef.current,
+    })
     currentExpressionRef.current = expression
     if (svgRendererRef.current) {
       svgRendererRef.current.setExpression(expression)
@@ -238,6 +244,7 @@ export default function PetView() {
     clearTimeout(expressionTimerRef.current)
     if (expression !== 'neutral') {
       expressionTimerRef.current = window.setTimeout(() => {
+        logPetPresentation('pet.set-expression.reset', { expression: 'neutral' })
         currentExpressionRef.current = 'neutral'
         if (svgRendererRef.current) {
           svgRendererRef.current.setExpression('neutral')
@@ -249,7 +256,15 @@ export default function PetView() {
   const startPresentationMove = useCallback((movement: { dx: number; dy: number }, durationMs: number) => {
     const state = stateRef.current
     const bounds = boundsRef.current
-    if (!state || !bounds) return
+    if (!state || !bounds) {
+      logPetPresentation('pet.move.skipped', {
+        reason: 'missing-state-or-bounds',
+        hasState: !!state,
+        hasBounds: !!bounds,
+        movement,
+      })
+      return
+    }
 
     const minX = bounds.x
     const maxX = bounds.x + bounds.width - PET_SIZE
@@ -257,6 +272,13 @@ export default function PetView() {
     const maxY = bounds.y + bounds.height - PET_SIZE
     const targetX = Math.max(minX, Math.min(maxX, state.position.x + movement.dx))
     const targetY = Math.max(minY, Math.min(maxY, state.position.y + movement.dy))
+    logPetPresentation('pet.move.start', {
+      movement,
+      durationMs,
+      from: { x: state.position.x, y: state.position.y },
+      to: { x: targetX, y: targetY },
+      bounds: { minX, maxX, minY, maxY },
+    })
 
     presentationMoveRef.current = {
       startX: state.position.x,
@@ -273,7 +295,13 @@ export default function PetView() {
     if (targetX > state.position.x) state.facing = 'right'
   }, [])
 
-  const applyPresentationIntent = useCallback((intent: PresentationIntent, _source: 'tool' | 'fallback') => {
+  const applyPresentationIntent = useCallback((intent: PresentationIntent, source: 'tool' | 'fallback') => {
+    logPetPresentation('pet.intent.apply', {
+      source,
+      intent,
+      rendererReady: !!svgRendererRef.current,
+      hasState: !!stateRef.current,
+    })
     const face = intent.face as PetExpression
     const durationMs = intent.durationMs ?? 8000
     setExpression(face, durationMs)
@@ -997,11 +1025,14 @@ export default function PetView() {
       state.behavior = 'wander'
       if (move.targetX < move.startX) state.facing = 'left'
       if (move.targetX > move.startX) state.facing = 'right'
-      if (progress >= 1) {
-        state.position.x = move.targetX
-        state.position.y = move.targetY
-        presentationMoveRef.current = null
-      }
+          if (progress >= 1) {
+            state.position.x = move.targetX
+            state.position.y = move.targetY
+            presentationMoveRef.current = null
+            logPetPresentation('pet.move.done', {
+              position: { x: state.position.x, y: state.position.y },
+            })
+          }
     } else {
       const timeBehavior = decideBehavior(state, null)
       if (timeBehavior !== state.behavior) {

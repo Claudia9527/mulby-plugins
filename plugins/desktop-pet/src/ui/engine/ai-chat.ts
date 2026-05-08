@@ -4,6 +4,7 @@ import { emotionToExpression } from './pet-standard'
 import type { PresentationIntent, PetAiStreamCallbacks } from './presentation'
 import {
   PET_PRESENTATION_AI_TOOLS,
+  extractStageDirectionIntents,
   extractInlineEmotionIntents,
   inferPresentationFromText,
   isPresentationToolName,
@@ -15,6 +16,7 @@ import {
 import { PetMemoryController } from './pet-memory'
 import type { PetStats } from './pet-stats'
 import type { PetStatsController } from './pet-stats'
+import { logPetPresentation } from './presentation-debug'
 
 export interface PetPersonality {
   name: string
@@ -150,6 +152,7 @@ ${statsBlock}${geoBlock}
 
 【格式规则】
 - 正文不要写任何 [joy]、[happy]、[excited]、[surprised]、[jump] 这类方括号标签，情绪、动作、移动只通过工具或 <<<PET>>> 回退标记表达
+- 正文不要用括号描写动作或表情，例如不要写“（打呵欠）”“（飘到鼠标旁边）”“绕着你的手转圈”；这些必须用工具表达
 - 普通互动只回 1 句，15-40 个中文字；用户明确要求解释时最多 2 句、60 个中文字
 - 只说宠物会说的话，不写段落，不展开科普长文
 - 用中文回复，不要markdown
@@ -372,18 +375,28 @@ export class AIChatController {
       ...historyMessages,
       { role: 'user' as const, content: userMessage },
     ]
+    logPetPresentation('ai.speak.start', {
+      reason,
+      currentBehavior,
+      model: this.personality.model,
+      historyMessages: historyMessages.length,
+      tools: PET_PRESENTATION_AI_TOOLS.map(tool => tool.function?.name),
+      userMessage,
+    })
 
     let result = ''
     let reasoningBuf = ''
     let sawPresentationTool = false
     let lastToolIntent: PresentationIntent | null = null
     let inlineIntentCount = 0
+    let stageIntentCount = 0
     let lastPresentationSignature = ''
 
     const emitPresentationIntent = (intent: PresentationIntent, source: 'tool' | 'fallback') => {
       const sig = presentationSignature(intent)
       if (sig === lastPresentationSignature) return
       lastPresentationSignature = sig
+      logPetPresentation('ai.intent.emit', { flow: 'speak', source, intent })
       stream?.onPresentation?.(intent, source)
       lastToolIntent = intent
     }
@@ -399,14 +412,33 @@ export class AIChatController {
       }
       inlineIntentCount = intents.length
     }
+    const emitStagePresentation = () => {
+      const stageIntents = extractStageDirectionIntents(result)
+      for (const intent of stageIntents.slice(stageIntentCount)) {
+        const sig = presentationSignature(intent)
+        if (sig !== lastPresentationSignature) {
+          logPetPresentation('ai.intent.stage', { flow: 'speak', reason, intent })
+        }
+        emitPresentationIntent(intent, 'fallback')
+      }
+      stageIntentCount = stageIntents.length
+    }
     const emitInferredPresentation = () => {
+      emitStagePresentation()
       if (sawPresentationTool) return
-      const inferred = inferPresentationFromText(result.slice(-160), reason)
-      if (inferred) emitPresentationIntent(inferred, 'fallback')
+      const tail = result.slice(-160)
+      const inferred = inferPresentationFromText(tail, reason)
+      if (inferred) {
+        const sig = presentationSignature(inferred)
+        if (sig !== lastPresentationSignature) {
+          logPetPresentation('ai.intent.inferred', { flow: 'speak', reason, inferred, tail })
+        }
+        emitPresentationIntent(inferred, 'fallback')
+      }
     }
 
     try {
-      const initialIntent = inferPresentationFromText('', reason)
+      const initialIntent = reason === 'user_click' ? null : inferPresentationFromText('', reason)
       if (initialIntent) emitPresentationIntent(initialIntent, 'fallback')
 
       const req = ai.call(
@@ -425,6 +457,7 @@ export class AIChatController {
         (chunk: any) => {
           if (chunk.__requestId) {
             this.requestId = chunk.__requestId
+            logPetPresentation('ai.request-id', { flow: 'speak', requestId: this.requestId })
             return
           }
           switch (chunk.chunkType) {
@@ -432,6 +465,7 @@ export class AIChatController {
               const r = typeof chunk.reasoning_content === 'string' ? chunk.reasoning_content : ''
               if (r) {
                 reasoningBuf += r
+                logPetPresentation('ai.chunk.reasoning', { flow: 'speak', chars: r.length, total: reasoningBuf.length })
                 pushBubble()
               }
               break
@@ -440,6 +474,7 @@ export class AIChatController {
               const piece = typeof chunk.content === 'string' ? chunk.content : ''
               if (piece) {
                 result += piece
+                logPetPresentation('ai.chunk.text', { flow: 'speak', chars: piece.length, total: result.length, preview: piece })
                 emitInlinePresentation()
                 emitInferredPresentation()
                 pushBubble()
@@ -448,11 +483,15 @@ export class AIChatController {
             }
             case 'tool-call': {
               const tc = chunk.tool_call
+              logPetPresentation('ai.tool-call.raw', { flow: 'speak', toolCall: tc })
               if (tc && isPresentationToolName(tc.name)) {
                 const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
                   sawPresentationTool = true
+                  logPetPresentation('ai.tool-call.normalized', { flow: 'speak', name: tc.name, args: tc.args, intent })
                   emitPresentationIntent(intent, 'tool')
+                } else {
+                  logPetPresentation('ai.tool-call.invalid', { flow: 'speak', name: tc.name, args: tc.args })
                 }
               }
               break
@@ -467,19 +506,35 @@ export class AIChatController {
       if (finalMsg?.content && typeof finalMsg.content === 'string') {
         result = finalMsg.content
       }
+      logPetPresentation('ai.final-message', {
+        flow: 'speak',
+        sawPresentationTool,
+        rawChars: result.length,
+        compact: compactPetReply(result),
+      })
 
       if (!sawPresentationTool) {
         const { intent: markerIntent } = tryExtractPresentationMarker(result)
         if (markerIntent) {
+          logPetPresentation('ai.intent.marker', { flow: 'speak', markerIntent })
           emitPresentationIntent(markerIntent, 'fallback')
         } else {
+          const stageIntents = extractStageDirectionIntents(result)
+          for (const stageIntent of stageIntents.slice(stageIntentCount)) {
+            logPetPresentation('ai.intent.final-stage', { flow: 'speak', stageIntent })
+            emitPresentationIntent(stageIntent, 'fallback')
+          }
+          stageIntentCount = stageIntents.length
           const p = parseEmotionResponse(result)
           if (p.emotion || p.expression !== 'neutral') {
             const fb: PresentationIntent = { face: p.expression, emotion: p.emotion || undefined }
             emitPresentationIntent(fb, 'fallback')
           } else {
             const inferred = inferPresentationFromText(result, reason)
-            if (inferred) emitPresentationIntent(inferred, 'fallback')
+            if (inferred) {
+              logPetPresentation('ai.intent.final-inferred', { flow: 'speak', reason, inferred })
+              emitPresentationIntent(inferred, 'fallback')
+            }
           }
         }
       }
@@ -503,11 +558,20 @@ export class AIChatController {
       if (!result) return null
       const parsed = parseEmotionResponse(result)
       const expression = speakResultExpression(lastToolIntent, parsed.expression)
+      logPetPresentation('ai.speak.result', {
+        text: parsed.text,
+        expression,
+        emotion: parsed.emotion,
+        lastToolIntent,
+      })
       return parsed.text ? { text: parsed.text, expression, emotion: parsed.emotion } : null
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError'
         || String(err?.message).toLowerCase().includes('aborted')
       if (!isAbort) console.error('[ai-chat] error:', err)
+      logPetPresentation(isAbort ? 'ai.speak.abort' : 'ai.speak.error', {
+        message: err?.message || String(err),
+      })
       return null
     } finally {
       this.isGenerating = false
@@ -540,18 +604,26 @@ export class AIChatController {
       ...historyMessagesChat,
       { role: 'user' as const, content: userText },
     ]
+    logPetPresentation('ai.chat.start', {
+      model: this.personality.model,
+      historyMessages: historyMessagesChat.length,
+      tools: PET_PRESENTATION_AI_TOOLS.map(tool => tool.function?.name),
+      userText,
+    })
 
     let result = ''
     let reasoningBuf = ''
     let sawPresentationTool = false
     let lastToolIntent: PresentationIntent | null = null
     let inlineIntentCount = 0
+    let stageIntentCount = 0
     let lastPresentationSignature = ''
 
     const emitPresentationIntent = (intent: PresentationIntent, source: 'tool' | 'fallback') => {
       const sig = presentationSignature(intent)
       if (sig === lastPresentationSignature) return
       lastPresentationSignature = sig
+      logPetPresentation('ai.intent.emit', { flow: 'chat', source, intent })
       stream?.onPresentation?.(intent, source)
       lastToolIntent = intent
     }
@@ -567,10 +639,29 @@ export class AIChatController {
       }
       inlineIntentCount = intents.length
     }
+    const emitStagePresentation = () => {
+      const stageIntents = extractStageDirectionIntents(result)
+      for (const intent of stageIntents.slice(stageIntentCount)) {
+        const sig = presentationSignature(intent)
+        if (sig !== lastPresentationSignature) {
+          logPetPresentation('ai.intent.stage', { flow: 'chat', intent })
+        }
+        emitPresentationIntent(intent, 'fallback')
+      }
+      stageIntentCount = stageIntents.length
+    }
     const emitInferredPresentation = () => {
+      emitStagePresentation()
       if (sawPresentationTool) return
-      const inferred = inferPresentationFromText(result.slice(-160))
-      if (inferred) emitPresentationIntent(inferred, 'fallback')
+      const tail = result.slice(-160)
+      const inferred = inferPresentationFromText(tail)
+      if (inferred) {
+        const sig = presentationSignature(inferred)
+        if (sig !== lastPresentationSignature) {
+          logPetPresentation('ai.intent.inferred', { flow: 'chat', inferred, tail })
+        }
+        emitPresentationIntent(inferred, 'fallback')
+      }
     }
 
     try {
@@ -590,6 +681,7 @@ export class AIChatController {
         (chunk: any) => {
           if (chunk.__requestId) {
             this.requestId = chunk.__requestId
+            logPetPresentation('ai.request-id', { flow: 'chat', requestId: this.requestId })
             return
           }
           switch (chunk.chunkType) {
@@ -597,6 +689,7 @@ export class AIChatController {
               const r = typeof chunk.reasoning_content === 'string' ? chunk.reasoning_content : ''
               if (r) {
                 reasoningBuf += r
+                logPetPresentation('ai.chunk.reasoning', { flow: 'chat', chars: r.length, total: reasoningBuf.length })
                 pushBubble()
               }
               break
@@ -605,6 +698,7 @@ export class AIChatController {
               const piece = typeof chunk.content === 'string' ? chunk.content : ''
               if (piece) {
                 result += piece
+                logPetPresentation('ai.chunk.text', { flow: 'chat', chars: piece.length, total: result.length, preview: piece })
                 emitInlinePresentation()
                 emitInferredPresentation()
                 pushBubble()
@@ -613,11 +707,15 @@ export class AIChatController {
             }
             case 'tool-call': {
               const tc = chunk.tool_call
+              logPetPresentation('ai.tool-call.raw', { flow: 'chat', toolCall: tc })
               if (tc && isPresentationToolName(tc.name)) {
                 const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
                   sawPresentationTool = true
+                  logPetPresentation('ai.tool-call.normalized', { flow: 'chat', name: tc.name, args: tc.args, intent })
                   emitPresentationIntent(intent, 'tool')
+                } else {
+                  logPetPresentation('ai.tool-call.invalid', { flow: 'chat', name: tc.name, args: tc.args })
                 }
               }
               break
@@ -632,19 +730,35 @@ export class AIChatController {
       if (finalMsg?.content && typeof finalMsg.content === 'string') {
         result = finalMsg.content
       }
+      logPetPresentation('ai.final-message', {
+        flow: 'chat',
+        sawPresentationTool,
+        rawChars: result.length,
+        compact: compactPetReply(result),
+      })
 
       if (!sawPresentationTool) {
         const { intent: markerIntent } = tryExtractPresentationMarker(result)
         if (markerIntent) {
+          logPetPresentation('ai.intent.marker', { flow: 'chat', markerIntent })
           emitPresentationIntent(markerIntent, 'fallback')
         } else {
+          const stageIntents = extractStageDirectionIntents(result)
+          for (const stageIntent of stageIntents.slice(stageIntentCount)) {
+            logPetPresentation('ai.intent.final-stage', { flow: 'chat', stageIntent })
+            emitPresentationIntent(stageIntent, 'fallback')
+          }
+          stageIntentCount = stageIntents.length
           const p = parseEmotionResponse(result)
           if (p.emotion || p.expression !== 'neutral') {
             const fb: PresentationIntent = { face: p.expression, emotion: p.emotion || undefined }
             emitPresentationIntent(fb, 'fallback')
           } else {
             const inferred = inferPresentationFromText(result)
-            if (inferred) emitPresentationIntent(inferred, 'fallback')
+            if (inferred) {
+              logPetPresentation('ai.intent.final-inferred', { flow: 'chat', inferred })
+              emitPresentationIntent(inferred, 'fallback')
+            }
           }
         }
       }
@@ -669,11 +783,20 @@ export class AIChatController {
       if (!result) return null
       const parsed = parseEmotionResponse(result)
       const expression = speakResultExpression(lastToolIntent, parsed.expression)
+      logPetPresentation('ai.chat.result', {
+        text: parsed.text,
+        expression,
+        emotion: parsed.emotion,
+        lastToolIntent,
+      })
       return parsed.text ? { text: parsed.text, expression, emotion: parsed.emotion } : null
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError'
         || String(err?.message).toLowerCase().includes('aborted')
       if (!isAbort) console.error('[ai-chat] chat error:', err)
+      logPetPresentation(isAbort ? 'ai.chat.abort' : 'ai.chat.error', {
+        message: err?.message || String(err),
+      })
       return null
     } finally {
       this.isGenerating = false

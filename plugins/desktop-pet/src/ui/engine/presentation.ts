@@ -501,20 +501,20 @@ const TEXT_PRESENTATION_RULES: Array<{ intent: PresentationIntent; patterns: Reg
     patterns: [/喜欢|爱你|贴贴|小心心|想你|陪着你|抱抱|亲密/],
   },
   {
-    intent: { face: 'surprised', emotion: 'surprise', pose: 'stand', animation: 'phase' },
-    patterns: [/喂喂|什么|啥|惊|吓|居然|突然|真的假的|火星子|哇|诶|欸|[?？]/],
-  },
-  {
     intent: { face: 'sleepy', emotion: 'sleepiness', pose: 'sit', animation: 'droop' },
     patterns: [/困|睡|晚了|熬夜|休息|歇|累|疲惫|眯一会|打盹/],
   },
   {
     intent: { face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' },
-    patterns: [/生气|气死|烦|暴躁|哼|切|就这|离谱|欠揍|服了/],
+    patterns: [/生气|气死|烦|暴躁|哼|切|就这|离谱|欠揍|服了|戳我|手痒|上瘾|闹脾气/],
   },
   {
     intent: { face: 'sad', emotion: 'sadness', pose: 'sit', animation: 'droop' },
     patterns: [/难过|伤心|委屈|失落|可怜|失败|糟糕|心疼/],
+  },
+  {
+    intent: { face: 'surprised', emotion: 'surprise', pose: 'stand', animation: 'phase' },
+    patterns: [/喂喂|什么|啥|惊|吓|居然|突然|真的假的|火星子|哇|诶|欸|[?？]/],
   },
   {
     intent: { face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide' },
@@ -539,6 +539,49 @@ const HINT_PRESENTATION_INTENTS: Record<string, PresentationIntent> = {
   behavior_change: { face: 'surprised', emotion: 'surprise', pose: 'stand', animation: 'phase' },
 }
 
+const STAGE_DIRECTION = /[（(]\s*([^（）()]{1,80})\s*[）)]/g
+const STAGE_ACTION_WORDS = /打[了个]*[哈呵]欠|[哈呵]欠|一脸|不耐烦|不满|转过身|转身|屁股|背对|飘|绕|转圈|转了|靠近|躲|跳|挥手|睡|打盹|蹭|抖|晃|摇/
+
+export function extractStageDirectionIntents(text: string): PresentationIntent[] {
+  const intents: PresentationIntent[] = []
+  for (const match of text.matchAll(STAGE_DIRECTION)) {
+    const action = match[1].replace(/\s+/g, '')
+    if (!STAGE_ACTION_WORDS.test(action)) continue
+
+    if (/打[了个]*[哈呵]欠|[哈呵]欠|睡|打盹/.test(action)) {
+      intents.push({ face: 'sleepy', emotion: 'sleepiness', pose: 'sit', animation: 'droop' })
+    }
+    if (/一脸|不耐烦|不满/.test(action)) {
+      intents.push({ face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' })
+    }
+    if (/飘|绕|转圈|转了|靠近|抖|晃|摇/.test(action)) {
+      intents.push({
+        face: 'excited',
+        emotion: 'excitement',
+        pose: 'walk_1',
+        animation: 'wobble',
+        movement: { dx: 80, dy: -20 },
+      })
+    }
+    if (/躲|转过身|转身|屁股|背对/.test(action)) {
+      intents.push({ face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide', movement: { dx: -80, dy: 0 } })
+    }
+    if (/跳/.test(action)) {
+      intents.push({ face: 'excited', emotion: 'excitement', pose: 'jump', animation: 'ascend' })
+    }
+    if (/挥手/.test(action)) {
+      intents.push({ face: 'happy', emotion: 'joy', pose: 'wave', animation: 'wiggle' })
+    }
+  }
+  return intents
+}
+
+export function stripStageDirections(text: string): string {
+  return text.replace(STAGE_DIRECTION, (full, action: string) => {
+    return STAGE_ACTION_WORDS.test(action.replace(/\s+/g, '')) ? '' : full
+  })
+}
+
 export function inferPresentationFromText(text: string, hint?: string): PresentationIntent | null {
   const clean = stripPresentationMarkers(text).replace(/\s+/g, '')
   if (clean) {
@@ -547,6 +590,7 @@ export function inferPresentationFromText(text: string, hint?: string): Presenta
         return { ...rule.intent }
       }
     }
+    return null
   }
   const hintIntent = hint ? HINT_PRESENTATION_INTENTS[hint] : undefined
   return hintIntent ? { ...hintIntent } : null
@@ -569,7 +613,7 @@ function escapeRegExp(value: string): string {
 }
 
 export function stripPresentationMarkers(text: string): string {
-  return stripInlineEmotionMarkers(text.replace(PET_BLOCK, '')).replace(/\n{3,}/g, '\n\n').trim()
+  return stripInlineEmotionMarkers(stripStageDirections(text.replace(PET_BLOCK, ''))).replace(/\n{3,}/g, '\n\n').trim()
 }
 
 function emotionToFace(emotion: string): PresentationFace {

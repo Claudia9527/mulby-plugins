@@ -1,9 +1,11 @@
 import {
   ACTION_LIST,
   EMOTION_LIST,
+  extractStageDirectionIntents,
   extractInlineEmotionIntents,
   inferPresentationFromText,
   normalizePresentationToolCall,
+  stripPresentationMarkers,
   stripInlineEmotionMarkers,
 } from './presentation'
 
@@ -73,6 +75,45 @@ function testInferPresentationFromPlainReply() {
     inferPresentationFromText('这节奏还挺上头，我左摇右晃跟着打节拍。'),
     { face: 'excited', emotion: 'excitement', pose: 'wave', animation: 'wobble' }
   )
+  assertDeepEqual(
+    inferPresentationFromText('切，又戳我？你是戳上瘾了是吧？'),
+    { face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' }
+  )
+}
+
+function testStageDirectionsAreHiddenAndConvertedToPresentation() {
+  const input = '（打了个呵欠飘到你鼠标旁边，绕着你的手转了两圈）我说你是不是手指头长刺了？'
+
+  assertEqual(stripPresentationMarkers(input), '我说你是不是手指头长刺了？')
+  assertDeepEqual(extractStageDirectionIntents(input), [
+    { face: 'sleepy', emotion: 'sleepiness', pose: 'sit', animation: 'droop' },
+    { face: 'excited', emotion: 'excitement', pose: 'walk_1', animation: 'wobble', movement: { dx: 80, dy: -20 } },
+  ])
+}
+
+function testStageDirectionsCoverAttitudeAndTurningAway() {
+  const input = '（一脸不耐烦地转过身去，把屁股对着你）我数三下。'
+
+  assertEqual(stripPresentationMarkers(input), '我数三下。')
+  assertDeepEqual(extractStageDirectionIntents(input), [
+    { face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' },
+    { face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide', movement: { dx: -80, dy: 0 } },
+  ])
+}
+
+function testStageDirectionsAfterToolStyleNarration() {
+  const input = '（飘到桌角背对着你，尾巴还在不满地抖来抖去）看什么看？'
+
+  assertEqual(stripPresentationMarkers(input), '看什么看？')
+  assertDeepEqual(extractStageDirectionIntents(input), [
+    { face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' },
+    { face: 'excited', emotion: 'excitement', pose: 'walk_1', animation: 'wobble', movement: { dx: 80, dy: -20 } },
+    { face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide', movement: { dx: -80, dy: 0 } },
+  ])
+}
+
+function testHintDoesNotOverridePartialStageDirection() {
+  assertDeepEqual(inferPresentationFromText('（', 'user_click'), null)
 }
 
 testStripInlineEmotionMarkers()
@@ -80,3 +121,7 @@ testExtractInlineExpressionAliases()
 testNormalizeToolCalls()
 testListsCoverRuntimeAliases()
 testInferPresentationFromPlainReply()
+testStageDirectionsAreHiddenAndConvertedToPresentation()
+testStageDirectionsCoverAttitudeAndTurningAway()
+testStageDirectionsAfterToolStyleNarration()
+testHintDoesNotOverridePartialStageDirection()

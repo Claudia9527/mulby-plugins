@@ -13,4 +13,14 @@ function testCompactPetReplyRemovesPresentationNoiseAndKeepsBubbleShort() {
   assert(actual.length <= 70, `reply should fit a pet bubble, got ${actual.length}: ${actual}`)
 }
 
+function testCompactPetReplyHidesStageDirections() {
+  const input = '（打了个呵欠飘到你鼠标旁边，绕着你的手转了两圈） 我说你是不是手指头长刺了？'
+  const actual = compactPetReply(input)
+
+  assert(!actual.includes('打了个呵欠'), 'stage action should not be shown as dialogue')
+  assert(!actual.includes('绕着你的手'), 'movement narration should be converted to presentation instead of shown')
+  assert(actual.startsWith('我说'), `dialogue should remain: ${actual}`)
+}
+
 testCompactPetReplyRemovesPresentationNoiseAndKeepsBubbleShort()
+testCompactPetReplyHidesStageDirections()

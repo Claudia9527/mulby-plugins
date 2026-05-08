@@ -8,6 +8,7 @@ import {
   PET_UPDATE_MOOD_TOOL_NAME,
   normalizePresentationToolCall,
 } from './ui/engine/presentation'
+import { logPetPresentation } from './ui/engine/presentation-debug'
 
 type PluginContext = BackendPluginContext
 
@@ -15,6 +16,7 @@ const TAG = '[desktop-pet]'
 
 function acknowledgePresentationTool(name: string, args: unknown) {
   const intent = normalizePresentationToolCall(name, args)
+  logPetPresentation('tool-ack', { name, args, intent })
   if (!intent) {
     return {
       success: false,
