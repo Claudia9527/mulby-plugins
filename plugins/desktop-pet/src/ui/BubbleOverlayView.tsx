@@ -1,29 +1,28 @@
 import { useState, useEffect } from 'react'
+import { buildBubblePreviewState, normalizeBubbleStreamPayload, type BubblePreviewState } from './engine/bubble-stream'
 
 const MAX_REPLY_LEN = 2000
-const MAX_REASONING_LEN = 4000
 
 export default function BubbleOverlayView() {
-  const [reply, setReply] = useState('')
-  const [reasoning, setReasoning] = useState('')
+  const [preview, setPreview] = useState<BubblePreviewState>(() => buildBubblePreviewState({ reply: '', reasoning: '' }))
 
   useEffect(() => {
     window.mulby.window.onChildMessage((channel: string, ...args: any[]) => {
       if (channel !== 'bubble-update' || args[0] == null) return
-      const raw = args[0]
-      if (typeof raw === 'string') {
-        setReply(raw.slice(0, MAX_REPLY_LEN))
-        setReasoning('')
-        return
-      }
-      if (raw && typeof raw === 'object' && typeof raw.reply === 'string') {
-        setReply(raw.reply.slice(0, MAX_REPLY_LEN))
-        setReasoning(typeof raw.reasoning === 'string' ? raw.reasoning.slice(0, MAX_REASONING_LEN) : '')
-      }
+      const normalized = normalizeBubbleStreamPayload(args[0])
+      setPreview(buildBubblePreviewState({
+        reply: normalized.reply.slice(0, MAX_REPLY_LEN),
+        reasoning: normalized.reasoning,
+      }))
     })
   }, [])
 
-  if (!reply && !reasoning) return null
+  if (!preview.reply && !preview.hasReasoning) return null
+
+  const openDetail = () => {
+    if (!preview.hasReasoning) return
+    window.mulby.window.sendToParent('bubble-detail-open')
+  }
 
   return (
     <div style={{
@@ -35,17 +34,25 @@ export default function BubbleOverlayView() {
       padding: '4px',
       background: 'transparent',
     }}>
-      <div className="bubble-container bubble-enter">
-        <div className="bubble-box" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '6px' }}>
-          {reasoning ? (
-            <div className="bubble-reasoning">
-              {reasoning}
+      <button
+        type="button"
+        className={`bubble-container bubble-enter bubble-preview-button ${preview.hasReasoning ? 'is-clickable' : ''}`}
+        onClick={openDetail}
+        title={preview.hasReasoning ? '查看完整思考过程' : undefined}
+      >
+        <div className="bubble-box bubble-preview-box">
+          {preview.hasReasoning ? (
+            <div className="bubble-reasoning-summary">
+              <span>{preview.statusLabel}</span>
+              <span>{preview.reasoningChars} 字</span>
             </div>
           ) : null}
-          {reply ? <span className="bubble-text">{reply}</span> : null}
+          {preview.reasoningPreview ? <div className="bubble-reasoning-preview">{preview.reasoningPreview}</div> : null}
+          {preview.reply ? <span className="bubble-text">{preview.reply}</span> : null}
+          {preview.hasReasoning ? <span className="bubble-detail-hint">点击查看完整思考</span> : null}
         </div>
         <div className="bubble-arrow" />
-      </div>
+      </button>
     </div>
   )
 }

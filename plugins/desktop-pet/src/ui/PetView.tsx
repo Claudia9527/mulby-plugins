@@ -36,8 +36,16 @@ import {
   shouldApplyMousePassthrough,
   type PetMousePassthroughState,
 } from './engine/mouse-passthrough'
+import {
+  buildBubblePreviewState,
+  normalizeBubbleStreamPayload,
+  PET_CURRENT_BUBBLE_STORAGE_KEY,
+  type BubbleStreamPayload,
+} from './engine/bubble-stream'
 
 const WIN_SIZE = 80
+const BUBBLE_DETAIL_WIDTH = 420
+const BUBBLE_DETAIL_HEIGHT = 520
 
 interface WindowBounds {
   x: number
@@ -135,6 +143,8 @@ export default function PetView() {
 
   const bubbleTimerRef = useRef<number>(0)
   const bubbleProxyRef = useRef<any>(null)
+  const bubbleDetailProxyRef = useRef<any>(null)
+  const latestBubblePayloadRef = useRef<BubbleStreamPayload>({ reply: '', reasoning: '' })
   const bubbleVisibleRef = useRef(false)
   const bubbleSizeRef = useRef({ width: 120, height: 44 })
   const initedRef = useRef(false)
@@ -195,9 +205,13 @@ export default function PetView() {
     return { x: bx, y: by }
   }, [])
 
-  const bubbleMeasureString = useCallback((reply: string, reasoning: string) => {
-    const cap = reasoning.length > 1200 ? `${reasoning.slice(0, 1200)}…` : reasoning
-    return cap ? `${cap}\n\n${reply}` : reply
+  const bubbleMeasureString = useCallback((payload: BubbleStreamPayload) => {
+    const preview = buildBubblePreviewState(payload)
+    return [
+      preview.statusLabel,
+      preview.reasoningPreview,
+      preview.reply,
+    ].filter(Boolean).join('\n')
   }, [])
 
   const safeProxyCall = useCallback((fn: () => unknown, op: string) => {
@@ -214,6 +228,23 @@ export default function PetView() {
     } catch (err) {
       logPetPresentation('pet.bubble-proxy.error', {
         op,
+        message: (err as Error)?.message ?? String(err),
+      })
+    }
+  }, [])
+
+  const persistLatestBubblePayload = useCallback((payload: BubbleStreamPayload) => {
+    try {
+      const r = window.mulby.storage.set(PET_CURRENT_BUBBLE_STORAGE_KEY, payload)
+      if (r && typeof r === 'object' && typeof (r as Promise<unknown>).catch === 'function') {
+        ;(r as Promise<unknown>).catch(err => {
+          logPetPresentation('pet.bubble-stream.save-error', {
+            message: (err as Error)?.message ?? String(err),
+          })
+        })
+      }
+    } catch (err) {
+      logPetPresentation('pet.bubble-stream.save-error', {
         message: (err as Error)?.message ?? String(err),
       })
     }
@@ -300,11 +331,18 @@ export default function PetView() {
     await syncMousePassthroughToCursor()
   }, [syncMousePassthroughToCursor])
 
-  const showBubble = useCallback((text: string) => {
+  const showBubble = useCallback((text: string, options?: { preserveReasoning?: boolean }) => {
     const proxy = bubbleProxyRef.current
     if (!proxy) return
+    const previous = latestBubblePayloadRef.current
+    const preservedReasoning = options?.preserveReasoning ? previous.reasoning : ''
+    const payload: BubbleStreamPayload = { reply: text, reasoning: preservedReasoning }
+    latestBubblePayloadRef.current = payload
+    persistLatestBubblePayload(payload)
+    const preview = buildBubblePreviewState(payload)
+    const measure = preservedReasoning ? bubbleMeasureString(payload) : text
 
-    const { width: bubbleWidth, height: bubbleHeight } = calcBubbleSize(text)
+    const { width: bubbleWidth, height: bubbleHeight } = calcBubbleSize(measure)
     bubbleSizeRef.current = { width: bubbleWidth, height: bubbleHeight }
 
     const pos = lastWinPosRef.current
@@ -312,7 +350,22 @@ export default function PetView() {
 
     safeProxyCall(() => proxy.setBounds?.({ x, y, width: bubbleWidth, height: bubbleHeight })
       ?? (proxy.setSize?.(bubbleWidth, bubbleHeight), proxy.setPosition?.(x, y)), 'set-bounds')
-    safeProxyCall(() => proxy.postMessage('bubble-update', text), 'post-bubble-update')
+    if (preservedReasoning) {
+      safeProxyCall(() => proxy.postMessage('bubble-update', {
+        reply: payload.reply,
+        reasoning: payload.reasoning,
+        reasoningPreview: preview.reasoningPreview,
+        reasoningChars: preview.reasoningChars,
+        hasReasoning: preview.hasReasoning,
+        statusLabel: preview.statusLabel,
+      }), 'post-bubble-update-preserved')
+      if (bubbleDetailProxyRef.current) {
+        const detailProxy = bubbleDetailProxyRef.current
+        safeProxyCall(() => detailProxy.postMessage('bubble-detail-update', payload), 'post-detail-update-preserved')
+      }
+    } else {
+      safeProxyCall(() => proxy.postMessage('bubble-update', text), 'post-bubble-update')
+    }
     safeProxyCall(() => proxy.setOpacity(1), 'set-opacity-1')
     if (!bubbleVisibleRef.current) {
       safeProxyCall(() => proxy.showInactive?.() ?? proxy.show(), 'show')
@@ -320,20 +373,75 @@ export default function PetView() {
     bubbleVisibleRef.current = true
 
     clearTimeout(bubbleTimerRef.current)
-    const duration = text.length > 40 ? 8000 : 5000
+    const duration = measure.length > 40 ? 8000 : 5000
     bubbleTimerRef.current = window.setTimeout(() => {
       safeProxyCall(() => proxy.setOpacity(0), 'set-opacity-0')
       bubbleVisibleRef.current = false
     }, duration)
-  }, [positionBubble, calcBubbleSize, safeProxyCall])
+  }, [positionBubble, calcBubbleSize, bubbleMeasureString, persistLatestBubblePayload, safeProxyCall])
+
+  const openBubbleDetail = useCallback(async () => {
+    const payload = latestBubblePayloadRef.current
+    if (!payload.reasoning.trim()) return
+
+    if (bubbleDetailProxyRef.current) {
+      const detailProxy = bubbleDetailProxyRef.current
+      safeProxyCall(() => detailProxy.postMessage('bubble-detail-update', payload), 'detail-update-existing')
+      safeProxyCall(() => detailProxy.show?.(), 'detail-show-existing')
+      safeProxyCall(() => detailProxy.focus?.(), 'detail-focus-existing')
+      return
+    }
+
+    const pos = lastWinPosRef.current
+    const displayBounds = boundsRef.current
+    const centerX = pos.x + WIN_SIZE / 2
+    const desiredX = Math.round(centerX - BUBBLE_DETAIL_WIDTH / 2)
+    const fallbackY = Math.max(0, pos.y - BUBBLE_DETAIL_HEIGHT - 12)
+    const x = displayBounds
+      ? Math.max(displayBounds.x, Math.min(desiredX, displayBounds.x + displayBounds.width - BUBBLE_DETAIL_WIDTH))
+      : desiredX
+    const y = displayBounds
+      ? Math.max(displayBounds.y, Math.min(fallbackY, displayBounds.y + displayBounds.height - BUBBLE_DETAIL_HEIGHT))
+      : fallbackY
+
+    try {
+      const proxy = await window.mulby.window.create('?view=bubble-detail', {
+        width: BUBBLE_DETAIL_WIDTH,
+        height: BUBBLE_DETAIL_HEIGHT,
+        minWidth: 320,
+        minHeight: 360,
+        x,
+        y,
+        title: '宠物思考',
+        type: 'default',
+        titleBar: true,
+        transparent: false,
+        alwaysOnTop: true,
+        resizable: true,
+        focusable: true,
+        skipTaskbar: true,
+      })
+      if (!proxy) return
+      bubbleDetailProxyRef.current = proxy
+      safeProxyCall(() => proxy.postMessage('bubble-detail-update', payload), 'detail-update-created')
+      safeProxyCall(() => proxy.focus?.(), 'detail-focus-created')
+    } catch (err) {
+      logPetPresentation('pet.bubble-detail.open-error', {
+        message: (err as Error)?.message ?? String(err),
+      })
+      bubbleDetailProxyRef.current = null
+    }
+  }, [safeProxyCall])
 
   const updateBubbleText = useCallback((payload: string | { reply: string; reasoning?: string }) => {
     const proxy = bubbleProxyRef.current
     if (!proxy) return
 
-    const reply = typeof payload === 'string' ? payload : payload.reply
-    const reasoning = typeof payload === 'string' ? '' : (payload.reasoning ?? '')
-    const measure = bubbleMeasureString(reply, reasoning)
+    const normalized = normalizeBubbleStreamPayload(payload)
+    latestBubblePayloadRef.current = normalized
+    persistLatestBubblePayload(normalized)
+    const preview = buildBubblePreviewState(normalized)
+    const measure = bubbleMeasureString(normalized)
     const { width: bubbleWidth, height: bubbleHeight } = calcBubbleSize(measure)
     const prev = bubbleSizeRef.current
     const pos = lastWinPosRef.current
@@ -353,10 +461,18 @@ export default function PetView() {
         ?? (proxy.setSize?.(bubbleWidth, bubbleHeight), proxy.setPosition?.(x, y)), 'set-bounds')
     }
 
-    if (typeof payload === 'string') {
-      safeProxyCall(() => proxy.postMessage('bubble-update', payload), 'post-bubble-update-text')
-    } else {
-      safeProxyCall(() => proxy.postMessage('bubble-update', { reply, reasoning }), 'post-bubble-update-obj')
+    safeProxyCall(() => proxy.postMessage('bubble-update', {
+      reply: normalized.reply,
+      reasoning: normalized.reasoning,
+      reasoningPreview: preview.reasoningPreview,
+      reasoningChars: preview.reasoningChars,
+      hasReasoning: preview.hasReasoning,
+      statusLabel: preview.statusLabel,
+    }), 'post-bubble-update-obj')
+
+    if (bubbleDetailProxyRef.current) {
+      const detailProxy = bubbleDetailProxyRef.current
+      safeProxyCall(() => detailProxy.postMessage('bubble-detail-update', normalized), 'post-detail-update')
     }
 
     clearTimeout(bubbleTimerRef.current)
@@ -366,7 +482,7 @@ export default function PetView() {
       safeProxyCall(() => proxy.setOpacity(0), 'set-opacity-0')
       bubbleVisibleRef.current = false
     }, duration)
-  }, [positionBubble, calcBubbleSize, bubbleMeasureString, safeProxyCall])
+  }, [positionBubble, calcBubbleSize, bubbleMeasureString, persistLatestBubblePayload, safeProxyCall])
 
   const setExpression = useCallback((expression: PetExpression, durationMs = 5000) => {
     logPetPresentation('pet.set-expression', {
@@ -470,7 +586,7 @@ export default function PetView() {
     })
 
     if (result) {
-      showBubble(result.text)
+      showBubble(result.text, { preserveReasoning: true })
       if (result.expression !== 'neutral') setExpression(result.expression)
       statsRef.current.recordChat()
     }
@@ -556,7 +672,7 @@ export default function PetView() {
     })
 
     if (result) {
-      showBubble(result.text)
+      showBubble(result.text, { preserveReasoning: true })
       if (result.expression !== 'neutral') setExpression(result.expression)
       statsRef.current.recordChat()
       statsRef.current.recordInteraction()
@@ -752,6 +868,11 @@ export default function PetView() {
     try {
       result = await window.mulby.menu.showContextMenu([
         { label: '对话', id: 'chat' },
+        {
+          label: latestBubblePayloadRef.current.reasoning.trim() ? '查看本轮思考' : '暂无本轮思考',
+          id: 'bubble_detail',
+          enabled: !!latestBubblePayloadRef.current.reasoning.trim(),
+        },
         { label: pomodoroLabel, id: 'pomodoro' },
         { type: 'separator', label: '' },
         { label: '猜谜语', id: 'game_riddle' },
@@ -783,6 +904,9 @@ export default function PetView() {
         break
       case 'chat':
         openChatInput()
+        break
+      case 'bubble_detail':
+        openBubbleDetail()
         break
       case 'pomodoro':
         togglePomodoro()
@@ -955,8 +1079,8 @@ export default function PetView() {
         resizable: false,
         focusable: false,
         skipTaskbar: true,
-        ignoreMouseEvents: true,
-        forwardMouseEvents: true,
+        ignoreMouseEvents: false,
+        forwardMouseEvents: false,
         visibleOnAllWorkspaces: true,
         visibleOnFullScreen: true,
         opacity: 0,
@@ -1134,6 +1258,21 @@ export default function PetView() {
         }
         case 'chat-history-updated': {
           void chatRef.current?.reloadHistoryFromStorage()
+          return
+        }
+        case 'bubble-detail-open': {
+          void openBubbleDetail()
+          return
+        }
+        case 'bubble-detail-ready': {
+          if (bubbleDetailProxyRef.current) {
+            const detailProxy = bubbleDetailProxyRef.current
+            safeProxyCall(() => detailProxy.postMessage('bubble-detail-update', latestBubblePayloadRef.current), 'post-detail-ready-update')
+          }
+          return
+        }
+        case 'bubble-detail-closed': {
+          bubbleDetailProxyRef.current = null
           return
         }
         case 'chat-message': {
@@ -1328,7 +1467,7 @@ export default function PetView() {
             },
           )
           if (result) {
-            showBubble(result.text)
+            showBubble(result.text, { preserveReasoning: true })
             if (result.expression !== 'neutral') setExpression(result.expression)
           }
         }
@@ -1455,6 +1594,10 @@ export default function PetView() {
       clearInterval(weatherTimerRef.current)
       reminderTimersRef.current.forEach(t => clearTimeout(t))
       reminderTimersRef.current = []
+      try {
+        bubbleDetailProxyRef.current?.close?.()
+      } catch {}
+      bubbleDetailProxyRef.current = null
       if (svgRendererRef.current) {
         svgRendererRef.current.destroy()
         svgRendererRef.current = null
