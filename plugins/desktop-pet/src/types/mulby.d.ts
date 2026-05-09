@@ -89,6 +89,7 @@ interface MulbyWindow {
   setSize(width: number, height: number): void
   setPosition(x: number, y: number): void
   setExpendHeight(height: number): void
+  getBounds?(): Promise<{ x: number; y: number; width: number; height: number } | null>
   center(): void
   focus(): void
   terminatePlugin(): void

@@ -31,8 +31,20 @@ import {
   inspectClipboardForAi,
   wrapUntrustedText,
 } from './engine/clipboard-policy'
+import {
+  resolvePetMousePassthroughForPoint,
+  shouldApplyMousePassthrough,
+  type PetMousePassthroughState,
+} from './engine/mouse-passthrough'
 
 const WIN_SIZE = 80
+
+interface WindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 const MOOD_EXPRESSION: Record<PetMood, PetExpression> = {
   ecstatic: 'excited',
@@ -161,6 +173,9 @@ export default function PetView() {
   const activeWindowTimerRef = useRef<number>(0)
   const lastActiveAppRef = useRef<string>('')
   const lastAppSwitchSpeakRef = useRef<number>(0)
+  const mousePassthroughRef = useRef<PetMousePassthroughState | null>(null)
+  const mousePassthroughPollRef = useRef<number>(0)
+  const windowBoundsRef = useRef<WindowBounds | null>(null)
 
   const calcBubbleSize = useCallback((text: string) => {
     const len = text.length
@@ -204,28 +219,86 @@ export default function PetView() {
     }
   }, [])
 
-  const safeIgnoreMouseEvents = useCallback((ignore: boolean, forward = false) => {
+  const applyMousePassthrough = useCallback((next: PetMousePassthroughState) => {
+    if (!shouldApplyMousePassthrough(mousePassthroughRef.current, next)) return
+
+    mousePassthroughRef.current = next
     try {
-      const r: unknown = forward
-        ? window.mulby.window.setIgnoreMouseEvents(ignore, { forward: true })
-        : window.mulby.window.setIgnoreMouseEvents(ignore)
+      const r: unknown = next.forward
+        ? window.mulby.window.setIgnoreMouseEvents(next.ignore, { forward: true })
+        : window.mulby.window.setIgnoreMouseEvents(next.ignore)
       if (r && typeof r === 'object' && typeof (r as Promise<unknown>).catch === 'function') {
         ;(r as Promise<unknown>).catch(err => {
           logPetPresentation('pet.set-ignore-mouse.error', {
-            ignore,
-            forward,
+            ignore: next.ignore,
+            forward: next.forward,
             message: (err as Error)?.message ?? String(err),
           })
         })
       }
     } catch (err) {
       logPetPresentation('pet.set-ignore-mouse.error', {
-        ignore,
-        forward,
+        ignore: next.ignore,
+        forward: next.forward,
         message: (err as Error)?.message ?? String(err),
       })
     }
   }, [])
+
+  const syncMousePassthroughFromPoint = useCallback((point: { x: number; y: number } | null) => {
+    const state = stateRef.current
+    const fallbackBounds = state
+      ? {
+        x: Math.round(state.position.x),
+        y: Math.round(state.position.y),
+        width: WIN_SIZE,
+        height: WIN_SIZE,
+      }
+      : null
+
+    applyMousePassthrough(resolvePetMousePassthroughForPoint(
+      point,
+      windowBoundsRef.current ?? fallbackBounds
+    ))
+  }, [applyMousePassthrough])
+
+  const syncMousePassthroughToCursor = useCallback(async () => {
+    try {
+      const cursor = await window.mulby.screen.getCursorScreenPoint()
+      syncMousePassthroughFromPoint(cursor)
+    } catch (err) {
+      logPetPresentation('pet.sync-ignore-mouse.error', {
+        message: (err as Error)?.message ?? String(err),
+      })
+      applyMousePassthrough({ ignore: true, forward: true })
+    }
+  }, [applyMousePassthrough, syncMousePassthroughFromPoint])
+
+  const syncMousePassthroughFromWindowBounds = useCallback(async () => {
+    try {
+      const bounds = await window.mulby.window.getBounds?.()
+      if (
+        bounds
+        && Number.isFinite(bounds.x)
+        && Number.isFinite(bounds.y)
+        && Number.isFinite(bounds.width)
+        && Number.isFinite(bounds.height)
+      ) {
+        windowBoundsRef.current = {
+          x: Math.round(bounds.x),
+          y: Math.round(bounds.y),
+          width: Math.max(1, Math.round(bounds.width)),
+          height: Math.max(1, Math.round(bounds.height)),
+        }
+      }
+    } catch (err) {
+      logPetPresentation('pet.window-bounds.error', {
+        message: (err as Error)?.message ?? String(err),
+      })
+    }
+
+    await syncMousePassthroughToCursor()
+  }, [syncMousePassthroughToCursor])
 
   const showBubble = useCallback((text: string) => {
     const proxy = bubbleProxyRef.current
@@ -699,7 +772,7 @@ export default function PetView() {
       })
     } finally {
       contextMenuOpenRef.current = false
-      safeIgnoreMouseEvents(true, true)
+      await syncMousePassthroughToCursor()
     }
 
     if (!result) return
@@ -740,7 +813,7 @@ export default function PetView() {
         } catch {}
         break
     }
-  }, [openSettings, openChatInput, togglePomodoro, startMiniGame, safeIgnoreMouseEvents])
+  }, [openSettings, openChatInput, togglePomodoro, startMiniGame, syncMousePassthroughToCursor])
 
   const init = useCallback(async () => {
     if (initedRef.current) return
@@ -863,7 +936,11 @@ export default function PetView() {
       Math.round(state.position.y)
     )
 
-    safeIgnoreMouseEvents(true, true)
+    await syncMousePassthroughFromWindowBounds()
+
+    mousePassthroughPollRef.current = window.setInterval(() => {
+      syncMousePassthroughFromWindowBounds()
+    }, 200)
 
     try {
       const bubbleProxy = await window.mulby.window.create('?view=bubble-overlay', {
@@ -927,6 +1004,8 @@ export default function PetView() {
         if (!s) return
 
         if (event.type === 'mouseMove') {
+          syncMousePassthroughFromPoint({ x: event.x, y: event.y })
+
           const prev = s.lastMousePos
           if (prev.x >= 0) {
             const dx = event.x - prev.x
@@ -1262,7 +1341,7 @@ export default function PetView() {
 
     lastTimeRef.current = performance.now()
     rafIdRef.current = requestAnimationFrame(gameLoop)
-  }, [])
+  }, [applyMousePassthrough, syncMousePassthroughFromPoint])
 
   const gameLoop = useCallback((timestamp: number) => {
     const state = stateRef.current
@@ -1333,6 +1412,7 @@ export default function PetView() {
     const newY = Math.round(state.position.y)
     if (newX !== lastWinPosRef.current.x || newY !== lastWinPosRef.current.y) {
       lastWinPosRef.current = { x: newX, y: newY }
+      windowBoundsRef.current = { x: newX, y: newY, width: WIN_SIZE, height: WIN_SIZE }
       window.mulby.window.setPosition(newX, newY)
 
       if (bubbleVisibleRef.current && bubbleProxyRef.current) {
@@ -1366,6 +1446,7 @@ export default function PetView() {
       if (waterTimerRef.current) clearInterval(waterTimerRef.current)
       if (clipboardTimerRef.current) clearInterval(clipboardTimerRef.current)
       if (activeWindowTimerRef.current) clearInterval(activeWindowTimerRef.current)
+      if (mousePassthroughPollRef.current) clearInterval(mousePassthroughPollRef.current)
       if (pomodoroRef.current) clearInterval(pomodoroRef.current)
       if (longPressRef.current) clearTimeout(longPressRef.current)
       clearTimeout(typingPauseTimerRef.current)
@@ -1394,10 +1475,10 @@ export default function PetView() {
       <div
         ref={containerRef}
         onMouseEnter={() => {
-          safeIgnoreMouseEvents(false)
+          applyMousePassthrough({ ignore: false, forward: false })
         }}
         onMouseLeave={() => {
-          safeIgnoreMouseEvents(true, true)
+          syncMousePassthroughToCursor()
         }}
         onPointerDown={(e) => {
           if (e.button !== 0) return
@@ -1431,7 +1512,7 @@ export default function PetView() {
             longPressRef.current = 0
           }
           longPressFiredRef.current = false
-          safeIgnoreMouseEvents(true, true)
+          syncMousePassthroughToCursor()
         }}
         onContextMenu={e => {
           e.preventDefault()
