@@ -7,7 +7,13 @@ import {
   type GeoContext,
   type PetChatHistoryItem,
 } from '../engine/ai-chat'
-import { stripPresentationMarkers } from '../engine/presentation'
+import {
+  ACTION_LIST,
+  EMOTION_LIST,
+  stripPresentationMarkers,
+  type PresentationIntent,
+} from '../engine/presentation'
+import { ALL_EXPRESSIONS, ALL_POSES, type PetExpression, type PetPose } from '../engine/pet-standard'
 import { normalizePersonality } from '../engine/message-validator'
 import type { PetStats, PetMood } from '../engine/pet-stats'
 import type { PetMemory } from '../engine/pet-memory'
@@ -111,7 +117,7 @@ export default function SettingsView() {
   const [personality, setPersonality] = useState<PetPersonality>(DEFAULT_PERSONALITY)
   const [models, setModels] = useState<Array<{ id: string; label: string }>>([])
   const [toast, setToast] = useState('')
-  const [tab, setTab] = useState<'personality' | 'stats' | 'memory' | 'achievements' | 'diary' | 'dialogue'>('personality')
+  const [tab, setTab] = useState<'personality' | 'stats' | 'memory' | 'achievements' | 'diary' | 'dialogue' | 'playground'>('personality')
   const [stats, setStats] = useState<PetStats | null>(null)
   const [memories, setMemories] = useState<PetMemory[]>([])
   const [memoryFilter, setMemoryFilter] = useState<'all' | 'pinned'>('all')
@@ -126,6 +132,7 @@ export default function SettingsView() {
   const [newReminderLabel, setNewReminderLabel] = useState('')
   const [newReminderTime, setNewReminderTime] = useState('09:00')
   const [chatHistory, setChatHistory] = useState<PetChatHistoryItem[]>([])
+  const [extractingMemory, setExtractingMemory] = useState(false)
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -442,6 +449,18 @@ export default function SettingsView() {
             <button className={`filter-btn ${memoryFilter === 'pinned' ? 'active' : ''}`} onClick={() => setMemoryFilter('pinned')}>固定</button>
           </div>
         </div>
+        <div className="memory-toolbar" style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button type="button" className="gen-btn" onClick={handleManualExtractMemory} disabled={extractingMemory}>
+            <Icon d={ICONS.plus} size={12} /> {extractingMemory ? '抽取中...' : '立即抽取记忆'}
+          </button>
+          <button type="button" className="gen-btn" onClick={handleRefreshMemories}>
+            <Icon d={ICONS.refresh} size={12} /> 刷新
+          </button>
+          <span className="field-hint" style={{ flex: 1, fontSize: 11, opacity: 0.7 }}>
+            说明：在助手回复写入对话历史后，会异步调用模型从最近几条对话里抽取 1 条「关于你的」事实/偏好/习惯/事件；若对话里没有有价值信息、模型返回空，则不会新增。
+            若长期处于「没有记忆」：请先在「性格」页选好文本模型；尽量和宠物多聊几句带个人信息的内容（仅系统触发的搭话往往抽不出记忆）；也可在本页点「立即抽取记忆」重试。
+          </span>
+        </div>
         {filtered.length === 0 && (
           <div className="memory-empty">
             {memoryFilter === 'pinned' ? '暂无固定记忆' : '宠物还没有形成记忆，多互动几次吧'}
@@ -624,6 +643,53 @@ export default function SettingsView() {
     )
   }
 
+  const handleManualExtractMemory = async () => {
+    if (extractingMemory) return
+    setExtractingMemory(true)
+    try {
+      window.mulby.window.sendToParent('settings-extract-memory')
+      showToast('已请求宠物抽取记忆，请稍后刷新查看')
+      setTimeout(async () => {
+        try {
+          const savedMems = await window.mulby.storage.get('pet-memories')
+          if (Array.isArray(savedMems)) {
+            const valid: PetMemory[] = []
+            for (const m of savedMems) {
+              if (!m || typeof m !== 'object') continue
+              const obj = m as Record<string, unknown>
+              if (typeof obj.id !== 'string' || typeof obj.content !== 'string') continue
+              valid.push(m as PetMemory)
+            }
+            setMemories(valid)
+          }
+        } catch (err) {
+          console.error('Refresh memories failed:', err)
+        }
+      }, 4500)
+    } finally {
+      setTimeout(() => setExtractingMemory(false), 4500)
+    }
+  }
+
+  const handleRefreshMemories = async () => {
+    try {
+      const savedMems = await window.mulby.storage.get('pet-memories')
+      if (Array.isArray(savedMems)) {
+        const valid: PetMemory[] = []
+        for (const m of savedMems) {
+          if (!m || typeof m !== 'object') continue
+          const obj = m as Record<string, unknown>
+          if (typeof obj.id !== 'string' || typeof obj.content !== 'string') continue
+          valid.push(m as PetMemory)
+        }
+        setMemories(valid)
+        showToast('已刷新')
+      }
+    } catch (err) {
+      console.error('Refresh memories failed:', err)
+    }
+  }
+
   const handleClearChatHistory = async () => {
     if (!window.confirm('确定清空全部对话历史吗？此操作不可恢复。')) return
     try {
@@ -689,6 +755,100 @@ export default function SettingsView() {
     )
   }
 
+  const triggerPetIntent = useCallback((intent: PresentationIntent) => {
+    try {
+      window.mulby.window.sendToParent('settings-trigger-action', { intent })
+      showToast(`已触发：${intent.face}${intent.pose ? '/' + intent.pose : ''}${intent.animation ? '/' + intent.animation : ''}`)
+    } catch (err) {
+      console.error('Trigger intent failed:', err)
+    }
+  }, [])
+
+  const renderPlayground = () => {
+    return (
+      <div className="panel-content">
+        <p className="field-hint" style={{ marginBottom: 12 }}>
+          以下为 `pet-standard` / `presentation` 里定义的表情、姿势、情绪与动作指令；点击会通过主窗口实时套用，与 AI 工具调用的表现一致。
+        </p>
+
+        <div className="field">
+          <label className="field-label">表情</label>
+          <div className="freq-row" style={{ flexWrap: 'wrap' }}>
+            {ALL_EXPRESSIONS.map((expr: PetExpression) => (
+              <button
+                key={`expr-${expr}`}
+                className="freq-btn"
+                onClick={() => triggerPetIntent({ face: expr, durationMs: 4000 })}
+              >{expr}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">姿势</label>
+          <div className="freq-row" style={{ flexWrap: 'wrap' }}>
+            {ALL_POSES.map((pose: PetPose) => (
+              <button
+                key={`pose-${pose}`}
+                className="freq-btn"
+                onClick={() => triggerPetIntent({ face: 'neutral', pose, durationMs: 4000 })}
+              >{pose}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">情绪 / 心情</label>
+          <div className="freq-row" style={{ flexWrap: 'wrap' }}>
+            {EMOTION_LIST.map(emotion => (
+              <button
+                key={`emo-${emotion}`}
+                className="freq-btn"
+                onClick={() => triggerPetIntent({ face: 'happy', emotion, durationMs: 4000 })}
+              >{emotion}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">动作 / 动画组合</label>
+          <div className="freq-row" style={{ flexWrap: 'wrap' }}>
+            {ACTION_LIST.map(action => (
+              <button
+                key={`act-${action}`}
+                className="freq-btn"
+                onClick={() => {
+                  const intent: PresentationIntent = (() => {
+                    if (action === 'jump') return { face: 'excited', pose: 'jump', emotion: 'excitement', animation: 'ascend', durationMs: 3500 }
+                    if (action === 'wave') return { face: 'happy', pose: 'wave', emotion: 'joy', animation: 'wiggle', durationMs: 3500 }
+                    if (action === 'sit') return { face: 'sleepy', pose: 'sit', durationMs: 4000 }
+                    if (action === 'sleep') return { face: 'sleepy', pose: 'sleep', emotion: 'sleepiness', durationMs: 5000 }
+                    if (action === 'cheer') return { face: 'excited', pose: 'wave', emotion: 'excitement', animation: 'wiggle', durationMs: 3500 }
+                    if (action === 'celebrate') return { face: 'excited', pose: 'wave', emotion: 'joy', animation: 'celebrate', durationMs: 4000 }
+                    if (action === 'wobble') return { face: 'surprised', pose: 'stand', emotion: 'surprise', animation: 'wobble', durationMs: 3500 }
+                    if (action === 'happy') return { face: 'happy', pose: 'wave', emotion: 'joy', animation: 'bounce', durationMs: 3500 }
+                    if (action === 'surprised') return { face: 'surprised', pose: 'stand', emotion: 'surprise', animation: 'phase', durationMs: 3500 }
+                    if (action.startsWith('move_')) {
+                      const dir = action.slice('move_'.length)
+                      const map: Record<string, [number, number]> = {
+                        left: [-80, 0], right: [80, 0], up: [0, -80], down: [0, 80],
+                        up_left: [-80, -80], up_right: [80, -80], down_left: [-80, 80], down_right: [80, 80],
+                      }
+                      const v = map[dir] ?? [0, 0]
+                      return { face: 'neutral', pose: 'walk_1', movement: { dx: v[0], dy: v[1] }, durationMs: 1800 }
+                    }
+                    return { face: 'neutral', pose: 'stand', durationMs: 3000 }
+                  })()
+                  triggerPetIntent(intent)
+                }}
+              >{action}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderDiary = () => {
     const sorted = [...diaryEntries].sort((a, b) => b.createdAt - a.createdAt)
     const moodEmoji: Record<string, string> = {
@@ -732,6 +892,7 @@ export default function SettingsView() {
           <button className={`tab ${tab === 'achievements' ? 'active' : ''}`} onClick={() => setTab('achievements')}>成就</button>
           <button className={`tab ${tab === 'diary' ? 'active' : ''}`} onClick={() => setTab('diary')}>日记</button>
           <button className={`tab ${tab === 'dialogue' ? 'active' : ''}`} onClick={() => setTab('dialogue')}>对话</button>
+          <button className={`tab ${tab === 'playground' ? 'active' : ''}`} onClick={() => setTab('playground')}>表现预览</button>
         </div>
       </div>
 
@@ -741,6 +902,7 @@ export default function SettingsView() {
         {tab === 'achievements' && renderAchievements()}
         {tab === 'diary' && renderDiary()}
         {tab === 'dialogue' && renderDialogue()}
+        {tab === 'playground' && renderPlayground()}
         {tab === 'personality' && <div className="panel-content">
           <div className="field">
             <label className="field-label">宠物名称</label>

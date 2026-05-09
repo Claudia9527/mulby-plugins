@@ -80,9 +80,18 @@ function tagMatchScore(memoryTags: string[], contextKeywords: string[]): number 
   return hits
 }
 
+export interface MemoryExtractStats {
+  attempts: number
+  successes: number
+  rejected: number
+  lastReason?: string
+  lastUpdatedAt?: number
+}
+
 export class PetMemoryController {
   private memories: PetMemory[] = []
   private conversationCount = 0
+  private extractStats: MemoryExtractStats = { attempts: 0, successes: 0, rejected: 0 }
 
   async load() {
     try {
@@ -189,6 +198,10 @@ export class PetMemoryController {
     this.save()
   }
 
+  getExtractStats(): MemoryExtractStats {
+    return { ...this.extractStats }
+  }
+
   async extractMemoryFromChat(
     model: string,
     recentMessages: Array<{ role: string; content: string }>
@@ -199,6 +212,9 @@ export class PetMemoryController {
 
     const ai = (window as any).mulby?.ai
     if (!ai || !model) return
+
+    this.extractStats.attempts++
+    this.extractStats.lastUpdatedAt = Date.now()
 
     const chatSummary = recentMessages
       .slice(-6)
@@ -232,9 +248,15 @@ export class PetMemoryController {
         skills: { mode: 'off' },
       })
 
-      if (!resp?.content) return
+      if (!resp?.content) {
+        this.recordReject('empty-response')
+        return
+      }
       const text = typeof resp.content === 'string' ? resp.content.trim() : ''
-      if (!text || text === 'null') return
+      if (!text || text === 'null') {
+        this.recordReject('null')
+        return
+      }
 
       const { data: parsed, reason } = extractJsonObject<{
         type?: string
@@ -244,17 +266,23 @@ export class PetMemoryController {
       }>(text)
       if (!parsed) {
         logPetPresentation('memory.extract.parse-failed', { reason, sample: text.slice(0, 80) })
+        this.recordReject('parse-failed')
         return
       }
       const type = typeof parsed.type === 'string' ? parsed.type.toLowerCase() : ''
       const content = typeof parsed.content === 'string' ? parsed.content.trim() : ''
       if (!MEMORY_TYPES.has(type) || !content) {
         logPetPresentation('memory.extract.invalid', { type, contentLen: content.length })
+        this.recordReject('schema-invalid')
         return
       }
-      if (content.length > MEMORY_CONTENT_MAX) return
+      if (content.length > MEMORY_CONTENT_MAX) {
+        this.recordReject('too-long')
+        return
+      }
       if (looksLikeInjection(content)) {
         logPetPresentation('memory.extract.rejected-injection', { contentSample: content.slice(0, 40) })
+        this.recordReject('injection')
         return
       }
       const importance = Math.max(1, Math.min(5, Math.round(Number(parsed.importance) || 3)))
@@ -270,10 +298,20 @@ export class PetMemoryController {
         pinned: false,
         tags,
       })
+      this.extractStats.successes++
+      this.extractStats.lastReason = 'success'
+      this.extractStats.lastUpdatedAt = Date.now()
     } catch (err) {
       logPetPresentation('memory.extract.error', {
         message: (err as Error)?.message ?? String(err),
       })
+      this.recordReject('exception')
     }
+  }
+
+  private recordReject(reason: string) {
+    this.extractStats.rejected++
+    this.extractStats.lastReason = reason
+    this.extractStats.lastUpdatedAt = Date.now()
   }
 }

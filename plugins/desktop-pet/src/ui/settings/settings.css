@@ -31,11 +31,23 @@
   gap: 2px;
   padding: 0 14px;
   flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.tab-bar::-webkit-scrollbar {
+  height: 3px;
+}
+
+.tab-bar::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+  border-radius: 2px;
 }
 
 .tab {
-  flex: 1;
-  padding: 8px 0;
+  flex: 0 0 auto;
+  padding: 8px 10px;
   border: none;
   background: transparent;
   color: var(--text-dim);
@@ -44,6 +56,7 @@
   cursor: pointer;
   border-bottom: 2px solid transparent;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .tab.active {

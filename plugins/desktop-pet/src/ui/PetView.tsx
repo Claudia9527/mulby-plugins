@@ -8,7 +8,7 @@ import {
 } from './engine/behavior'
 import type { PetState, DisplayBounds, BehaviorType } from './engine/types'
 import { PET_SIZE } from './engine/types'
-import { AIChatController, DEFAULT_PERSONALITY, type PetPersonality, type TriggerReason, type GeoContext, type PetReminder } from './engine/ai-chat'
+import { AIChatController, DEFAULT_PERSONALITY, type PetPersonality, type TriggerReason, type GeoContext, type PetReminder, type ActiveWindowContext } from './engine/ai-chat'
 import { checkFestival, checkBirthday } from './engine/festivals'
 import { AchievementController } from './engine/achievements'
 import { PetDiaryController } from './engine/pet-diary'
@@ -158,6 +158,9 @@ export default function PetView() {
   const clipboardTimerRef = useRef<number>(0)
   const settingsProxyRef = useRef<any>(null)
   const contextMenuOpenRef = useRef(false)
+  const activeWindowTimerRef = useRef<number>(0)
+  const lastActiveAppRef = useRef<string>('')
+  const lastAppSwitchSpeakRef = useRef<number>(0)
 
   const calcBubbleSize = useCallback((text: string) => {
     const len = text.length
@@ -497,12 +500,12 @@ export default function PetView() {
     }
     try {
       const proxy = await window.mulby.window.create('?view=settings', {
-        width: 380,
-        height: 540,
+        width: 680,
+        height: 720,
         title: '宠物设置',
         type: 'default',
         titleBar: true,
-        resizable: false,
+        resizable: true,
         transparent: false,
         alwaysOnTop: true,
       })
@@ -1033,6 +1036,19 @@ export default function PetView() {
           settingsProxyRef.current = null
           return
         }
+        case 'settings-trigger-action': {
+          const payload = args[0]
+          if (!payload || typeof payload !== 'object') return
+          const intent = (payload as any).intent
+          if (intent && typeof intent === 'object') {
+            applyPresentationIntent(intent, 'fallback')
+          }
+          return
+        }
+        case 'settings-extract-memory': {
+          void chatRef.current?.forceExtractMemory()
+          return
+        }
         case 'chat-history-updated': {
           void chatRef.current?.reloadHistoryFromStorage()
           return
@@ -1111,6 +1127,37 @@ export default function PetView() {
         }
       }
     }, 120_000)
+
+    activeWindowTimerRef.current = window.setInterval(async () => {
+      try {
+        const host = (window as any).mulby?.host
+        if (!host?.call) return
+        const result = await host.call('desktop-pet', 'getActiveWindow')
+        const data = result?.data ?? result
+        if (!data || typeof data !== 'object') return
+        const app = typeof data.app === 'string' ? data.app : ''
+        if (!app) return
+        const ctx: ActiveWindowContext = {
+          app: app.slice(0, 64),
+          title: typeof data.title === 'string' ? data.title.slice(0, 200) : '',
+          bundleId: typeof data.bundleId === 'string' ? data.bundleId.slice(0, 200) : undefined,
+          changedAt: typeof data.changedAt === 'number' ? data.changedAt : Date.now(),
+        }
+        chatRef.current?.setActiveWindow(ctx)
+        if (app !== lastActiveAppRef.current) {
+          lastActiveAppRef.current = app
+          const now = Date.now()
+          if (now - lastAppSwitchSpeakRef.current > 5 * 60_000) {
+            lastAppSwitchSpeakRef.current = now
+            triggerSpeak('app_switch')
+          }
+        }
+      } catch (err) {
+        logPetPresentation('active-window.fetch-error', {
+          message: (err as Error)?.message ?? String(err),
+        })
+      }
+    }, 3000)
 
     let waterMinutes = 0
     let restMinutes = 0
@@ -1314,6 +1361,7 @@ export default function PetView() {
       if (idleCheckRef.current) clearInterval(idleCheckRef.current)
       if (waterTimerRef.current) clearInterval(waterTimerRef.current)
       if (clipboardTimerRef.current) clearInterval(clipboardTimerRef.current)
+      if (activeWindowTimerRef.current) clearInterval(activeWindowTimerRef.current)
       if (pomodoroRef.current) clearInterval(pomodoroRef.current)
       if (longPressRef.current) clearTimeout(longPressRef.current)
       clearTimeout(typingPauseTimerRef.current)

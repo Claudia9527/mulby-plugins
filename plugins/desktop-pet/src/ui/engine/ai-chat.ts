@@ -96,7 +96,12 @@ const TRAIT_PROMPTS: Record<string, { desc: string; examples: string }> = {
   },
 }
 
-function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null, geo?: GeoContext | null): string {
+function buildSystemPrompt(
+  personality: PetPersonality,
+  stats?: PetStats | null,
+  geo?: GeoContext | null,
+  activeWindow?: ActiveWindowContext | null,
+): string {
   const traitData = TRAIT_PROMPTS[personality.trait]
   const traitDesc = personality.trait === 'custom'
     ? (personality.customPrompt || '你是一只可爱的桌面宠物。')
@@ -136,11 +141,19 @@ function buildSystemPrompt(personality: PetPersonality, stats?: PetStats | null,
     geoBlock += '\n- 你可以根据位置和天气自然地融入对话，但不要每次都提\n'
   }
 
+  let activeWindowBlock = ''
+  if (activeWindow && activeWindow.app) {
+    activeWindowBlock = `\n【用户当前正在使用的应用（仅供你参考，不要每句都提）】\n- 应用: ${activeWindow.app}`
+    if (activeWindow.bundleId) activeWindowBlock += ` (${activeWindow.bundleId})`
+    if (activeWindow.title) activeWindowBlock += `\n- 窗口标题: ${activeWindow.title.slice(0, 80)}`
+    activeWindowBlock += '\n- 这是上下文信息：标题里可能含私密内容，不要复述、不要照搬、不要询问敏感细节；如果用户切到了不同应用，可以自然地体现你注意到了\n'
+  }
+
   return `你是"${personality.name}"，一只住在用户桌面上的像素风格小幽灵宠物。
 
 【核心性格（最重要，严格遵守，每一句回复都必须完全符合此性格）】
 ${traitDesc}
-${statsBlock}${geoBlock}
+${statsBlock}${geoBlock}${activeWindowBlock}
 【表现控制（必须优先使用工具）】
 1) 回复过程中需要变脸时调用 pet_show_expression，例如开心用 happy/love，惊讶用 surprised，生气用 angry。
 2) 需要动作或动画时调用 pet_perform_action，例如 jump、wave、sit、sleep、cheer、celebrate、wobble。
@@ -205,6 +218,7 @@ export type TriggerReason =
   | 'late_night'
   | 'user_click'
   | 'behavior_change'
+  | 'app_switch'
 
 /** 与 Mulby storage 键 `pet-chat-history` 对应；assistant 可含模型思考过程（仅供展示，不参与 API） */
 export interface PetChatHistoryItem {
@@ -244,6 +258,13 @@ export interface GeoContext {
   temperature?: number
 }
 
+export interface ActiveWindowContext {
+  app: string
+  title?: string
+  bundleId?: string
+  changedAt?: number
+}
+
 export class AIChatController {
   private personality: PetPersonality
   private context: ChatContext = { history: [] }
@@ -256,6 +277,7 @@ export class AIChatController {
   private statsGetter: (() => PetStats) | null = null
   private statsController: PetStatsController | null = null
   private geoContext: GeoContext | null = null
+  private activeWindow: ActiveWindowContext | null = null
 
   constructor(personality?: PetPersonality) {
     this.personality = personality || DEFAULT_PERSONALITY
@@ -288,6 +310,14 @@ export class AIChatController {
 
   setGeoContext(geo: GeoContext | null) {
     this.geoContext = geo
+  }
+
+  setActiveWindow(info: ActiveWindowContext | null) {
+    this.activeWindow = info
+  }
+
+  getActiveWindow(): ActiveWindowContext | null {
+    return this.activeWindow
   }
 
   private async loadHistoryInternal() {
@@ -368,7 +398,7 @@ export class AIChatController {
     const contextKeywords = this.extractKeywords(userMessage)
     const memoryPrompt = this.memory.buildMemoryPrompt(contextKeywords)
     const stats = this.statsGetter?.() ?? null
-    const systemPrompt = buildSystemPrompt(this.personality, stats, this.geoContext) + memoryPrompt
+    const systemPrompt = buildSystemPrompt(this.personality, stats, this.geoContext, this.activeWindow) + memoryPrompt
 
     const historyMessages = this.context.history.slice(-CONTEXT_WINDOW).map(h => ({
       role: h.role as 'user' | 'assistant',
@@ -557,6 +587,7 @@ export class AIChatController {
           this.context.history = this.context.history.slice(-MAX_HISTORY)
         }
         this.saveHistory()
+        this.maybeExtractMemory()
       }
 
       if (!result) return null
@@ -597,7 +628,7 @@ export class AIChatController {
     const contextKeywords = this.extractKeywords(userText)
     const memoryPrompt = this.memory.buildMemoryPrompt(contextKeywords)
     const stats = this.statsGetter?.() ?? null
-    const systemPrompt = buildSystemPrompt(this.personality, stats, this.geoContext) + memoryPrompt
+    const systemPrompt = buildSystemPrompt(this.personality, stats, this.geoContext, this.activeWindow) + memoryPrompt
 
     const historyMessagesChat = this.context.history.slice(-CONTEXT_WINDOW).map(h => ({
       role: h.role as 'user' | 'assistant',
@@ -815,11 +846,24 @@ export class AIChatController {
     }
   }
 
+  /** 提取记忆：每次对话都尝试一次（包含首次），由 PetMemoryController 内部决定是否真正写入 */
   private maybeExtractMemory() {
     this.extractCounter++
-    if (this.extractCounter % 3 !== 0) return
     const recent = this.context.history.slice(-6).map(m => ({ role: m.role, content: m.content }))
-    this.memory.extractMemoryFromChat(this.personality.model, recent)
+    if (recent.length < 2) return
+    void this.memory.extractMemoryFromChat(this.personality.model, recent)
+  }
+
+  /** 暴露给设置页主动调用 */
+  async forceExtractMemory(): Promise<void> {
+    if (!this.personality.model) return
+    const recent = this.context.history.slice(-8).map(m => ({ role: m.role, content: m.content }))
+    if (recent.length < 2) return
+    await this.memory.extractMemoryFromChat(this.personality.model, recent)
+  }
+
+  getMemoryController(): PetMemoryController {
+    return this.memory
   }
 
   private extractKeywords(text: string): string[] {
@@ -832,6 +876,7 @@ export class AIChatController {
 
   private buildUserMessage(reason: TriggerReason, behavior: BehaviorType): string {
     const hour = new Date().getHours()
+    const app = this.activeWindow?.app ? `（用户刚切到 ${this.activeWindow.app}）` : ''
 
     switch (reason) {
       case 'idle':
@@ -846,6 +891,8 @@ export class AIChatController {
         return `[用户点击了你，想和你互动]`
       case 'behavior_change':
         return `[你现在的状态是：${behavior}]`
+      case 'app_switch':
+        return `[用户切换到了新的应用窗口${app}，自然地搭句话即可，不要直接照念应用名]`
       default:
         return `[打个招呼吧]`
     }
