@@ -40,25 +40,7 @@ export const ALL_POSES: PetPose[] = [
  * These are the SVGs that must be generated for each pet.
  */
 export const CORE_SPRITES: PetSpriteKey[] = [
-  'stand_neutral',
-  'stand_happy',
-  'stand_sad',
-  'stand_surprised',
-  'stand_sleepy',
-  'stand_angry',
-  'stand_excited',
-  'stand_shy',
-  'stand_love',
-  'walk_1_neutral',
-  'walk_2_neutral',
-  'sit_neutral',
-  'sit_happy',
-  'sit_sleepy',
-  'sleep_sleepy',
-  'jump_excited',
-  'jump_happy',
-  'wave_happy',
-  'wave_neutral',
+  ...ALL_POSES.flatMap(pose => ALL_EXPRESSIONS.map(expression => `${pose}_${expression}` as PetSpriteKey)),
 ]
 
 export interface PetSpriteSet {

@@ -4,7 +4,7 @@
  * Only eyes, highlights, blush, and mouth change per expression.
  */
 
-import type { PetSpriteSet, PetSpriteKey } from './pet-standard'
+import { ALL_EXPRESSIONS, ALL_POSES, type PetExpression, type PetPose, type PetSpriteSet, type PetSpriteKey } from './pet-standard'
 
 // ====== Solid white fill covering entire ghost silhouette (prevents see-through) ======
 
@@ -103,6 +103,18 @@ const SHY: FaceParts = {
   mouth: '',
 }
 
+const FACE_BY_EXPRESSION: Record<PetExpression, FaceParts> = {
+  neutral: NEUTRAL,
+  happy: HAPPY,
+  sad: SAD,
+  surprised: SURPRISED,
+  sleepy: SLEEPY,
+  angry: ANGRY,
+  excited: EXCITED,
+  shy: SHY,
+  love: LOVE,
+}
+
 function buildSprite(face: FaceParts): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="19 19 26 24" shape-rendering="crispEdges">${BODY_FILL}${BODY_MAIN}${BODY_OUTLINE}${BODY_DARK}${BODY_SHADOW}${BODY_SHADOW2}${face.eyes}${face.highlights}${face.blush}${face.mouth}</svg>`
 }
@@ -110,36 +122,12 @@ function buildSprite(face: FaceParts): string {
 function buildSpriteSet(): PetSpriteSet {
   const sprites: Partial<Record<PetSpriteKey, string>> = {}
 
-  sprites['stand_neutral'] = buildSprite(NEUTRAL)
-  sprites['stand_happy'] = buildSprite(HAPPY)
-  sprites['stand_sad'] = buildSprite(SAD)
-  sprites['stand_surprised'] = buildSprite(SURPRISED)
-  sprites['stand_sleepy'] = buildSprite(SLEEPY)
-  sprites['stand_angry'] = buildSprite(ANGRY)
-  sprites['stand_excited'] = buildSprite(EXCITED)
-  sprites['stand_shy'] = buildSprite(SHY)
-  sprites['stand_love'] = buildSprite(LOVE)
-
-  sprites['walk_1_neutral'] = buildSprite(NEUTRAL)
-  sprites['walk_1_happy'] = buildSprite(HAPPY)
-  sprites['walk_2_neutral'] = buildSprite(NEUTRAL)
-  sprites['walk_2_happy'] = buildSprite(HAPPY)
-
-  sprites['sit_neutral'] = buildSprite(SLEEPY)
-  sprites['sit_happy'] = buildSprite(HAPPY)
-  sprites['sit_sleepy'] = buildSprite(SLEEPY)
-
-  sprites['sleep_sleepy'] = buildSprite(SLEEPY)
-  sprites['sleep_neutral'] = buildSprite(SLEEPY)
-
-  sprites['jump_neutral'] = buildSprite(SURPRISED)
-  sprites['jump_happy'] = buildSprite(HAPPY)
-  sprites['jump_surprised'] = buildSprite(SURPRISED)
-  sprites['jump_excited'] = buildSprite(EXCITED)
-
-  sprites['wave_happy'] = buildSprite(HAPPY)
-  sprites['wave_neutral'] = buildSprite(NEUTRAL)
-  sprites['wave_excited'] = buildSprite(EXCITED)
+  for (const pose of ALL_POSES) {
+    for (const expression of ALL_EXPRESSIONS) {
+      const key = `${pose}_${expression}` as PetSpriteKey
+      sprites[key] = buildSprite(faceForPoseExpression(pose, expression))
+    }
+  }
 
   return {
     id: 'ghost_cute',
@@ -148,6 +136,10 @@ function buildSpriteSet(): PetSpriteSet {
     sprites,
     createdAt: Date.now(),
   }
+}
+
+function faceForPoseExpression(_pose: PetPose, expression: PetExpression): FaceParts {
+  return FACE_BY_EXPRESSION[expression]
 }
 
 export const SLIME_SPRITE_SET = buildSpriteSet()
