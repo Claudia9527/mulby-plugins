@@ -155,10 +155,10 @@ function buildSystemPrompt(
 ${traitDesc}
 ${statsBlock}${geoBlock}${activeWindowBlock}
 【表现控制（必须优先使用工具）】
-1) 回复过程中需要变脸时调用 pet_show_expression，例如开心用 happy/love，惊讶用 surprised，生气用 angry。
+1) 回复过程中需要变脸时调用 pet_show_expression，例如开心用 happy/love，疑惑用 curious/confused，专注用 focused，害怕用 scared，得意用 proud，晕乎用 dizzy，生气用 angry。
 2) 需要动作或动画时调用 pet_perform_action，例如 jump、wave、sit、sleep、cheer、celebrate、wobble。
 3) 需要移动时调用 pet_move，direction 可用 left/right/up/down/up_left/up_right/down_left/down_right。
-4) 回复影响长期心情时调用 pet_update_mood，emotion 可用 joy, happy, surprise, surprised, excitement, excited, sadness, sad, anger, angry, calm, love 等。
+4) 回复影响长期心情时调用 pet_update_mood，emotion 可用 joy, happy, curiosity, curious, confusion, confused, focus, focused, pride, proud, fear, scared, dizziness, dizzy, surprise, excitement, sadness, anger, calm, love 等。
 5) 可以在同一轮中多次调用工具，让宠物随着流式回复同步变化。
 6) 若工具不可用，才在正文末尾单独一行添加：<<<PET {"face":"happy","pose":"wave","emotion":"joy"}>>>，不要夹在句子中间。
 7) 推理模型若有思考过程，正常输出 reasoning；用户会在气泡上方看到灰色「思考」区域，请保持思考简洁。

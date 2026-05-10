@@ -78,6 +78,8 @@ function behaviorToPose(behavior: BehaviorType): PetPose {
       return 'sleep'
     case 'jump':
       return 'jump'
+    case 'surprised':
+      return 'stand'
     case 'happy':
     case 'cheer':
     case 'celebrate':
@@ -94,11 +96,13 @@ function behaviorToExpression(behavior: BehaviorType): PetExpression {
     case 'cheer':
       return 'excited'
     case 'celebrate':
-      return 'happy'
+      return 'love'
     case 'surprised':
       return 'surprised'
+    case 'look':
+      return 'curious'
     case 'wobble':
-      return 'surprised'
+      return 'dizzy'
     case 'sleep':
       return 'sleepy'
     case 'sit':

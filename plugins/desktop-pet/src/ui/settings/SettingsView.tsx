@@ -10,6 +10,7 @@ import {
 import {
   ACTION_LIST,
   EMOTION_LIST,
+  presentationIntentForAction,
   stripPresentationMarkers,
   type PresentationIntent,
 } from '../engine/presentation'
@@ -66,6 +67,16 @@ function StatsIcon({ icon, children }: { icon: keyof typeof ICONS; children: Rea
 const MOOD_LABELS: Record<PetMood, string> = {
   ecstatic: '欣喜若狂', happy: '开心', content: '满足', neutral: '平静',
   bored: '无聊', lonely: '孤独', sad: '难过', grumpy: '暴躁', sleepy: '困倦',
+}
+
+const PLAYGROUND_POSE_FACE: Record<PetPose, PetExpression> = {
+  stand: 'neutral',
+  walk_1: 'neutral',
+  walk_2: 'curious',
+  sit: 'sleepy',
+  sleep: 'sleepy',
+  jump: 'excited',
+  wave: 'happy',
 }
 
 const TRAITS = [
@@ -833,7 +844,11 @@ export default function SettingsView() {
               <button
                 key={`pose-${pose}`}
                 className="freq-btn"
-                onClick={() => triggerPetIntent({ face: 'neutral', pose, durationMs: 4000 })}
+                onClick={() => triggerPetIntent({
+                  face: PLAYGROUND_POSE_FACE[pose],
+                  pose,
+                  durationMs: pose === 'sleep' ? 5000 : 4000,
+                })}
               >{pose}</button>
             ))}
           </div>
@@ -860,27 +875,12 @@ export default function SettingsView() {
                 key={`act-${action}`}
                 className="freq-btn"
                 onClick={() => {
-                  const intent: PresentationIntent = (() => {
-                    if (action === 'jump') return { face: 'excited', pose: 'jump', emotion: 'excitement', animation: 'ascend', durationMs: 3500 }
-                    if (action === 'wave') return { face: 'happy', pose: 'wave', emotion: 'joy', animation: 'wiggle', durationMs: 3500 }
-                    if (action === 'sit') return { face: 'sleepy', pose: 'sit', durationMs: 4000 }
-                    if (action === 'sleep') return { face: 'sleepy', pose: 'sleep', emotion: 'sleepiness', durationMs: 5000 }
-                    if (action === 'cheer') return { face: 'excited', pose: 'wave', emotion: 'excitement', animation: 'wiggle', durationMs: 3500 }
-                    if (action === 'celebrate') return { face: 'excited', pose: 'wave', emotion: 'joy', animation: 'celebrate', durationMs: 4000 }
-                    if (action === 'wobble') return { face: 'surprised', pose: 'stand', emotion: 'surprise', animation: 'wobble', durationMs: 3500 }
-                    if (action === 'happy') return { face: 'happy', pose: 'wave', emotion: 'joy', animation: 'bounce', durationMs: 3500 }
-                    if (action === 'surprised') return { face: 'surprised', pose: 'stand', emotion: 'surprise', animation: 'phase', durationMs: 3500 }
-                    if (action.startsWith('move_')) {
-                      const dir = action.slice('move_'.length)
-                      const map: Record<string, [number, number]> = {
-                        left: [-80, 0], right: [80, 0], up: [0, -80], down: [0, 80],
-                        up_left: [-80, -80], up_right: [80, -80], down_left: [-80, 80], down_right: [80, 80],
-                      }
-                      const v = map[dir] ?? [0, 0]
-                      return { face: 'neutral', pose: 'walk_1', movement: { dx: v[0], dy: v[1] }, durationMs: 1800 }
-                    }
-                    return { face: 'neutral', pose: 'stand', durationMs: 3000 }
-                  })()
+                  const durationMs = action.startsWith('move_') || action === 'chase' || action === 'wander' || action === 'walk'
+                    ? 1800
+                    : action === 'sleep'
+                      ? 5000
+                      : 3500
+                  const intent = presentationIntentForAction(action, { durationMs })
                   triggerPetIntent(intent)
                 }}
               >{action}</button>

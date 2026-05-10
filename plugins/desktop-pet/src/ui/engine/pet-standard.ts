@@ -15,6 +15,12 @@ export type PetExpression =
   | 'excited'
   | 'shy'
   | 'love'
+  | 'curious'
+  | 'confused'
+  | 'proud'
+  | 'scared'
+  | 'focused'
+  | 'dizzy'
 
 export type PetPose =
   | 'stand'
@@ -28,7 +34,8 @@ export type PetPose =
 export type PetSpriteKey = `${PetPose}_${PetExpression}`
 
 export const ALL_EXPRESSIONS: PetExpression[] = [
-  'neutral', 'happy', 'sad', 'surprised', 'sleepy', 'angry', 'excited', 'shy', 'love'
+  'neutral', 'happy', 'sad', 'surprised', 'sleepy', 'angry', 'excited', 'shy', 'love',
+  'curious', 'confused', 'proud', 'scared', 'focused', 'dizzy'
 ]
 
 export const ALL_POSES: PetPose[] = [
@@ -82,22 +89,25 @@ export const EXPRESSION_FROM_EMOTION: Record<string, PetExpression> = {
   gratitude: 'happy',
   amusement: 'excited',
   excitement: 'excited',
-  curiosity: 'surprised',
+  curiosity: 'curious',
   surprise: 'surprised',
-  confusion: 'surprised',
+  confusion: 'confused',
   sadness: 'sad',
   disappointment: 'sad',
   worry: 'sad',
   anger: 'angry',
   annoyance: 'angry',
-  fear: 'surprised',
+  fear: 'scared',
   sleepiness: 'sleepy',
   tiredness: 'sleepy',
   calm: 'neutral',
   shyness: 'shy',
   embarrassment: 'shy',
-  pride: 'happy',
-  nervousness: 'surprised',
+  pride: 'proud',
+  nervousness: 'scared',
+  focus: 'focused',
+  concentration: 'focused',
+  dizziness: 'dizzy',
 }
 
 export function emotionToExpression(emotion: string): PetExpression {

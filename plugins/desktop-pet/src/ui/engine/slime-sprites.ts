@@ -4,7 +4,7 @@
  * Only eyes, highlights, blush, and mouth change per expression.
  */
 
-import { ALL_EXPRESSIONS, ALL_POSES, type PetExpression, type PetPose, type PetSpriteSet, type PetSpriteKey } from './pet-standard'
+import { ALL_EXPRESSIONS, ALL_POSES, type PetExpression, type PetSpriteSet, type PetSpriteKey } from './pet-standard'
 
 // ====== Solid white fill covering entire ghost silhouette (prevents see-through) ======
 
@@ -103,6 +103,54 @@ const SHY: FaceParts = {
   mouth: '',
 }
 
+// Curious: uneven raised eyes and a tiny question mouth
+const CURIOUS: FaceParts = {
+  eyes: `<path fill="#1A1916" d="M27 27h2v1H27zM35 28h2v1H35zM27 28h3v1H27zM34 29h3v1H34zM28 29h1v1H28zM35 30h1v1H35z"/>`,
+  highlights: `<path fill="#F7F7F7" d="M28 28h1v1H28zM35 29h1v1H35z"/>`,
+  blush: '',
+  mouth: `<path fill="#1A1916" d="M32 31h1v1H32z"/>`,
+}
+
+// Confused: mismatched eyes and a crooked mouth
+const CONFUSED: FaceParts = {
+  eyes: `<path fill="#1A1916" d="M27 28h3v1H27zM35 27h1v1H35zM34 28h3v1H34zM28 29h1v1H28zM36 29h1v1H36z"/>`,
+  highlights: '',
+  blush: '',
+  mouth: `<path fill="#1A1916" d="M31 31h1v1H31zM32 32h2v1H32z"/>`,
+}
+
+// Proud: confident closed eyes and a small smirk
+const PROUD: FaceParts = {
+  eyes: `<path fill="#1A1916" d="M27 28h1v1H27zM28 29h2v1H28zM34 29h2v1H34zM36 28h1v1H36z"/>`,
+  highlights: '',
+  blush: `<path fill="#CF8E8C" d="M26 31h2v1H26zM36 31h2v1H36z"/>`,
+  mouth: `<path fill="#1A1916" d="M31 31h2v1H31zM33 30h1v1H33z"/>`,
+}
+
+// Scared: wide eyes, tiny mouth, and a cold sweat pixel
+const SCARED: FaceParts = {
+  eyes: `<path fill="#1A1916" d="M27 27h3v1H27zM34 27h3v1H34zM27 28h1v1H27zM29 28h1v1H29zM34 28h1v1H34zM36 28h1v1H36zM27 29h3v1H27zM34 29h3v1H34z"/>`,
+  highlights: `<path fill="#8ECFE3" d="M37 26h1v1H37zM38 27h1v1H38zM37 28h1v1H37z"/>`,
+  blush: '',
+  mouth: `<path fill="#1A1916" d="M31 31h2v1H31zM31 32h2v1H31z"/>`,
+}
+
+// Focused: narrowed eyes and a firm mouth
+const FOCUSED: FaceParts = {
+  eyes: `<path fill="#1A1916" d="M27 28h4v1H27zM33 28h4v1H33zM28 29h2v1H28zM34 29h2v1H34z"/>`,
+  highlights: '',
+  blush: '',
+  mouth: `<path fill="#1A1916" d="M30 31h4v1H30z"/>`,
+}
+
+// Dizzy: crossed/spiral-like pixel eyes
+const DIZZY: FaceParts = {
+  eyes: `<path fill="#1A1916" d="M27 27h1v1H27zM29 27h1v1H29zM34 27h1v1H34zM36 27h1v1H36zM28 28h1v1H28zM35 28h1v1H35zM27 29h1v1H27zM29 29h1v1H29zM34 29h1v1H34zM36 29h1v1H36z"/>`,
+  highlights: '',
+  blush: `<path fill="#CF8E8C" d="M26 31h2v1H26zM36 31h2v1H36z"/>`,
+  mouth: `<path fill="#1A1916" d="M31 32h2v1H31z"/>`,
+}
+
 const FACE_BY_EXPRESSION: Record<PetExpression, FaceParts> = {
   neutral: NEUTRAL,
   happy: HAPPY,
@@ -113,6 +161,12 @@ const FACE_BY_EXPRESSION: Record<PetExpression, FaceParts> = {
   excited: EXCITED,
   shy: SHY,
   love: LOVE,
+  curious: CURIOUS,
+  confused: CONFUSED,
+  proud: PROUD,
+  scared: SCARED,
+  focused: FOCUSED,
+  dizzy: DIZZY,
 }
 
 function buildSprite(face: FaceParts): string {
@@ -125,7 +179,7 @@ function buildSpriteSet(): PetSpriteSet {
   for (const pose of ALL_POSES) {
     for (const expression of ALL_EXPRESSIONS) {
       const key = `${pose}_${expression}` as PetSpriteKey
-      sprites[key] = buildSprite(faceForPoseExpression(pose, expression))
+      sprites[key] = buildSprite(faceForExpression(expression))
     }
   }
 
@@ -138,7 +192,7 @@ function buildSpriteSet(): PetSpriteSet {
   }
 }
 
-function faceForPoseExpression(_pose: PetPose, expression: PetExpression): FaceParts {
+function faceForExpression(expression: PetExpression): FaceParts {
   return FACE_BY_EXPRESSION[expression]
 }
 
