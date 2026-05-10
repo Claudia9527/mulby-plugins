@@ -5,6 +5,7 @@ export type ApiCategoryId =
   | 'system'
   | 'plugin'
   | 'ai-media'
+  | 'diagnostics'
   | 'restricted'
 
 export interface ApiCategory {
@@ -70,6 +71,12 @@ export const categoryCatalog: ApiCategory[] = [
     order: 60
   },
   {
+    id: 'diagnostics',
+    label: 'Diagnostics',
+    description: 'Plugin-local logging, log inspection, and live log subscriptions.',
+    order: 70
+  },
+  {
     id: 'restricted',
     label: 'Internal or Settings-Scoped APIs',
     description: 'Documented boundaries for host settings, system pages, and internal-only surfaces.',
@@ -83,7 +90,24 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Plugin Manifest',
     category: 'plugin',
     contexts: ['manifest'],
-    methods: ['manifest.json', 'features', 'permissions', 'pluginSetting', 'window', 'tools'],
+    methods: [
+      'manifest.id',
+      'manifest.name',
+      'manifest.version',
+      'manifest.displayName',
+      'manifest.description',
+      'manifest.main',
+      'manifest.ui',
+      'manifest.preload',
+      'manifest.icon',
+      'manifest.features',
+      'manifest.permissions',
+      'manifest.pluginSetting',
+      'manifest.window',
+      'manifest.tools',
+      'manifest.platform',
+      'manifest.assets'
+    ],
     summary: 'Defines the plugin contract, trigger commands, permissions, AI tools, window behavior, and runtime settings.'
   },
   {
@@ -91,7 +115,7 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Lifecycle & Run Context',
     category: 'plugin',
     contexts: ['backend'],
-    methods: ['onLoad', 'onUnload', 'onEnable', 'onDisable', 'run'],
+    methods: ['onLoad', 'onUnload', 'onEnable', 'onDisable', 'run', 'onPluginInit', 'onPluginAttach', 'onPluginDetached', 'onPluginOut', 'onPluginLaunchStart', 'onPluginLaunchEnd'],
     summary: 'Backend lifecycle hooks and feature invocation entry points.'
   },
   {
@@ -115,7 +139,36 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Storage',
     category: 'data',
     contexts: ['renderer', 'backend'],
-    methods: ['storage.get', 'storage.set', 'storage.remove', 'storage.clear', 'storage.keys', 'storage.encrypted', 'storage.attachment'],
+    methods: [
+      'storage.get',
+      'storage.set',
+      'storage.remove',
+      'storage.getAll',
+      'storage.getAllWithMeta',
+      'storage.listNamespaces',
+      'storage.clear',
+      'storage.keys',
+      'storage.has',
+      'storage.bulkSet',
+      'storage.list',
+      'storage.getMany',
+      'storage.setMany',
+      'storage.getMeta',
+      'storage.setWithVersion',
+      'storage.removeWithVersion',
+      'storage.transaction',
+      'storage.append',
+      'storage.watch',
+      'storage.encrypted.set',
+      'storage.encrypted.get',
+      'storage.encrypted.remove',
+      'storage.encrypted.has',
+      'storage.attachment.put',
+      'storage.attachment.get',
+      'storage.attachment.getType',
+      'storage.attachment.remove',
+      'storage.attachment.list'
+    ],
     summary: 'Stores plugin settings, encrypted values, and attachment blobs.'
   },
   {
@@ -123,7 +176,7 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Filesystem',
     category: 'files-network',
     contexts: ['renderer', 'backend'],
-    methods: ['filesystem.readFile', 'filesystem.writeFile', 'filesystem.exists', 'filesystem.readdir', 'filesystem.mkdir', 'filesystem.stat', 'filesystem.copy', 'filesystem.move', 'filesystem.unlink', 'filesystem.join'],
+    methods: ['filesystem.readFile', 'filesystem.writeFile', 'filesystem.exists', 'filesystem.readdir', 'filesystem.mkdir', 'filesystem.stat', 'filesystem.copy', 'filesystem.move', 'filesystem.unlink', 'filesystem.extname', 'filesystem.join', 'filesystem.dirname', 'filesystem.basename', 'filesystem.getDataPath'],
     summary: 'Reads, writes, inspects, and moves files. Backend path helpers are shown separately.'
   },
   {
@@ -166,7 +219,7 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     category: 'files-network',
     contexts: ['renderer', 'backend'],
     permissions: ['runCommand'],
-    methods: ['shell.openPath', 'shell.openExternal', 'shell.showItemInFolder', 'shell.openFolder', 'shell.trashItem', 'shell.beep', 'shell.runCommand', 'shell.getRunCommandPolicy', 'shell.listRunCommandAudit'],
+    methods: ['shell.openPath', 'shell.openExternal', 'shell.showItemInFolder', 'shell.openFolder', 'shell.trashItem', 'shell.beep', 'shell.runCommand', 'shell.getRunCommandPolicy', 'shell.updateRunCommandPolicy', 'shell.listRunCommandAudit', 'shell.clearRunCommandAudit', 'shell.clearRunCommandTrusted'],
     summary: 'Opens paths and URLs, plays system sounds, and demonstrates policy-protected command execution.'
   },
   {
@@ -191,7 +244,7 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Window',
     category: 'ui',
     contexts: ['renderer'],
-    methods: ['window.hide', 'window.show', 'window.focus', 'window.setTitle', 'window.setSize', 'window.setBounds', 'window.getBounds', 'window.detach', 'window.create', 'window.findInPage', 'window.startDrag', 'window.setOpacity', 'window.onWindowStateChange'],
+    methods: ['window.hide', 'window.show', 'window.showInactive', 'window.focus', 'window.setTitle', 'window.setSize', 'window.setPosition', 'window.setBounds', 'window.getBounds', 'window.setExpendHeight', 'window.invalidate', 'window.center', 'window.setAlwaysOnTop', 'window.setOpacity', 'window.getOpacity', 'window.setBackgroundThrottling', 'window.setIgnoreMouseEvents', 'window.setVisibleOnAllWorkspaces', 'window.setFullScreen', 'window.detach', 'window.close', 'window.terminatePlugin', 'window.showPluginMenu', 'window.reload', 'window.getMode', 'window.getWindowType', 'window.getState', 'window.minimize', 'window.maximize', 'window.resizeDrag', 'window.create', 'window.sendToParent', 'window.onChildMessage', 'window.findInPage', 'window.stopFindInPage', 'window.startDrag', 'window.onWindowStateChange'],
     summary: 'Controls the current plugin window, detached windows, child windows, search in page, drag, and opacity.'
   },
   {
@@ -231,22 +284,72 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Plugin Management',
     category: 'plugin',
     contexts: ['renderer'],
-    methods: ['plugin.getAll', 'plugin.listCommands', 'plugin.search', 'plugin.run', 'plugin.runCommand', 'plugin.getRecentUsed', 'plugin.pinFeature', 'plugin.hideFeature', 'plugin.install', 'plugin.enable', 'plugin.disable', 'plugin.uninstall', 'plugin.listBackground'],
+    methods: [
+      'plugin.getAll',
+      'plugin.listCommands',
+      'plugin.search',
+      'plugin.run',
+      'plugin.runCommand',
+      'plugin.getRecentUsed',
+      'plugin.getSearchPreferences',
+      'plugin.pinFeature',
+      'plugin.unpinFeature',
+      'plugin.hideFeature',
+      'plugin.unhideFeature',
+      'plugin.removeRecentUsage',
+      'plugin.resolveDroppedFilePaths',
+      'plugin.install',
+      'plugin.enable',
+      'plugin.disable',
+      'plugin.uninstall',
+      'plugin.getReadme',
+      'plugin.listBackground',
+      'plugin.startBackground',
+      'plugin.stopBackground',
+      'plugin.getBackgroundInfo',
+      'plugin.stopPlugin',
+      'plugin.prewarm',
+      'plugin.listCommandShortcuts',
+      'plugin.bindCommandShortcut',
+      'plugin.unbindCommandShortcut',
+      'plugin.validateCommandShortcut',
+      'plugin.setCommandDisabled',
+      'plugin.redirect',
+      'plugin.outPlugin',
+      'plugin.mainPushSelect',
+      'plugin.getMainPushPlugins'
+    ],
     summary: 'Discovers, searches, runs, and manages plugins and command shortcuts.'
+  },
+  {
+    code: 'plugin-store',
+    title: 'Plugin Store',
+    category: 'plugin',
+    contexts: ['renderer'],
+    methods: ['pluginStore.fetch', 'pluginStore.installFromUrl', 'pluginStore.checkUpdatesInstalled', 'pluginStore.updateAll'],
+    summary: 'Reads plugin store entries, checks installed plugin updates, and performs guarded install/update flows.'
   },
   {
     code: 'features',
     title: 'Dynamic Features',
     category: 'plugin',
     contexts: ['backend'],
-    methods: ['features.getFeatures', 'features.setFeature', 'features.removeFeature', 'features.onMainPush', 'features.onMainPushSelect'],
+    methods: [
+      'features.getFeatures',
+      'features.setFeature',
+      'features.removeFeature',
+      'features.onMainPush',
+      'features.onMainPushSelect',
+      'features.redirectHotKeySetting',
+      'features.redirectAiModelsSetting'
+    ],
     summary: 'Adds or removes runtime command entries and supports mainPush dynamic options.'
   },
   {
     code: 'messaging',
     title: 'Messaging',
     category: 'plugin',
-    contexts: ['renderer', 'backend'],
+    contexts: ['backend'],
     methods: ['messaging.send', 'messaging.broadcast', 'messaging.on', 'messaging.off'],
     summary: 'Sends direct and broadcast messages between plugins.'
   },
@@ -255,7 +358,26 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Scheduler',
     category: 'plugin',
     contexts: ['renderer', 'backend'],
-    methods: ['scheduler.schedule', 'scheduler.cancel', 'scheduler.pause', 'scheduler.resume', 'scheduler.get', 'scheduler.list', 'scheduler.listTasks', 'scheduler.getTaskCount', 'scheduler.deleteTasks', 'scheduler.validateCron', 'scheduler.describeCron'],
+    methods: [
+      'scheduler.schedule',
+      'scheduler.cancel',
+      'scheduler.pause',
+      'scheduler.resume',
+      'scheduler.get',
+      'scheduler.list',
+      'scheduler.getExecutions',
+      'scheduler.listTasks',
+      'scheduler.getTask',
+      'scheduler.getTaskCount',
+      'scheduler.deleteTasks',
+      'scheduler.cleanupTasks',
+      'scheduler.validateCron',
+      'scheduler.getNextCronTime',
+      'scheduler.describeCron',
+      'scheduler.subscribe',
+      'scheduler.unsubscribe',
+      'scheduler.onEvent'
+    ],
     summary: 'Creates delayed, once, and repeat tasks and inspects task state.'
   },
   {
@@ -263,7 +385,24 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'System',
     category: 'system',
     contexts: ['renderer', 'backend'],
-    methods: ['system.getSystemInfo', 'system.getAppInfo', 'system.getAppResourceUsage', 'system.getPath', 'system.getEnv', 'system.getIdleTime', 'system.getFileIcon', 'system.isMacOS', 'system.isWindows', 'system.isLinux', 'system.onActiveWindowChange'],
+    methods: [
+      'system.getSystemInfo',
+      'system.getAppInfo',
+      'system.getAppResourceUsage',
+      'system.getPath',
+      'system.getEnv',
+      'system.getIdleTime',
+      'system.getFileIcon',
+      'system.getFileIcons',
+      'system.getNativeId',
+      'system.isDev',
+      'system.isMacOS',
+      'system.isWindows',
+      'system.isLinux',
+      'system.onActiveWindowChange',
+      'system.getCachedActiveWindow',
+      'system.getActiveWindow'
+    ],
     summary: 'Reads OS, app, path, idle, icon, and platform information.'
   },
   {
@@ -280,7 +419,7 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Power',
     category: 'system',
     contexts: ['renderer', 'backend'],
-    methods: ['power.getSystemIdleTime', 'power.getSystemIdleState', 'power.isOnBatteryPower', 'power.getCurrentThermalState'],
+    methods: ['power.getSystemIdleTime', 'power.getSystemIdleState', 'power.isOnBatteryPower', 'power.getCurrentThermalState', 'power.onSuspend', 'power.onResume', 'power.onAC', 'power.onBattery', 'power.onLockScreen', 'power.onUnlockScreen'],
     summary: 'Reads power and idle state from the OS.'
   },
   {
@@ -289,7 +428,24 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     category: 'system',
     contexts: ['renderer', 'backend'],
     permissions: ['screen'],
-    methods: ['screen.getAllDisplays', 'screen.getPrimaryDisplay', 'screen.getCursorScreenPoint', 'screen.getDisplayNearestPoint', 'screen.getSources', 'screen.capture', 'screen.captureRegion', 'screen.getMediaStreamConstraints', 'screen.screenCapture', 'screen.colorPick'],
+    methods: [
+      'screen.getAllDisplays',
+      'screen.getPrimaryDisplay',
+      'screen.getCursorScreenPoint',
+      'screen.getDisplayNearestPoint',
+      'screen.getDisplayMatching',
+      'screen.getSources',
+      'screen.getWindowBounds',
+      'screen.capture',
+      'screen.captureRegion',
+      'screen.getMediaStreamConstraints',
+      'screen.screenCapture',
+      'screen.colorPick',
+      'screen.screenToDipPoint',
+      'screen.dipToScreenPoint',
+      'screen.screenToDipRect',
+      'screen.dipToScreenRect'
+    ],
     summary: 'Reads display information and captures screen or region data.'
   },
   {
@@ -306,7 +462,18 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Input Automation',
     category: 'system',
     contexts: ['renderer', 'backend'],
-    methods: ['input.hideMainWindowPasteText', 'input.hideMainWindowPasteImage', 'input.hideMainWindowPasteFile', 'input.hideMainWindowTypeString', 'input.restoreWindows', 'input.simulateKeyboardTap', 'input.simulateMouseMove', 'input.simulateMouseClick'],
+    methods: [
+      'input.hideMainWindowPasteText',
+      'input.hideMainWindowPasteImage',
+      'input.hideMainWindowPasteFile',
+      'input.hideMainWindowTypeString',
+      'input.restoreWindows',
+      'input.simulateKeyboardTap',
+      'input.simulateMouseMove',
+      'input.simulateMouseClick',
+      'input.simulateMouseDoubleClick',
+      'input.simulateMouseRightClick'
+    ],
     summary: 'Pastes or types into the previous window and simulates keyboard or mouse events.'
   },
   {
@@ -323,7 +490,7 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'Global Shortcut',
     category: 'system',
     contexts: ['renderer', 'backend'],
-    methods: ['shortcut.register', 'shortcut.unregister', 'shortcut.unregisterAll', 'shortcut.isRegistered'],
+    methods: ['shortcut.register', 'shortcut.unregister', 'shortcut.unregisterAll', 'shortcut.isRegistered', 'shortcut.onTriggered'],
     summary: 'Registers plugin-owned global shortcuts and cleans them up.'
   },
   {
@@ -364,7 +531,47 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'InBrowser',
     category: 'files-network',
     contexts: ['renderer'],
-    methods: ['inbrowser.goto', 'inbrowser.click', 'inbrowser.type', 'inbrowser.wait', 'inbrowser.screenshot', 'inbrowser.markdown', 'inbrowser.download', 'inbrowser.evaluate', 'inbrowser.run'],
+    methods: [
+      'inbrowser.goto',
+      'inbrowser.useragent',
+      'inbrowser.device',
+      'inbrowser.viewport',
+      'inbrowser.show',
+      'inbrowser.hide',
+      'inbrowser.click',
+      'inbrowser.mousedown',
+      'inbrowser.mouseup',
+      'inbrowser.dblclick',
+      'inbrowser.hover',
+      'inbrowser.type',
+      'inbrowser.input',
+      'inbrowser.value',
+      'inbrowser.check',
+      'inbrowser.focus',
+      'inbrowser.paste',
+      'inbrowser.press',
+      'inbrowser.scroll',
+      'inbrowser.file',
+      'inbrowser.drop',
+      'inbrowser.wait',
+      'inbrowser.when',
+      'inbrowser.css',
+      'inbrowser.cookies',
+      'inbrowser.setCookies',
+      'inbrowser.removeCookies',
+      'inbrowser.clearCookies',
+      'inbrowser.screenshot',
+      'inbrowser.pdf',
+      'inbrowser.markdown',
+      'inbrowser.download',
+      'inbrowser.evaluate',
+      'inbrowser.devTools',
+      'inbrowser.end',
+      'inbrowser.run',
+      'inbrowser.getIdleInBrowsers',
+      'inbrowser.setInBrowserProxy',
+      'inbrowser.clearInBrowserCache'
+    ],
     summary: 'Automates an embedded browser session for navigation, extraction, screenshots, and downloads.'
   },
   {
@@ -388,8 +595,32 @@ export const publicApiCatalog: PublicApiCatalogEntry[] = [
     title: 'AI',
     category: 'ai-media',
     contexts: ['renderer', 'backend'],
-    methods: ['ai.call', 'ai.abort', 'ai.allModels', 'ai.models.fetch', 'ai.testConnection', 'ai.settings.get', 'ai.skills.listEnabled', 'ai.attachments.upload', 'ai.tokens.estimate', 'ai.images.generate'],
+    methods: [
+      'ai.call',
+      'ai.abort',
+      'ai.allModels',
+      'ai.models.fetch',
+      'ai.settings.get',
+      'ai.skills.listEnabled',
+      'ai.skills.previewForCall',
+      'ai.attachments.upload',
+      'ai.attachments.get',
+      'ai.attachments.delete',
+      'ai.attachments.uploadToProvider',
+      'ai.tokens.estimate',
+      'ai.images.generate',
+      'ai.images.generateStream',
+      'ai.images.edit'
+    ],
     summary: 'Calls configured AI providers, streams chunks, manages attachments, estimates tokens, and generates images.'
+  },
+  {
+    code: 'log',
+    title: 'Log',
+    category: 'diagnostics',
+    contexts: ['renderer'],
+    methods: ['log.debug', 'log.info', 'log.warn', 'log.error', 'log.getLogs', 'log.clear', 'log.getLogsDir', 'log.subscribe', 'log.onLog'],
+    summary: 'Writes plugin logs, queries log records, reads the log directory, and subscribes to live log events.'
   }
 ]
 
@@ -434,16 +665,9 @@ export const restrictedApiCatalog: RestrictedApiCatalogEntry[] = [
     reason: 'Specific to host tray menu UI state.'
   },
   {
-    code: 'plugin-store',
-    title: 'Plugin Store API',
-    methods: ['pluginStore.fetch', 'pluginStore.installFromUrl', 'pluginStore.checkUpdatesInstalled', 'pluginStore.updateAll'],
-    reason: 'Install/update operations mutate the plugin environment and are documented read-only in this reference.',
-    saferAlternative: 'Use `plugin.getAll` and `plugin.listCommands` for discovery examples.'
-  },
-  {
     code: 'app-events',
     title: 'App/System Events',
-    methods: ['app.onOpenPluginStore', 'app.onOpenPluginManager', 'app.onOpenTaskScheduler', 'onPluginOut'],
+    methods: ['app.onOpenSystemPlugin', 'app.onSystemPluginBeforeAttach', 'app.onOpenAiSettings', 'app.onOpenAiMcpSettings', 'app.onOpenAiToolsSettings', 'app.onOpenAiSkillsSettings', 'app.onOpenPluginStore', 'app.onOpenPluginManager', 'app.onOpenBackgroundPlugins', 'app.onOpenTaskScheduler', 'app.onOpenLogViewer', 'app.onOpenStorageExplorer', 'app.onOpenCommandShortcuts', 'app.onSetSearchText', 'app.onMainWindowShow'],
     reason: 'Primarily host navigation and system page events. Third-party plugins can listen selectively, but this reference does not trigger host navigation.'
   },
   {

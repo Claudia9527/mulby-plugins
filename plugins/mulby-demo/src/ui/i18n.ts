@@ -92,6 +92,10 @@ export const categoryTranslations: Record<ApiCategoryId, { label: string; descri
     label: 'AI、媒体与处理',
     description: 'AI 调用、插件工具、语音合成、Sharp、FFmpeg 和媒体辅助能力。'
   },
+  diagnostics: {
+    label: '诊断与日志',
+    description: '插件日志写入、查询、清理和实时订阅。'
+  },
   restricted: {
     label: '内部或设置专属 API',
     description: '宿主设置、系统页面和内部接口的边界说明。'
@@ -312,7 +316,8 @@ export const moduleTranslations: Record<string, ModuleTranslation> = {
     summary: '后端生命周期钩子和功能调用入口。',
     notes: [
       '后端 API 通过 `context.api` 异步调用，即使渲染端等价方法看起来是同步的，也应使用 await。',
-      '`run(context)` 会接收匹配功能的 featureCode、输入文本和附件。'
+      '`run(context)` 会接收匹配功能的 featureCode、输入文本和附件。',
+      '渲染端生命周期监听器应在注册它的 UI 组件卸载时取消订阅。'
     ]
   },
   host: {
@@ -344,7 +349,7 @@ export const moduleTranslations: Record<string, ModuleTranslation> = {
     summary: '在插件之间发送直接消息和广播消息。',
     notes: [
       '消息类型应使用命名空间，例如 `mulby-demo:catalog-refresh`。',
-      '渲染端监听器应在组件卸载时始终取消订阅。'
+      'Messaging 通过后端 `context.api.messaging` 暴露；渲染端示例通过 Host RPC 调用它。'
     ]
   },
   scheduler: {
@@ -394,6 +399,14 @@ export const moduleTranslations: Record<string, ModuleTranslation> = {
       '此参考只检查可用性和版本，不会触发下载。'
     ]
   },
+  log: {
+    title: '日志 Log',
+    summary: '写入插件日志、查询日志记录、读取日志目录并订阅实时日志事件。',
+    notes: [
+      '当 Mulby 能解析调用来源插件窗口时，日志记录会按插件隔离。',
+      '需要实时日志时先调用 `subscribe` 再注册 `onLog`，并在清理阶段释放监听器。'
+    ]
+  },
   settings: {
     title: '设置 API 边界',
     summary: '系统级应用设置和更新器操作；第三方示例不应修改宿主设置。',
@@ -440,11 +453,11 @@ export const moduleTranslations: Record<string, ModuleTranslation> = {
     ]
   },
   'plugin-store': {
-    title: '插件商店 API 边界',
-    summary: '安装和更新操作会改变插件环境，本参考只做只读边界说明。',
+    title: '插件商店 Plugin Store',
+    summary: '读取插件商店条目、检查已安装插件更新，并以受控方式演示安装和更新流程。',
     notes: [
-      '`fetch` 可以是只读的，但安装和更新 API 会改变插件环境，不应随意运行演示。',
-      '更安全的替代方案：使用 `plugin.getAll` 和 `plugin.listCommands` 做发现示例。'
+      '读取调用适合发现插件。安装和更新调用会改变插件环境，所以本示例使用无效本地 URL 和不存在的插件 id 作为保护目标。',
+      '真实安装器应传入 HTTPS `.inplugin` 下载地址，并在商店索引提供 `sha256` 时校验摘要。'
     ]
   },
   'app-events': {
@@ -476,9 +489,13 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '写入并读取插件数据',
     description: '将一个小 JSON 对象写入演示键，随后读取并返回该值。'
   },
-  'storage-encrypted-preview': {
-    label: '检查加密存储可用性',
-    description: '检查当前渲染端是否暴露了加密存储函数。'
+  'storage-backend-keys': {
+    label: '后端键列表与清理',
+    description: '通过后端存储写入、读取、列出、清理演示键，并恢复生命周期元数据。'
+  },
+  'storage-encrypted-attachment': {
+    label: '加密与附件存储',
+    description: '写入、读取、检查、列出并删除演示专用的加密值和二进制附件。'
   },
   'clipboard-read': {
     label: '读取剪贴板格式和文本',
@@ -496,6 +513,10 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '查询最近记录',
     description: '最多查询五条最近记录，并且只在输出中展示元数据。'
   },
+  'clipboard-history-delete-clear': {
+    label: '删除与清理保护示例',
+    description: '对不存在的演示 ID 执行删除，并把清空历史保留为需要用户明确编辑的代码。'
+  },
   'security-availability': {
     label: '检查加密可用性',
     description: '读取宿主安全存储加密是否可用。'
@@ -504,9 +525,9 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '后端临时文件往返',
     description: '请求后端在插件数据路径下写入、读取、统计并删除演示文件。'
   },
-  'http-get': {
-    label: '获取示例 JSON',
-    description: '从 httpbin 获取一个小型 JSON 响应。'
+  'http-verbs': {
+    label: '运行 HTTP 动词',
+    description: '对轻量 JSON 端点运行 request、GET、POST、PUT 和 DELETE。'
   },
   'network-state': {
     label: '读取在线状态',
@@ -520,13 +541,21 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '运行安全后端命令',
     description: '请求后端在关闭 shell 的情况下执行 `node -e`。'
   },
-  'inbrowser-preview': {
-    label: '预览浏览器自动化链',
-    description: '展示一条安全的自动化链，但不启动浏览器动作。'
+  'shell-system-actions': {
+    label: '打开路径并移动演示文件到回收站',
+    description: '创建临时演示文件，打开路径、目录和 URL，播放提示音，并只移动演示文件到回收站。'
+  },
+  'inbrowser-run-example': {
+    label: '运行浏览器自动化链',
+    description: '针对 example.com 运行真实 InBrowser 链，包括导航、输入、提取、截图、下载和清理。'
   },
   'dialog-message': {
     label: '显示消息框',
     description: '显示包含两个按钮的原生消息框，并返回用户选择的索引。'
+  },
+  'dialog-open-save-error': {
+    label: '打开、保存和错误对话框',
+    description: '显示原生打开/保存对话框和错误框，并返回用户是否取消选择。'
   },
   'notification-show': {
     label: '显示通知',
@@ -536,9 +565,17 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '读取窗口状态',
     description: '在可用时读取模式、类型、边界、透明度和最大化/置顶状态。'
   },
-  'window-title': {
-    label: '设置窗口标题',
-    description: '将当前插件窗口标题设置为演示标签。'
+  'window-control': {
+    label: '控制当前窗口',
+    description: '执行显示、聚焦、改标题、改尺寸、改边界、透明度、页面查找和重绘等可恢复窗口操作。'
+  },
+  'window-child': {
+    label: '创建并控制子窗口',
+    description: '创建子窗口，调用子窗口句柄方法，发送消息并关闭它。'
+  },
+  'window-detach-drag-menu': {
+    label: '分离、菜单、拖拽和关闭控制',
+    description: '用一次性子窗口演示关闭/销毁，打开插件菜单，并触发原生文件拖拽载荷。'
   },
   'sub-input-preview': {
     label: '显示子输入',
@@ -556,9 +593,9 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '显示上下文菜单',
     description: '显示一个小型上下文菜单，并返回被选择的 id。'
   },
-  'tray-exists': {
-    label: '读取托盘状态',
-    description: '读取此插件当前是否拥有托盘项。'
+  'tray-lifecycle': {
+    label: '创建、更新并销毁托盘图标',
+    description: '创建插件自有托盘图标，更新图标、提示和标题，检查状态后销毁。'
   },
   'system-info': {
     label: '读取系统和应用信息',
@@ -580,17 +617,17 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '读取摄像头和麦克风访问',
     description: '读取摄像头和麦克风访问状态，不打开设备。'
   },
-  'input-preview': {
-    label: '预览输入 API',
-    description: '展示安全的输入自动化模式，但不执行它们。'
+  'input-actions': {
+    label: '运行输入自动化动作',
+    description: '使用演示载荷执行粘贴、输入、键盘和鼠标自动化调用，并在输出中记录失败原因。'
   },
   'input-monitor-available': {
     label: '检查监听可用性',
     description: '检查全局输入监听支持是否可用。'
   },
-  'shortcut-preview': {
-    label: '预览快捷键注册',
-    description: '展示注册和注销生命周期，不实际占用全局快捷键。'
+  'shortcut-register': {
+    label: '注册并注销快捷键',
+    description: '注册演示全局快捷键、检查状态、监听触发事件、注销并清理插件快捷键。'
   },
   'geolocation-status': {
     label: '读取地理位置状态',
@@ -616,6 +653,10 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '读取后端状态',
     description: '读取此插件的后端进程状态。'
   },
+  'host-invoke-restart': {
+    label: '调用 API 并重启 Host',
+    description: '通过 host.invoke 调用后端 API，随后重启此插件 Host 并再次读取状态。'
+  },
   'plugin-list': {
     label: '列出已安装插件',
     description: '读取已安装插件元数据，并返回精简摘要。'
@@ -624,13 +665,41 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '列出命令入口',
     description: '读取此插件暴露的命令。'
   },
+  'plugin-run-preferences': {
+    label: '运行并更新演示功能偏好',
+    description: '运行此插件演示入口，置顶/取消置顶、隐藏/恢复隐藏，并演示命令快捷键和插件管理调用。'
+  },
+  'plugin-stop-safety': {
+    label: '停止插件的保护目标',
+    description: '对故意不存在的演示目标调用 stopPlugin，执行 API 路径但不停止参考界面。'
+  },
+  'plugin-main-push-select': {
+    label: '调用 MainPush 选择',
+    description: '注册演示 MainPush 功能和处理器后，调用 plugin.mainPushSelect 并读取 MainPush 插件列表。'
+  },
+  'plugin-store-read': {
+    label: '读取商店与更新状态',
+    description: '读取已配置插件商店条目，并检查已安装插件更新，不安装任何插件。'
+  },
+  'plugin-store-guarded-mutations': {
+    label: '运行受保护安装与更新调用',
+    description: '使用无效本地包 URL 调用 installFromUrl，并用不存在的插件 id 调用 updateAll，执行 API 路径但不真实安装插件。'
+  },
   'features-register': {
     label: '注册动态功能',
     description: '调用后端设置一个演示动态功能入口。'
   },
+  'features-main-push': {
+    label: '注册 MainPush 处理器',
+    description: '注册动态 MainPush 功能以及后端 onMainPush/onMainPushSelect 处理器。'
+  },
+  'features-remove': {
+    label: '移除动态演示功能',
+    description: '移除演示动态功能，并展示动态功能清理和设置跳转调用。'
+  },
   'messaging-broadcast': {
-    label: '广播演示消息',
-    description: '从此插件广播一条小型命名空间消息。'
+    label: '发送并接收回环消息',
+    description: '注册后端消息处理器，发送直接消息并广播消息，随后取消订阅处理器。'
   },
   'scheduler-describe': {
     label: '描述 cron',
@@ -639,6 +708,14 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
   'scheduler-create-delay': {
     label: '创建延迟通知任务',
     description: '创建一个短延迟任务，调用后端演示调度回调。'
+  },
+  'scheduler-lifecycle': {
+    label: '暂停、恢复、列出并取消任务',
+    description: '创建长延迟演示任务，读取、暂停、恢复、列出、取消并读取执行历史。'
+  },
+  'scheduler-renderer-list-delete': {
+    label: '列出并删除调度记录',
+    description: '使用渲染端调度器 API 列出演示任务、计数、查看详情、删除演示记录并清理历史。'
   },
   'tools-catalog': {
     label: '检查已注册演示工具',
@@ -668,6 +745,10 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
     label: '读取 FFmpeg 状态',
     description: '检查 FFmpeg 是否可用，并在可用时读取版本和路径。'
   },
+  'log-write-query-subscribe': {
+    label: '写入、查询、订阅并清理日志',
+    description: '订阅实时日志，写入所有级别日志，查询插件日志，清理演示日志并读取日志目录。'
+  },
   'settings-boundary': {
     label: '边界说明',
     description: '系统级应用设置和更新器操作；第三方示例不应修改宿主设置。'
@@ -691,10 +772,6 @@ export const exampleTranslations: Record<string, ExampleTranslation> = {
   'tray-menu-boundary': {
     label: '边界说明',
     description: '托盘菜单状态 API 专属于 Mulby 宿主托盘菜单 UI。'
-  },
-  'plugin-store-boundary': {
-    label: '边界说明',
-    description: '插件商店安装和更新操作会改变插件环境，本参考只做边界文档。'
   },
   'app-events-boundary': {
     label: '边界说明',

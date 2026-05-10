@@ -20,9 +20,6 @@ export const restrictedExamples: ApiExampleModule[] = [
   restrictedModule('tray-menu', [
     'Tray menu state APIs are specific to Mulby host tray menu UI.'
   ]),
-  restrictedModule('plugin-store', [
-    '`fetch` can be read-only, but install/update APIs mutate the plugin environment and should not be demo-run casually.'
-  ]),
   restrictedModule('app-events', [
     'Listen only to events relevant to your plugin. Do not use host navigation event APIs as ordinary plugin control flow.'
   ]),

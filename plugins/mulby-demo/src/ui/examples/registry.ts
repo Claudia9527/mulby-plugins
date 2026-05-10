@@ -7,6 +7,7 @@ import { uiExamples } from './ui.example'
 import { systemExamples } from './system.example'
 import { pluginExamples } from './plugin.example'
 import { aiMediaExamples } from './ai-media.example'
+import { diagnosticsExamples } from './diagnostics.example'
 import { restrictedExamples } from './restricted.example'
 
 const categoryOrder = new Map(categoryCatalog.map((category) => [category.id, category.order]))
@@ -19,6 +20,7 @@ export const apiExamples: ApiExampleModule[] = createRegistry([
   ...systemExamples,
   ...pluginExamples,
   ...aiMediaExamples,
+  ...diagnosticsExamples,
   ...restrictedExamples
 ])
 

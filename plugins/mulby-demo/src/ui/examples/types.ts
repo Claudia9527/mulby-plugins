@@ -9,10 +9,13 @@ export interface ExampleResult {
   warning?: string
 }
 
+export type MulbyApi = Record<string, any>
+
 export interface RunnableExample {
   id: string
   label: string
   description: string
+  methods: string[]
   code: string
   safety: 'safe' | 'writes-plugin-data' | 'opens-system-ui' | 'requires-permission' | 'preview-only'
   run?: () => Promise<ExampleResult>

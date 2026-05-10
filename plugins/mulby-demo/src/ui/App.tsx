@@ -7,6 +7,7 @@ import {
   Copy,
   Database,
   FileCode2,
+  FileSearch,
   Layers3,
   Play,
   Search,
@@ -35,6 +36,7 @@ const iconByCategory: Record<string, typeof Layers3> = {
   system: ShieldAlert,
   plugin: FileCode2,
   'ai-media': Code2,
+  diagnostics: FileSearch,
   restricted: AlertTriangle
 }
 
