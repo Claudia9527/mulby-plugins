@@ -69,6 +69,40 @@ const MOOD_LABELS: Record<PetMood, string> = {
   bored: '无聊', lonely: '孤独', sad: '难过', grumpy: '暴躁', sleepy: '困倦',
 }
 
+const EXPRESSION_LABELS: Record<PetExpression, string> = {
+  neutral: '平静',
+  happy: '开心',
+  sad: '难过',
+  surprised: '惊讶',
+  sleepy: '困倦',
+  angry: '生气',
+  excited: '兴奋',
+  shy: '害羞',
+  love: '喜欢',
+  curious: '好奇',
+  confused: '困惑',
+  proud: '得意',
+  scared: '害怕',
+  focused: '专注',
+  dizzy: '晕乎',
+}
+
+const POSE_LABELS: Record<PetPose, string> = {
+  stand: '站立',
+  walk_1: '前进',
+  walk_2: '漫步',
+  sit: '坐下',
+  sleep: '睡眠',
+  jump: '跳跃',
+  wave: '挥手',
+  hover: '悬浮',
+  peek: '探头',
+  spin: '旋转',
+  dance: '摇摆',
+  hide: '躲藏',
+  focus: '专注',
+}
+
 const PLAYGROUND_POSE_FACE: Record<PetPose, PetExpression> = {
   stand: 'neutral',
   walk_1: 'neutral',
@@ -77,6 +111,12 @@ const PLAYGROUND_POSE_FACE: Record<PetPose, PetExpression> = {
   sleep: 'sleepy',
   jump: 'excited',
   wave: 'happy',
+  hover: 'neutral',
+  peek: 'curious',
+  spin: 'dizzy',
+  dance: 'excited',
+  hide: 'shy',
+  focus: 'focused',
 }
 
 const TRAITS = [
@@ -830,9 +870,13 @@ export default function SettingsView() {
             {ALL_EXPRESSIONS.map((expr: PetExpression) => (
               <button
                 key={`expr-${expr}`}
-                className="freq-btn"
+                className="freq-btn playground-token"
                 onClick={() => triggerPetIntent({ face: expr, durationMs: 4000 })}
-              >{expr}</button>
+                title={`${EXPRESSION_LABELS[expr]} / ${expr}`}
+              >
+                <span className="playground-token-main">{EXPRESSION_LABELS[expr]}</span>
+                <span className="playground-token-sub">{expr}</span>
+              </button>
             ))}
           </div>
         </div>
@@ -843,13 +887,17 @@ export default function SettingsView() {
             {ALL_POSES.map((pose: PetPose) => (
               <button
                 key={`pose-${pose}`}
-                className="freq-btn"
+                className="freq-btn playground-token"
                 onClick={() => triggerPetIntent({
                   face: PLAYGROUND_POSE_FACE[pose],
                   pose,
                   durationMs: pose === 'sleep' ? 5000 : 4000,
                 })}
-              >{pose}</button>
+                title={`${POSE_LABELS[pose]} / ${pose}`}
+              >
+                <span className="playground-token-main">{POSE_LABELS[pose]}</span>
+                <span className="playground-token-sub">{pose}</span>
+              </button>
             ))}
           </div>
         </div>

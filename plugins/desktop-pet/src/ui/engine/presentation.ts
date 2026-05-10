@@ -72,6 +72,12 @@ export const ACTION_LIST = [
   'cheer',
   'celebrate',
   'wobble',
+  'hover',
+  'peek',
+  'spin',
+  'dance',
+  'hide',
+  'focus',
   'move_left',
   'move_right',
   'move_up',
@@ -456,6 +462,12 @@ const ACTION_INTENTS: Record<PresentationAction, PresentationIntent> = {
   cheer: { face: 'excited', pose: 'wave', emotion: 'excitement', animation: 'spin_bounce' },
   celebrate: { face: 'love', pose: 'wave', emotion: 'joy', animation: 'celebrate' },
   wobble: { face: 'dizzy', pose: 'stand', emotion: 'dizziness', animation: 'wobble' },
+  hover: { face: 'neutral', pose: 'hover', emotion: 'calm', animation: 'phase' },
+  peek: { face: 'curious', pose: 'peek', emotion: 'curiosity', animation: 'phase' },
+  spin: { face: 'dizzy', pose: 'spin', emotion: 'dizziness', animation: 'wobble' },
+  dance: { face: 'excited', pose: 'dance', emotion: 'excitement', animation: 'wiggle' },
+  hide: { face: 'shy', pose: 'hide', emotion: 'shyness', animation: 'hide' },
+  focus: { face: 'focused', pose: 'focus', emotion: 'focus', animation: 'phase' },
   move_left: { face: 'neutral', pose: 'walk_1', movement: { dx: -80, dy: 0 } },
   move_right: { face: 'neutral', pose: 'walk_1', movement: { dx: 80, dy: 0 } },
   move_up: { face: 'neutral', pose: 'walk_1', movement: { dx: 0, dy: -80 } },
@@ -531,7 +543,7 @@ export function normalizePresentationToolCall(name: string, rawArgs: unknown): P
 
 const TEXT_PRESENTATION_RULES: Array<{ intent: PresentationIntent; patterns: RegExp[] }> = [
   {
-    intent: { face: 'focused', emotion: 'focus', pose: 'stand', animation: 'phase' },
+    intent: { face: 'focused', emotion: 'focus', pose: 'focus', animation: 'phase' },
     patterns: [/专注|认真|盯|研究|分析|处理|排查|看代码|检查|让我看看|我看看/],
   },
   {
@@ -539,11 +551,11 @@ const TEXT_PRESENTATION_RULES: Array<{ intent: PresentationIntent; patterns: Reg
     patterns: [/迷惑|懵|不懂|看不懂|搞不懂|糊涂|啊[?？]|嗯[?？]/],
   },
   {
-    intent: { face: 'scared', emotion: 'fear', pose: 'stand', animation: 'phase' },
+    intent: { face: 'scared', emotion: 'fear', pose: 'hide', animation: 'phase' },
     patterns: [/害怕|怕|恐怖|吓死|救命|别吓|慌|紧张|完蛋/],
   },
   {
-    intent: { face: 'dizzy', emotion: 'dizziness', pose: 'stand', animation: 'wobble' },
+    intent: { face: 'dizzy', emotion: 'dizziness', pose: 'spin', animation: 'wobble' },
     patterns: [/晕|头大|眼花|绕晕|转晕|乱成一团/],
   },
   {
@@ -551,11 +563,11 @@ const TEXT_PRESENTATION_RULES: Array<{ intent: PresentationIntent; patterns: Reg
     patterns: [/骄傲|得意|夸我|表扬|拿捏|我厉害吧|我很棒|帅吧/],
   },
   {
-    intent: { face: 'curious', emotion: 'curiosity', pose: 'stand', animation: 'phase' },
+    intent: { face: 'curious', emotion: 'curiosity', pose: 'peek', animation: 'phase' },
     patterns: [/好奇|看看|瞅瞅|为什么|怎么会|怎么回事|哪儿|哪里/],
   },
   {
-    intent: { face: 'excited', emotion: 'excitement', pose: 'wave', animation: 'wobble' },
+    intent: { face: 'excited', emotion: 'excitement', pose: 'dance', animation: 'wobble' },
     patterns: [/兴奋|激动|上头|打节拍|左摇右晃|噼里啪啦|开冲|冲[呀鸭啊]|燃起来|好耶|太棒|厉害|起飞/],
   },
   {
@@ -594,7 +606,7 @@ const TEXT_PRESENTATION_RULES: Array<{ intent: PresentationIntent; patterns: Reg
 
 const HINT_PRESENTATION_INTENTS: Record<string, PresentationIntent> = {
   idle: { face: 'sleepy', emotion: 'sleepiness', pose: 'sit', animation: 'droop' },
-  typing_fast: { face: 'focused', emotion: 'focus', pose: 'wave', animation: 'spin_bounce' },
+  typing_fast: { face: 'focused', emotion: 'focus', pose: 'focus', animation: 'spin_bounce' },
   morning: { face: 'happy', emotion: 'joy', pose: 'wave', animation: 'bounce' },
   late_night: { face: 'sleepy', emotion: 'sleepiness', pose: 'sit', animation: 'droop' },
   user_click: { face: 'happy', emotion: 'joy', pose: 'wave', animation: 'wiggle' },
@@ -616,17 +628,29 @@ export function extractStageDirectionIntents(text: string): PresentationIntent[]
     if (/一脸|不耐烦|不满/.test(action)) {
       intents.push({ face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' })
     }
-    if (/飘|绕|转圈|转了|靠近|抖|晃|摇/.test(action)) {
+    if (/转圈|转了|绕/.test(action)) {
+      intents.push({ face: 'dizzy', emotion: 'dizziness', pose: 'spin', animation: 'wobble' })
+    }
+    if (/飘|靠近/.test(action)) {
+      intents.push({
+        face: 'curious',
+        emotion: 'curiosity',
+        pose: 'hover',
+        animation: 'phase',
+        movement: { dx: 80, dy: -20 },
+      })
+    }
+    if (/抖|晃|摇/.test(action)) {
       intents.push({
         face: 'excited',
         emotion: 'excitement',
-        pose: 'walk_1',
+        pose: 'dance',
         animation: 'wobble',
         movement: { dx: 80, dy: -20 },
       })
     }
     if (/躲|转过身|转身|屁股|背对/.test(action)) {
-      intents.push({ face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide', movement: { dx: -80, dy: 0 } })
+      intents.push({ face: 'shy', emotion: 'shyness', pose: 'hide', animation: 'hide', movement: { dx: -80, dy: 0 } })
     }
     if (/跳/.test(action)) {
       intents.push({ face: 'excited', emotion: 'excitement', pose: 'jump', animation: 'ascend' })

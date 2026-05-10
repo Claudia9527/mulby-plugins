@@ -30,6 +30,12 @@ export type PetPose =
   | 'sleep'
   | 'jump'
   | 'wave'
+  | 'hover'
+  | 'peek'
+  | 'spin'
+  | 'dance'
+  | 'hide'
+  | 'focus'
 
 export type PetSpriteKey = `${PetPose}_${PetExpression}`
 
@@ -39,7 +45,8 @@ export const ALL_EXPRESSIONS: PetExpression[] = [
 ]
 
 export const ALL_POSES: PetPose[] = [
-  'stand', 'walk_1', 'walk_2', 'sit', 'sleep', 'jump', 'wave'
+  'stand', 'walk_1', 'walk_2', 'sit', 'sleep', 'jump', 'wave',
+  'hover', 'peek', 'spin', 'dance', 'hide', 'focus'
 ]
 
 /**

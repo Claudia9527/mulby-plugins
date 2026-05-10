@@ -17,6 +17,12 @@ const POSE_ANIMATIONS: Record<string, string> = {
   sleep: 'pet-slumber 5.4s ease-in-out infinite',
   jump: 'pet-ascend 0.62s ease-out',
   wave: 'pet-wave-idle 1.4s ease-in-out infinite',
+  hover: 'pet-hover-loop 2.7s ease-in-out infinite',
+  peek: 'pet-peek-idle 1.8s ease-in-out infinite',
+  spin: 'pet-spin-loop 1.4s ease-in-out infinite',
+  dance: 'pet-dance-loop 1s ease-in-out infinite',
+  hide: 'pet-hide-idle 2.4s ease-in-out infinite',
+  focus: 'pet-focus-idle 2s ease-in-out infinite',
 }
 
 const EXPR_ANIMATIONS: Record<string, string> = {
@@ -58,6 +64,12 @@ const POSE_OPACITY: Record<string, number> = {
   sleep: 0.45,
   jump: 0.75,
   wave: 0.8,
+  hover: 0.72,
+  peek: 0.74,
+  spin: 0.76,
+  dance: 0.78,
+  hide: 0.52,
+  focus: 0.7,
 }
 
 const ANIM_KEYFRAMES = `
@@ -122,6 +134,50 @@ const ANIM_KEYFRAMES = `
   0%, 100% { transform: rotate(0deg) translateY(0) VAR_FLIP; }
   30% { transform: rotate(-4deg) translateY(-4px) VAR_FLIP; }
   60% { transform: rotate(4deg) translateY(-2px) VAR_FLIP; }
+}
+
+/* Hover: higher airy float with a wider drift path. */
+@keyframes pet-hover-loop {
+  0%, 100% { transform: translateY(-4px) translateX(0) rotate(0deg) VAR_FLIP; opacity: 0.72; }
+  25% { transform: translateY(-13px) translateX(5px) rotate(1.8deg) VAR_FLIP; opacity: 0.78; }
+  50% { transform: translateY(-18px) translateX(0) rotate(0deg) VAR_FLIP; opacity: 0.7; }
+  75% { transform: translateY(-11px) translateX(-5px) rotate(-1.8deg) VAR_FLIP; opacity: 0.76; }
+}
+
+/* Peek: curious side lean without changing the SVG body. */
+@keyframes pet-peek-idle {
+  0%, 100% { transform: translateX(0) translateY(0) rotate(0deg) VAR_FLIP; }
+  35% { transform: translateX(8px) translateY(-5px) rotate(5deg) VAR_FLIP; }
+  70% { transform: translateX(-4px) translateY(-2px) rotate(-2.5deg) VAR_FLIP; }
+}
+
+/* Spin: playful ghost turn using rotation only. */
+@keyframes pet-spin-loop {
+  0%, 100% { transform: translateY(0) rotate(0deg) VAR_FLIP; opacity: 0.76; }
+  25% { transform: translateY(-7px) rotate(8deg) VAR_FLIP; opacity: 0.62; }
+  50% { transform: translateY(-2px) rotate(-6deg) VAR_FLIP; opacity: 0.82; }
+  75% { transform: translateY(-9px) rotate(5deg) VAR_FLIP; opacity: 0.68; }
+}
+
+/* Dance: rhythmic sway for lively moments. */
+@keyframes pet-dance-loop {
+  0%, 100% { transform: translateX(0) translateY(0) rotate(0deg) VAR_FLIP; }
+  20% { transform: translateX(-7px) translateY(-6px) rotate(-7deg) VAR_FLIP; }
+  40% { transform: translateX(6px) translateY(-3px) rotate(6deg) VAR_FLIP; }
+  65% { transform: translateX(-4px) translateY(-8px) rotate(-4deg) VAR_FLIP; }
+  85% { transform: translateX(4px) translateY(-2px) rotate(3deg) VAR_FLIP; }
+}
+
+/* Hide pose: turned-away idle, expressed through opacity and offset. */
+@keyframes pet-hide-idle {
+  0%, 100% { transform: translateX(-4px) translateY(2px) rotate(-4deg) VAR_FLIP; opacity: 0.54; }
+  50% { transform: translateX(-8px) translateY(-2px) rotate(-6deg) VAR_FLIP; opacity: 0.44; }
+}
+
+/* Focus pose: steady hover with a cool glow. */
+@keyframes pet-focus-idle {
+  0%, 100% { transform: translateY(0) rotate(0deg) VAR_FLIP; filter: brightness(1); }
+  50% { transform: translateY(-6px) rotate(0.4deg) VAR_FLIP; filter: brightness(1.14) drop-shadow(0 0 5px rgba(120, 170, 190, 0.35)); }
 }
 
 /* Bounce: happy float-pop. */

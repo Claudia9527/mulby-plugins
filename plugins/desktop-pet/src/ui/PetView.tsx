@@ -72,6 +72,8 @@ function behaviorToPose(behavior: BehaviorType): PetPose {
     case 'wander':
     case 'chase':
       return 'walk_1'
+    case 'look':
+      return 'peek'
     case 'sit':
       return 'sit'
     case 'sleep':
@@ -81,9 +83,13 @@ function behaviorToPose(behavior: BehaviorType): PetPose {
     case 'surprised':
       return 'stand'
     case 'happy':
+      return 'wave'
     case 'cheer':
+      return 'dance'
     case 'celebrate':
       return 'wave'
+    case 'wobble':
+      return 'dance'
     default:
       return 'stand'
   }

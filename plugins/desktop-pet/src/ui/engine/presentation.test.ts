@@ -73,10 +73,18 @@ function testNormalizeToolCalls() {
     normalizePresentationToolCall('pet_perform_action', { action: 'celebrate' }),
     { face: 'love', pose: 'wave', emotion: 'joy', animation: 'celebrate' }
   )
+  assertDeepEqual(
+    normalizePresentationToolCall('pet_perform_action', { action: 'peek' }),
+    { face: 'curious', pose: 'peek', emotion: 'curiosity', animation: 'phase' }
+  )
+  assertDeepEqual(
+    normalizePresentationToolCall('pet_set_presentation', { face: 'focused', pose: 'focus' }),
+    { face: 'focused', pose: 'focus' }
+  )
 }
 
 function testActionIntentHelperMatchesToolCallMapping() {
-  for (const action of ['idle', 'stand', 'look', 'chase', 'wander', 'walk', 'walk_1', 'walk_2', 'sit', 'sleep', 'jump', 'wave', 'surprised', 'happy', 'cheer', 'celebrate', 'wobble'] as const) {
+  for (const action of ['idle', 'stand', 'look', 'chase', 'wander', 'walk', 'walk_1', 'walk_2', 'sit', 'sleep', 'jump', 'wave', 'surprised', 'happy', 'cheer', 'celebrate', 'wobble', 'hover', 'peek', 'spin', 'dance', 'hide', 'focus'] as const) {
     assertDeepEqual(
       presentationIntentForAction(action),
       normalizePresentationToolCall('pet_perform_action', { action })
@@ -92,7 +100,7 @@ function testListsCoverRuntimeAliases() {
   for (const value of ['happy', 'excited', 'surprised', 'sad', 'sleepy', 'angry', 'shy', 'neutral', 'curious', 'confused', 'proud', 'scared', 'focused', 'dizzy']) {
     if (!EMOTION_LIST.includes(value as never)) throw new Error(`Missing emotion alias: ${value}`)
   }
-  for (const value of ['move_left', 'move_right', 'move_up', 'move_down', 'wobble', 'celebrate', 'wave', 'jump']) {
+  for (const value of ['move_left', 'move_right', 'move_up', 'move_down', 'wobble', 'celebrate', 'wave', 'jump', 'hover', 'peek', 'spin', 'dance', 'hide', 'focus']) {
     if (!ACTION_LIST.includes(value as never)) throw new Error(`Missing action: ${value}`)
   }
 }
@@ -104,7 +112,7 @@ function testInferPresentationFromPlainReply() {
   )
   assertDeepEqual(
     inferPresentationFromText('这节奏还挺上头，我左摇右晃跟着打节拍。'),
-    { face: 'excited', emotion: 'excitement', pose: 'wave', animation: 'wobble' }
+    { face: 'excited', emotion: 'excitement', pose: 'dance', animation: 'wobble' }
   )
   assertDeepEqual(
     inferPresentationFromText('切，又戳我？你是戳上瘾了是吧？'),
@@ -112,7 +120,7 @@ function testInferPresentationFromPlainReply() {
   )
   assertDeepEqual(
     inferPresentationFromText('让我看看这段代码，先认真排查一下。'),
-    { face: 'focused', emotion: 'focus', pose: 'stand', animation: 'phase' }
+    { face: 'focused', emotion: 'focus', pose: 'focus', animation: 'phase' }
   )
   assertDeepEqual(
     inferPresentationFromText('我有点看不懂这个报错，懵了。'),
@@ -130,7 +138,8 @@ function testStageDirectionsAreHiddenAndConvertedToPresentation() {
   assertEqual(stripPresentationMarkers(input), '我说你是不是手指头长刺了？')
   assertDeepEqual(extractStageDirectionIntents(input), [
     { face: 'sleepy', emotion: 'sleepiness', pose: 'sit', animation: 'droop' },
-    { face: 'excited', emotion: 'excitement', pose: 'walk_1', animation: 'wobble', movement: { dx: 80, dy: -20 } },
+    { face: 'dizzy', emotion: 'dizziness', pose: 'spin', animation: 'wobble' },
+    { face: 'curious', emotion: 'curiosity', pose: 'hover', animation: 'phase', movement: { dx: 80, dy: -20 } },
   ])
 }
 
@@ -140,7 +149,7 @@ function testStageDirectionsCoverAttitudeAndTurningAway() {
   assertEqual(stripPresentationMarkers(input), '我数三下。')
   assertDeepEqual(extractStageDirectionIntents(input), [
     { face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' },
-    { face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide', movement: { dx: -80, dy: 0 } },
+    { face: 'shy', emotion: 'shyness', pose: 'hide', animation: 'hide', movement: { dx: -80, dy: 0 } },
   ])
 }
 
@@ -150,8 +159,9 @@ function testStageDirectionsAfterToolStyleNarration() {
   assertEqual(stripPresentationMarkers(input), '看什么看？')
   assertDeepEqual(extractStageDirectionIntents(input), [
     { face: 'angry', emotion: 'anger', pose: 'stand', animation: 'flicker' },
-    { face: 'excited', emotion: 'excitement', pose: 'walk_1', animation: 'wobble', movement: { dx: 80, dy: -20 } },
-    { face: 'shy', emotion: 'shyness', pose: 'stand', animation: 'hide', movement: { dx: -80, dy: 0 } },
+    { face: 'curious', emotion: 'curiosity', pose: 'hover', animation: 'phase', movement: { dx: 80, dy: -20 } },
+    { face: 'excited', emotion: 'excitement', pose: 'dance', animation: 'wobble', movement: { dx: 80, dy: -20 } },
+    { face: 'shy', emotion: 'shyness', pose: 'hide', animation: 'hide', movement: { dx: -80, dy: 0 } },
   ])
 }
 
@@ -166,7 +176,7 @@ function testImplicitPresentationDoesNotJump() {
   )
   assertDeepEqual(
     inferPresentationFromText('', 'typing_fast'),
-    { face: 'focused', emotion: 'focus', pose: 'wave', animation: 'spin_bounce' }
+    { face: 'focused', emotion: 'focus', pose: 'focus', animation: 'spin_bounce' }
   )
   assertDeepEqual(
     inferPresentationFromText('', 'behavior_change'),
