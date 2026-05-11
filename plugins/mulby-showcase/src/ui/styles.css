@@ -398,7 +398,7 @@ body {
 }
 
 .grid-2 {
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .grid-3 {
@@ -614,6 +614,33 @@ body {
   max-width: 100%;
   max-height: 200px;
   border-radius: var(--radius-sm);
+}
+
+.window-message-log {
+  align-items: stretch;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 180px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.window-message-log-content {
+  display: grid;
+  gap: var(--spacing-xs);
+  width: max-content;
+  min-width: 100%;
+}
+
+.window-message-log .list-row {
+  width: max-content;
+  min-width: 100%;
+}
+
+.window-message-log .list-row-main {
+  flex: 0 0 auto;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 /* ===== Action Bar ===== */

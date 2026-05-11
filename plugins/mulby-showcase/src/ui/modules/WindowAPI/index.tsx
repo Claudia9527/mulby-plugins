@@ -645,10 +645,11 @@ export function WindowAPIModule() {
         setLoadingAction('child')
         try {
             const childIndex = childWindows.filter(child => child.kind === 'route').length + 1
+            const childWindowBounds = toWindowBounds(await win.getBounds()) || bounds || { x: 0, y: 0, width: 560, height: 420 }
             const proxy = await win.create('child-window', {
                 loadMode: 'route',
-                width: 560,
-                height: 420,
+                width: childWindowBounds.width,
+                height: childWindowBounds.height,
                 title: `Showcase 子窗口 #${childIndex}`,
                 backgroundThrottling: false,
                 params: {
@@ -665,12 +666,15 @@ export function WindowAPIModule() {
                 return
             }
 
-            await addChildRecord(proxy, `子窗口 #${childIndex}`, 'route', { backgroundThrottling: false })
+            await addChildRecord(proxy, `子窗口 #${childIndex}`, 'route', {
+                backgroundThrottling: false,
+                bounds: childWindowBounds,
+            })
             pushOperation({
                 action: 'window.create',
                 status: 'success',
                 message: `已创建子窗口 #${childIndex}`,
-                details: { id: proxy.id, loadMode: 'route' },
+                details: { id: proxy.id, loadMode: 'route', bounds: childWindowBounds },
             })
         } catch (error) {
             pushOperation({
@@ -1035,10 +1039,12 @@ await window.mulby.window.setOpacity(0.9)`,
         },
         {
             title: '创建路由子窗口并通信',
-            code: `const child = await window.mulby.window.create('child-window', {
+            code: `const bounds = await window.mulby.window.getBounds()
+
+const child = await window.mulby.window.create('child-window', {
   loadMode: 'route',
-  width: 560,
-  height: 420,
+  width: bounds?.width ?? 560,
+  height: bounds?.height ?? 420,
   title: 'Showcase 子窗口',
   params: { source: 'window-api' }
 })
@@ -1433,8 +1439,8 @@ window.mulby.window.startDrag('/absolute/path/to/file.txt')`,
 
                     <div className="grid grid-2">
                         <Card title="窗口通信日志" icon={BellRing}>
-                            <div className="preview-box" style={{ alignItems: 'stretch', justifyContent: 'flex-start', minHeight: '180px' }}>
-                                <div style={{ display: 'grid', gap: 'var(--spacing-xs)', width: '100%' }}>
+                            <div className="preview-box window-message-log">
+                                <div className="window-message-log-content">
                                     {childMessages.length > 0 ? childMessages.map((message, index) => (
                                         <div key={`${message.timestamp}-${index}`} className="list-row">
                                             <span className="list-row-main">

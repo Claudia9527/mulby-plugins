@@ -230,8 +230,7 @@ export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
     useEffect(() => {
         return onPluginInit((data) => {
             if (data.route?.includes('child-window') || data.params) {
-                const nextParams = mergeRouteParams(routeParams, data.params)
-                setRouteParams(nextParams)
+                setRouteParams((current) => mergeRouteParams(current, data.params))
                 pushOperation({
                     action: 'onPluginInit',
                     status: 'info',
@@ -239,12 +238,11 @@ export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
                     details: {
                         route: data.route,
                         params: data.params,
-                        normalized: nextParams,
                     },
                 })
             }
         })
-    }, [onPluginInit, pushOperation, routeParams])
+    }, [onPluginInit, pushOperation])
 
     const handleSendToParent = () => {
         const payload = {
