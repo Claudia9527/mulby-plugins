@@ -46,6 +46,10 @@ const featureToModule: Record<string, ModuleId> = {
   network: 'network',
   screen: 'screen',
   media: 'media',
+  window: 'window-api',
+  'window-api': 'window-api',
+  childWindow: 'child-window',
+  'child-window': 'child-window',
   settings: 'settings',
   screenshot: 'screen',
   'showcase:ui-settings': 'settings',
@@ -133,6 +137,7 @@ export default function App() {
   const [screenAutoAction, setScreenAutoAction] = useState<ScreenAutoAction>(null)
   const [attachmentsData, setAttachmentsData] = useState<any[]>([])
   const [screenAttachments, setScreenAttachments] = useState<ShowcaseAttachment[]>([])
+  const [childWindowParams, setChildWindowParams] = useState<Record<string, string> | undefined>(undefined)
 
   // 初始化主题
   useTheme()
@@ -149,6 +154,7 @@ export default function App() {
         setActiveModule('image-editor')
         setScreenAutoAction(null)
       } else if (data.route && data.route.includes('child-window')) {
+        setChildWindowParams(data.params)
         setActiveModule('child-window')
         setScreenAutoAction(null)
       } else if (data.featureCode === 'screenshot') {
@@ -202,7 +208,9 @@ export default function App() {
             onAutoActionDone={() => setScreenAutoAction(null)}
           />
         ) : (
-          activeModule === 'attachments' ? (
+          activeModule === 'child-window' ? (
+            <ActiveModuleComponent initParams={childWindowParams} />
+          ) : activeModule === 'attachments' ? (
             <ActiveModuleComponent attachments={attachmentsData} />
           ) : (
             <ActiveModuleComponent />

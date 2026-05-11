@@ -191,6 +191,38 @@
       ]
     },
     {
+      "code": "window-api",
+      "explain": "窗口控制、子窗口与窗口通信",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "window"
+        },
+        {
+          "type": "keyword",
+          "value": "窗口"
+        },
+        {
+          "type": "keyword",
+          "value": "窗口API"
+        }
+      ]
+    },
+    {
+      "code": "child-window",
+      "explain": "子窗口通信展示",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "child-window"
+        },
+        {
+          "type": "keyword",
+          "value": "子窗口"
+        }
+      ]
+    },
+    {
       "code": "settings",
       "explain": "高级设置",
       "cmds": [

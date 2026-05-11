@@ -1,179 +1,672 @@
-import { useState, useEffect } from 'react'
-import { BookOpen, ContactRound, Mail, Send, SlidersHorizontal, Users } from 'lucide-react'
-import { PageHeader, Card, Button, CodeBlock } from '../../components'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+    AppWindow,
+    BellRing,
+    ContactRound,
+    Focus,
+    Layers,
+    Maximize,
+    MessageSquareText,
+    RefreshCw,
+    Send,
+    SlidersHorizontal,
+    Users,
+    X,
+} from 'lucide-react'
+import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
+import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
 
-export function ChildWindowModule() {
-    const { window: win } = useMulby()
+type OperationStatus = 'success' | 'warning' | 'error' | 'info'
+
+interface WindowBounds {
+    x: number
+    y: number
+    width: number
+    height: number
+}
+
+interface ChildWindowHandle {
+    id: number
+    show(): Promise<void>
+    hide(): Promise<void>
+    close(): Promise<void>
+    destroy(): Promise<void>
+    focus(): Promise<void>
+    showInactive(): Promise<void>
+    setTitle(title: string): Promise<void>
+    setSize(width: number, height: number): Promise<void>
+    setPosition(x: number, y: number): Promise<void>
+    setBounds(bounds: Partial<WindowBounds>): Promise<boolean>
+    getBounds(): Promise<WindowBounds>
+    setOpacity(opacity: number): Promise<void>
+    setBackgroundThrottling(allowed: boolean): Promise<boolean>
+    setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): Promise<void>
+    setAlwaysOnTop(flag: boolean, level?: string): Promise<void>
+    setVisibleOnAllWorkspaces(flag: boolean, options?: { visibleOnFullScreen?: boolean }): Promise<void>
+    setFullScreen(flag: boolean): Promise<void>
+    postMessage(channel: string, ...args: unknown[]): Promise<void>
+}
+
+interface WindowSnapshot {
+    type: string
+    mode: string
+    bounds: WindowBounds | null
+    state: {
+        isMaximized: boolean
+        isAlwaysOnTop: boolean
+        opacity?: number
+    } | null
+    opacity: number | null
+}
+
+interface ChildMessage {
+    channel: string
+    args: unknown[]
+    timestamp: number
+}
+
+interface OperationLogItem {
+    action: string
+    status: OperationStatus
+    message: string
+    timestamp: number
+    details?: unknown
+}
+
+function getErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error)
+}
+
+function formatTime(timestamp: number) {
+    return new Date(timestamp).toLocaleTimeString()
+}
+
+function summarizeArgs(args: unknown[]) {
+    try {
+        return JSON.stringify(args)
+    } catch {
+        return String(args)
+    }
+}
+
+function readRouteParams() {
+    const searchParams = new URLSearchParams(window.location.search)
+    const hash = window.location.hash
+
+    return {
+        href: window.location.href,
+        hash,
+        search: window.location.search,
+        source: searchParams.get('source') || undefined,
+        index: searchParams.get('index') || undefined,
+        overlay: searchParams.get('overlay') === 'true',
+    }
+}
+
+function mergeRouteParams(
+    current: ReturnType<typeof readRouteParams>,
+    params?: Record<string, string>
+) {
+    if (!params) return current
+
+    return {
+        ...current,
+        source: params.source || current.source,
+        index: params.index || current.index,
+        overlay: params.overlay === 'true' || current.overlay,
+    }
+}
+
+interface ChildWindowModuleProps {
+    initParams?: Record<string, string>
+}
+
+export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
+    const { window: win, onPluginInit } = useMulby()
     const notify = useNotification()
-    const [messages, setMessages] = useState<string[]>([])
-    const [childWin, setChildWin] = useState<any | null>(null)
-    const [windowId, setWindowId] = useState<string>('--')
+
+    const [routeParams, setRouteParams] = useState(readRouteParams)
+    const [windowLabel, setWindowLabel] = useState(`child-${Date.now() % 10000}`)
+    const [snapshot, setSnapshot] = useState<WindowSnapshot>({
+        type: '-',
+        mode: '-',
+        bounds: null,
+        state: null,
+        opacity: null,
+    })
+    const [messages, setMessages] = useState<ChildMessage[]>([])
+    const [grandchild, setGrandchild] = useState<ChildWindowHandle | null>(null)
+    const [grandchildBounds, setGrandchildBounds] = useState<WindowBounds | null>(null)
+    const [grandchildMuted, setGrandchildMuted] = useState(false)
+    const [messageText, setMessageText] = useState('来自子窗口的消息')
+    const [childMessageText, setChildMessageText] = useState('来自上一级窗口的消息')
+    const [operationLog, setOperationLog] = useState<OperationLogItem[]>([])
+
+    const isOverlay = routeParams.overlay
+
+    const pushOperation = useCallback((item: Omit<OperationLogItem, 'timestamp'>) => {
+        setOperationLog(current => [
+            { ...item, timestamp: Date.now() },
+            ...current,
+        ].slice(0, 12))
+    }, [])
+
+    const loadWindowSnapshot = useCallback(async () => {
+        try {
+            const [type, mode, bounds, state, opacity] = await Promise.all([
+                win.getWindowType(),
+                win.getMode(),
+                win.getBounds(),
+                win.getState(),
+                win.getOpacity(),
+            ])
+            setSnapshot({ type, mode, bounds, state, opacity })
+            setWindowLabel(`${type}-${Date.now() % 10000}`)
+            pushOperation({
+                action: 'window.getState',
+                status: 'success',
+                message: '已读取当前子窗口状态',
+                details: { type, mode, bounds, state, opacity },
+            })
+        } catch (error) {
+            pushOperation({
+                action: 'window.getState',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('读取子窗口状态失败')
+        }
+    }, [notify, pushOperation, win])
 
     useEffect(() => {
-        // 获取当前窗口信息
-        win.getWindowType().then((type: string) => {
-            setWindowId(`${type}-${Date.now() % 10000}`)
-        })
+        void loadWindowSnapshot()
+    }, [loadWindowSnapshot])
 
-        // 监听来自父窗口的消息
-        win.onChildMessage((channel: string, ...args: unknown[]) => {
-            console.log('[ChildWindow] Received message:', channel, args)
-            const msg = `[${new Date().toLocaleTimeString()}] ${channel}: ${args.join(', ')}`
-            setMessages(prev => [...prev.slice(-9), msg]) // 保留最近10条
+    useEffect(() => {
+        if (initParams) {
+            setRouteParams(current => mergeRouteParams(current, initParams))
+        }
+    }, [initParams])
 
-            // 如果收到需要转发的消息，转发给自己的子窗口
-            if (channel === 'broadcast' && childWin) {
-                childWin.postMessage('broadcast', ...args)
+    useEffect(() => {
+        return win.onChildMessage((channel, ...args) => {
+            const timestamp = Date.now()
+            setMessages(current => [
+                { channel, args, timestamp },
+                ...current,
+            ].slice(0, 12))
+
+            if (channel === 'broadcast' && grandchild) {
+                void grandchild.postMessage('broadcast', ...args)
             }
         })
-    }, [win, childWin])
+    }, [grandchild, win])
+
+    const runWindowAction = useCallback(async (
+        action: string,
+        callback: () => unknown | Promise<unknown>,
+        successMessage: string
+    ) => {
+        try {
+            const details = await callback()
+            pushOperation({
+                action,
+                status: 'success',
+                message: successMessage,
+                details,
+            })
+            setTimeout(() => void loadWindowSnapshot(), 120)
+        } catch (error) {
+            pushOperation({
+                action,
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`${action} 失败`)
+        }
+    }, [loadWindowSnapshot, notify, pushOperation])
+
+    useEffect(() => {
+        return onPluginInit((data) => {
+            if (data.route?.includes('child-window') || data.params) {
+                const nextParams = mergeRouteParams(routeParams, data.params)
+                setRouteParams(nextParams)
+                pushOperation({
+                    action: 'onPluginInit',
+                    status: 'info',
+                    message: '已接收子窗口初始化参数',
+                    details: {
+                        route: data.route,
+                        params: data.params,
+                        normalized: nextParams,
+                    },
+                })
+            }
+        })
+    }, [onPluginInit, pushOperation, routeParams])
 
     const handleSendToParent = () => {
-        win.sendToParent('child-event', `来自 ${windowId} 的消息`, new Date().toISOString())
-        notify.success('已发送消息给父窗口')
+        const payload = {
+            from: windowLabel,
+            message: messageText,
+            route: routeParams,
+            at: Date.now(),
+        }
+        win.sendToParent('child-event', payload)
+        pushOperation({
+            action: 'window.sendToParent',
+            status: 'success',
+            message: '已发送消息给直接父窗口',
+            details: payload,
+        })
+        notify.success('已发送给父窗口')
     }
 
     const handleRequestRelay = () => {
-        // 请求父窗口转发消息给兄弟窗口
-        win.sendToParent('relay-request', {
-            from: windowId,
-            message: `请转发此消息给其他子窗口`,
-            timestamp: new Date().toISOString()
+        const payload = {
+            from: windowLabel,
+            message: messageText,
+            timestamp: Date.now(),
+        }
+        win.sendToParent('relay-request', payload)
+        pushOperation({
+            action: 'window.sendToParent relay-request',
+            status: 'info',
+            message: '已请求父窗口转发给同插件的其他子窗口',
+            details: payload,
         })
-        notify.info('已请求父窗口转发消息')
     }
 
     const handleCreateGrandchild = async () => {
-        if (childWin) {
-            notify.warning('已存在子窗口')
+        if (grandchild) {
+            notify.warning('已存在下一级子窗口')
             return
         }
+
         try {
-            const proxy = await win.create('/child-window', {
-                width: 500,
-                height: 350,
-                title: `孙窗口 (由 ${windowId} 创建)`
-            })
-            if (proxy) {
-                setChildWin(proxy)
-                notify.success('子窗口创建成功')
+            const proxy = await win.create('child-window', {
+                loadMode: 'route',
+                width: 520,
+                height: 360,
+                title: `下一级子窗口 (${windowLabel})`,
+                backgroundThrottling: false,
+                params: {
+                    source: windowLabel,
+                    nested: 'true',
+                },
+            }) as ChildWindowHandle | null
+
+            if (!proxy) {
+                pushOperation({
+                    action: 'window.create grandchild',
+                    status: 'warning',
+                    message: '宿主未返回下一级子窗口句柄',
+                })
+                return
             }
+
+            setGrandchild(proxy)
+            try {
+                setGrandchildBounds(await proxy.getBounds())
+            } catch {
+                setGrandchildBounds(null)
+            }
+            pushOperation({
+                action: 'window.create grandchild',
+                status: 'success',
+                message: '已创建下一级子窗口',
+                details: { id: proxy.id },
+            })
         } catch (error) {
-            notify.error('创建子窗口失败')
+            pushOperation({
+                action: 'window.create grandchild',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('创建下一级子窗口失败')
         }
     }
 
-    const handleSendToChild = () => {
-        if (!childWin) return
-        childWin.postMessage('parent-msg', `来自 ${windowId}`, Date.now())
-        notify.success('已发送消息给子窗口')
+    const handleGrandchildAction = async (
+        action: string,
+        callback: (proxy: ChildWindowHandle) => Promise<unknown>,
+        patch?: { muted?: boolean }
+    ) => {
+        if (!grandchild) return
+
+        try {
+            const details = await callback(grandchild)
+            if (patch?.muted !== undefined) setGrandchildMuted(patch.muted)
+            if (action === 'getBounds') {
+                setGrandchildBounds(details as WindowBounds)
+            }
+            pushOperation({
+                action: `grandchild.${action}`,
+                status: 'success',
+                message: `下一级子窗口已执行 ${action}`,
+                details,
+            })
+        } catch (error) {
+            pushOperation({
+                action: `grandchild.${action}`,
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('下一级子窗口操作失败')
+        }
     }
 
-    const handleCloseChild = async () => {
-        if (!childWin) return
-        await childWin.close()
-        setChildWin(null)
+    const handleCloseGrandchild = async () => {
+        if (!grandchild) return
+
+        try {
+            await grandchild.close()
+            setGrandchild(null)
+            setGrandchildBounds(null)
+            setGrandchildMuted(false)
+            pushOperation({
+                action: 'grandchild.close',
+                status: 'success',
+                message: '下一级子窗口已关闭',
+            })
+        } catch (error) {
+            pushOperation({
+                action: 'grandchild.close',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('关闭下一级子窗口失败')
+        }
     }
 
-    const handleClose = () => {
-        window.close()
-    }
+    const apiGroups: ApiReferenceGroup[] = useMemo(() => [
+        {
+            title: 'Current Child Window',
+            items: [
+                { name: 'window.getWindowType()', description: '读取当前子窗口类型。' },
+                { name: 'window.getMode()', description: '读取当前子窗口模式。' },
+                { name: 'window.getBounds()', description: '读取当前子窗口边界。' },
+                { name: 'window.getState()', description: '读取当前子窗口最大化、置顶和透明度状态。' },
+                { name: 'window.getOpacity()', description: '读取当前子窗口透明度。' },
+                { name: 'window.setTitle(title)', description: '修改当前子窗口标题。' },
+                { name: 'window.focus()', description: '请求当前子窗口获得焦点。' },
+                { name: 'window.showInactive()', description: '显示当前子窗口但不抢焦点。' },
+                { name: 'window.center()', description: '让当前子窗口居中。' },
+                { name: 'window.setSize(width, height)', description: '调整当前子窗口大小。' },
+                { name: 'window.maximize()', description: '最大化或还原当前子窗口。' },
+                { name: 'window.close()', description: '关闭当前子窗口。' },
+            ],
+        },
+        {
+            title: 'Parent Child Messaging',
+            items: [
+                { name: 'window.sendToParent(channel, ...args)', description: '向直接父窗口发送消息。' },
+                { name: 'window.onChildMessage(callback)', description: '监听父窗口或本窗口子窗口发来的消息，监听器需要释放。' },
+            ],
+        },
+        {
+            title: 'Nested Child Window',
+            items: [
+                { name: 'window.create("child-window", options)', description: '从当前子窗口继续创建下一级子窗口。' },
+                { name: 'child.postMessage(channel, ...args)', description: '向下一级子窗口发送消息。' },
+                { name: 'child.getBounds()', description: '读取下一级子窗口边界。' },
+                { name: 'child.setOpacity(opacity)', description: '设置下一级子窗口透明度。' },
+                { name: 'child.setBackgroundThrottling(allowed)', description: '设置下一级子窗口后台节流。' },
+                { name: 'child.focus()', description: '请求下一级子窗口获得焦点。' },
+                { name: 'child.close()', description: '关闭下一级子窗口。' },
+            ],
+        },
+    ], [])
+
+    const apiExamples: ApiExample[] = useMemo(() => [
+        {
+            title: '子窗口向父窗口发送消息',
+            code: `window.mulby.window.sendToParent('child-event', {
+  from: 'child-window',
+  message: 'ready',
+  at: Date.now()
+})
+
+const dispose = window.mulby.window.onChildMessage((channel, ...args) => {
+  console.log('received from parent or child:', channel, args)
+})
+
+dispose()`,
+        },
+        {
+            title: '子窗口自身控制',
+            code: `const bounds = await window.mulby.window.getBounds()
+await window.mulby.window.setSize(560, 380)
+window.mulby.window.setTitle('Updated Child Window')
+window.mulby.window.showInactive()
+window.mulby.window.focus()
+window.mulby.window.center()
+
+console.log(bounds)`,
+        },
+        {
+            title: '子窗口继续创建下一级窗口',
+            code: `const child = await window.mulby.window.create('child-window', {
+  loadMode: 'route',
+  width: 520,
+  height: 360,
+  params: { nested: 'true' },
+  backgroundThrottling: false
+})
+
+await child?.postMessage('parent-msg', { at: Date.now() })
+await child?.setOpacity(0.86)
+await child?.setBackgroundThrottling(false)`,
+        },
+    ], [])
+
+    const rawData = useMemo(() => ({
+        routeParams,
+        windowLabel,
+        isOverlay,
+        snapshot,
+        messages,
+        grandchild: grandchild ? {
+            id: grandchild.id,
+            bounds: grandchildBounds,
+            backgroundThrottlingDisabled: grandchildMuted,
+        } : null,
+        messageText,
+        childMessageText,
+        operationLog,
+    }), [
+        childMessageText,
+        grandchild,
+        grandchildBounds,
+        grandchildMuted,
+        isOverlay,
+        messageText,
+        messages,
+        operationLog,
+        routeParams,
+        snapshot,
+        windowLabel,
+    ])
 
     return (
         <div className="main-content">
             <PageHeader
                 icon={ContactRound}
-                title={`子窗口 (${windowId})`}
-                description="演示精准的父子窗口通信（消息不会发给兄弟窗口）"
+                title={`子窗口 (${windowLabel})`}
+                description="演示子窗口自身控制、父子通信和多级子窗口"
+                actions={
+                    <Button variant="secondary" onClick={() => void loadWindowSnapshot()}>
+                        <RefreshCw aria-hidden="true" size={14} />刷新状态
+                    </Button>
+                }
             />
-            <div className="page-content">
-                <div className="grid grid-2">
-                    {/* 接收消息 */}
-                    <Card title="接收到的消息" icon={Mail}>
-                        <div style={{
-                            padding: 'var(--spacing-sm)',
-                            background: 'var(--bg-secondary)',
-                            borderRadius: 'var(--radius-sm)',
-                            minHeight: '100px',
-                            maxHeight: '150px',
-                            overflowY: 'auto',
-                            fontFamily: 'monospace',
-                            fontSize: '11px'
-                        }}>
-                            {messages.length > 0 ? (
-                                messages.map((m, i) => <div key={i}>{m}</div>)
-                            ) : (
-                                <span style={{ color: 'var(--text-tertiary)' }}>等待消息...</span>
-                            )}
+
+            <div className="page-with-api-panel">
+                <div className="page-content">
+                    <div className="stats-grid" style={{ marginBottom: 'var(--spacing-lg)' }}>
+                        <div className="stat-item">
+                            <div className="stat-icon"><AppWindow aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{snapshot.type}</div>
+                            <div className="stat-label">窗口类型</div>
+                        </div>
+                        <div className="stat-item">
+                            <div className="stat-icon"><Layers aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{snapshot.mode}</div>
+                            <div className="stat-label">窗口模式</div>
+                        </div>
+                        <div className="stat-item">
+                            <div className="stat-icon"><Maximize aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{snapshot.state?.isMaximized ? '最大化' : '正常'}</div>
+                            <div className="stat-label">最大化状态</div>
+                        </div>
+                        <div className="stat-item">
+                            <div className="stat-icon"><SlidersHorizontal aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{snapshot.opacity === null ? '-' : snapshot.opacity.toFixed(2)}</div>
+                            <div className="stat-label">透明度</div>
+                        </div>
+                        <div className="stat-item">
+                            <div className="stat-icon"><MessageSquareText aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{messages.length}</div>
+                            <div className="stat-label">收到消息</div>
+                        </div>
+                    </div>
+
+                    {isOverlay && (
+                        <Card title="覆盖层状态" icon={BellRing}>
+                            <div className="action-bar">
+                                <StatusBadge status="warning">borderless</StatusBadge>
+                                <StatusBadge status="warning">ignoreMouseEvents</StatusBadge>
+                                <StatusBadge status="warning">alwaysOnTop</StatusBadge>
+                                <StatusBadge status="info">backgroundThrottling=false</StatusBadge>
+                            </div>
+                        </Card>
+                    )}
+
+                    <div className="grid grid-2">
+                        <Card title="父窗口通信" icon={Send}>
+                            <div className="input-group" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <label className="input-label" htmlFor="parent-message-input">发送内容</label>
+                                <input
+                                    id="parent-message-input"
+                                    className="input"
+                                    value={messageText}
+                                    onChange={(event) => setMessageText(event.target.value)}
+                                />
+                            </div>
+                            <div className="action-bar">
+                                <Button onClick={handleSendToParent}>
+                                    <Send aria-hidden="true" size={14} />发送给父窗口
+                                </Button>
+                                <Button variant="secondary" onClick={handleRequestRelay}>
+                                    <Users aria-hidden="true" size={14} />请求父窗口转发
+                                </Button>
+                            </div>
+                        </Card>
+
+                        <Card title="当前子窗口控制" icon={SlidersHorizontal}>
+                            <div className="info-grid" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <span className="info-label">Bounds</span>
+                                <span className="info-value">
+                                    {snapshot.bounds ? `${snapshot.bounds.x},${snapshot.bounds.y} ${snapshot.bounds.width}x${snapshot.bounds.height}` : '-'}
+                                </span>
+                                <span className="info-label">Always On Top</span>
+                                <span className="info-value">{snapshot.state?.isAlwaysOnTop ? 'true' : 'false'}</span>
+                            </div>
+                            <div className="action-bar">
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.setTitle', () => win.setTitle(`子窗口 ${formatTime(Date.now())}`), '已更新标题')}>设置标题</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.setSize', () => win.setSize(560, 380), '已设置大小')}>560x380</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.center', () => win.center(), '已居中')}>居中</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.showInactive', () => win.showInactive(), '已不抢焦点显示')}>
+                                    <Focus aria-hidden="true" size={14} />showInactive
+                                </Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.focus', () => win.focus(), '已请求焦点')}>focus</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.maximize', () => win.maximize(), '已切换最大化')}>最大化/还原</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.close', () => win.close(), '已请求关闭当前子窗口')}>
+                                    <X aria-hidden="true" size={14} />关闭当前窗口
+                                </Button>
+                            </div>
+                        </Card>
+                    </div>
+
+                    <Card
+                        title="下一级子窗口"
+                        icon={Users}
+                        actions={
+                            <>
+                                <Button onClick={() => void handleCreateGrandchild()} disabled={Boolean(grandchild)}>
+                                    <AppWindow aria-hidden="true" size={14} />创建下一级
+                                </Button>
+                                <Button variant="secondary" onClick={() => void handleCloseGrandchild()} disabled={!grandchild}>
+                                    <X aria-hidden="true" size={14} />关闭下一级
+                                </Button>
+                            </>
+                        }
+                    >
+                        <div className="info-grid" style={{ marginBottom: 'var(--spacing-md)' }}>
+                            <span className="info-label">Handle</span>
+                            <span className="info-value">{grandchild ? `id=${grandchild.id}` : '-'}</span>
+                            <span className="info-label">Bounds</span>
+                            <span className="info-value">{grandchildBounds ? `${grandchildBounds.x},${grandchildBounds.y} ${grandchildBounds.width}x${grandchildBounds.height}` : '-'}</span>
+                        </div>
+                        <div className="input-group" style={{ marginBottom: 'var(--spacing-md)' }}>
+                            <label className="input-label" htmlFor="child-message-input">发送给下一级</label>
+                            <input
+                                id="child-message-input"
+                                className="input"
+                                value={childMessageText}
+                                onChange={(event) => setChildMessageText(event.target.value)}
+                            />
+                        </div>
+                        <div className="action-bar">
+                            <Button variant="secondary" onClick={() => void handleGrandchildAction('postMessage', proxy => proxy.postMessage('parent-msg', { from: windowLabel, message: childMessageText, at: Date.now() }))} disabled={!grandchild}>发送消息</Button>
+                            <Button variant="secondary" onClick={() => void handleGrandchildAction('getBounds', proxy => proxy.getBounds())} disabled={!grandchild}>读取边界</Button>
+                            <Button variant="secondary" onClick={() => void handleGrandchildAction('setOpacity', proxy => proxy.setOpacity(0.86))} disabled={!grandchild}>透明度 0.86</Button>
+                            <Button variant="secondary" onClick={() => void handleGrandchildAction('setBackgroundThrottling', proxy => proxy.setBackgroundThrottling(grandchildMuted), { muted: !grandchildMuted })} disabled={!grandchild}>
+                                {grandchildMuted ? '允许后台节流' : '禁用后台节流'}
+                            </Button>
+                            <Button variant="secondary" onClick={() => void handleGrandchildAction('focus', proxy => proxy.focus())} disabled={!grandchild}>聚焦</Button>
                         </div>
                     </Card>
 
-                    {/* 发送消息 */}
-                    <Card title="发送消息" icon={Send}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)' }}>
-                            <Button onClick={handleSendToParent}>发送给父窗口</Button>
-                            <Button variant="secondary" onClick={handleRequestRelay}>
-                                请求转发给兄弟
-                            </Button>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                消息只会发给直接父窗口，不会发给兄弟窗口
+                    <div className="grid grid-2">
+                        <Card title="收到的消息" icon={MessageSquareText}>
+                            <div className="preview-box" style={{ alignItems: 'stretch', justifyContent: 'flex-start', minHeight: '180px' }}>
+                                <div style={{ display: 'grid', gap: 'var(--spacing-xs)', width: '100%' }}>
+                                    {messages.length > 0 ? messages.map((message, index) => (
+                                        <div key={`${message.timestamp}-${index}`} className="list-row">
+                                            <span className="list-row-main">
+                                                [{formatTime(message.timestamp)}] {message.channel}: {summarizeArgs(message.args)}
+                                            </span>
+                                        </div>
+                                    )) : (
+                                        <span>等待父窗口或下一级子窗口消息...</span>
+                                    )}
+                                </div>
                             </div>
-                        </div>
-                    </Card>
+                        </Card>
+
+                        <Card title="最近操作" icon={RefreshCw}>
+                            <div style={{ display: 'grid', gap: 'var(--spacing-sm)' }}>
+                                {operationLog.length > 0 ? operationLog.map((item, index) => (
+                                    <div key={`${item.timestamp}-${index}`} className="list-row">
+                                        <StatusBadge status={item.status}>{item.status}</StatusBadge>
+                                        <span className="list-row-main">{item.action}</span>
+                                        <span className="list-row-meta">{item.message}</span>
+                                        <span className="list-row-meta">{formatTime(item.timestamp)}</span>
+                                    </div>
+                                )) : (
+                                    <div className="empty-state">
+                                        <RefreshCw aria-hidden="true" size={28} />
+                                        <p>暂无操作记录</p>
+                                    </div>
+                                )}
+                            </div>
+                        </Card>
+                    </div>
                 </div>
 
-                {/* 创建自己的子窗口 */}
-                <Card title="创建下一级子窗口" icon={Users}>
-                    <div style={{ display: 'flex', gap: 'var(--spacing-sm)', flexWrap: 'wrap', alignItems: 'center' }}>
-                        <Button onClick={handleCreateGrandchild} disabled={!!childWin}>
-                            创建子窗口
-                        </Button>
-                        <Button variant="secondary" onClick={handleSendToChild} disabled={!childWin}>
-                            发送消息
-                        </Button>
-                        <Button variant="secondary" onClick={handleCloseChild} disabled={!childWin}>
-                            关闭子窗口
-                        </Button>
-                        {childWin && (
-                            <span style={{ fontSize: '12px', color: 'var(--success-color)' }}>
-                                子窗口已创建
-                            </span>
-                        )}
-                    </div>
-                    <div style={{ marginTop: 'var(--spacing-sm)', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        可以创建多级嵌套的子窗口，每一级只能与直接父/子通信
-                    </div>
-                </Card>
-
-                {/* 窗口控制 */}
-                <Card title="窗口控制" icon={SlidersHorizontal}>
-                    <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
-                        <Button variant="secondary" onClick={() => win.maximize()}>最大化/还原</Button>
-                        <Button variant="secondary" onClick={handleClose}>关闭窗口</Button>
-                    </div>
-                </Card>
-
-                {/* 代码示例 */}
-                <Card title="消息路由说明" icon={BookOpen}>
-                    <CodeBlock>
-                        {`// 子窗口间通信需要通过父窗口中转:
-// 1. 子窗口A 发送给父窗口
-window.mulby.window.sendToParent('relay-request', data)
-
-// 2. 父窗口收到后，转发给子窗口B
-win.onChildMessage((channel, data) => {
-  if (channel === 'relay-request') {
-    childWindowB.postMessage('relayed', data)
-  }
-})
-
-// 消息隔离保证:
-// 不同插件之间完全隔离
-// 兄弟窗口之间不会直接收到消息
-// 只有直接父子才能通信`}
-                    </CodeBlock>
-                </Card>
+                <ApiReferencePanel apiGroups={apiGroups} examples={apiExamples} rawData={rawData} />
             </div>
         </div>
     )

@@ -1,137 +1,599 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import {
-    BookOpen,
-    ContactRound,
-    Hammer,
-    Keyboard,
+    AppWindow,
+    BellRing,
+    Crosshair,
+    FileDown,
+    Focus,
+    Grip,
+    Layers,
     LocateFixed,
     Maximize,
     Minimize,
-    PanelTop,
+    MousePointer2,
+    PanelTopOpen,
     PanelsTopLeft,
-    Paperclip,
     Pin,
-    Rocket,
+    RefreshCw,
     Search,
     Send,
-    SlidersHorizontal,
-    Tag,
+    SquareDashedMousePointer,
+    TextCursorInput,
+    TimerReset,
     X,
 } from 'lucide-react'
-import { PageHeader, Card, Button, StatusBadge, CodeBlock } from '../../components'
+import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
+import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
 
+type WindowMode = 'attached' | 'detached'
+type WindowType = 'main' | 'detach'
+type OperationStatus = 'success' | 'warning' | 'error' | 'info'
+type LoadingAction =
+    | 'refresh'
+    | 'child'
+    | 'overlay'
+    | 'drag'
+    | 'bounds'
+    | null
+
+interface WindowBounds {
+    x: number
+    y: number
+    width: number
+    height: number
+}
+
+interface WindowStateSnapshot {
+    isMaximized: boolean
+    isAlwaysOnTop: boolean
+    opacity: number
+}
+
+interface DisplaySnapshot {
+    id?: number
+    bounds: WindowBounds
+    workArea?: WindowBounds
+    scaleFactor?: number
+    isPrimary?: boolean
+}
+
+interface ChildWindowHandle {
+    id: number
+    show(): Promise<void>
+    hide(): Promise<void>
+    close(): Promise<void>
+    destroy(): Promise<void>
+    focus(): Promise<void>
+    showInactive(): Promise<void>
+    setTitle(title: string): Promise<void>
+    setSize(width: number, height: number): Promise<void>
+    setPosition(x: number, y: number): Promise<void>
+    setBounds(bounds: Partial<WindowBounds>): Promise<boolean>
+    getBounds(): Promise<WindowBounds>
+    setOpacity(opacity: number): Promise<void>
+    setBackgroundThrottling(allowed: boolean): Promise<boolean>
+    setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): Promise<void>
+    setAlwaysOnTop(flag: boolean, level?: string): Promise<void>
+    setVisibleOnAllWorkspaces(flag: boolean, options?: { visibleOnFullScreen?: boolean }): Promise<void>
+    setFullScreen(flag: boolean): Promise<void>
+    postMessage(channel: string, ...args: unknown[]): Promise<void>
+}
+
+interface ChildWindowRecord {
+    id: number
+    name: string
+    kind: 'route' | 'overlay'
+    proxy: ChildWindowHandle
+    createdAt: number
+    bounds: WindowBounds | null
+    opacity: number
+    alwaysOnTop: boolean
+    backgroundThrottling: boolean
+    ignoreMouseEvents: boolean
+    visibleOnAllWorkspaces: boolean
+    fullscreen: boolean
+    lastAction: string
+}
+
+interface ChildMessage {
+    channel: string
+    args: unknown[]
+    timestamp: number
+}
+
+interface OperationLogItem {
+    action: string
+    status: OperationStatus
+    message: string
+    timestamp: number
+    details?: unknown
+}
+
+interface ResizeDragState {
+    active: boolean
+    edge: 'bottom-right'
+    startX: number
+    startY: number
+    baseBounds: WindowBounds
+}
+
+function getErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error)
+}
+
+function formatTime(timestamp: number) {
+    return new Date(timestamp).toLocaleTimeString()
+}
+
+function summarizeArgs(args: unknown[]) {
+    try {
+        return JSON.stringify(args)
+    } catch {
+        return String(args)
+    }
+}
+
+function toWindowBounds(value: unknown): WindowBounds | null {
+    if (!value || typeof value !== 'object') return null
+
+    const bounds = value as Partial<WindowBounds>
+    if (
+        typeof bounds.x !== 'number'
+        || typeof bounds.y !== 'number'
+        || typeof bounds.width !== 'number'
+        || typeof bounds.height !== 'number'
+    ) {
+        return null
+    }
+
+    return {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+    }
+}
+
+function clampOpacity(value: number) {
+    return Math.min(1, Math.max(0.3, value))
+}
+
+function pathBasename(path: string) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
+
 export function WindowAPIModule() {
-    const { window: win, subInput, plugin, filesystem, system, dialog } = useMulby()
+    const {
+        window: win,
+        subInput,
+        filesystem,
+        system,
+        dialog,
+        screen,
+        onWindowStateChange,
+    } = useMulby()
     const notify = useNotification()
 
-    // 窗口状态
-    const [windowType, setWindowType] = useState<string>('-')
-    const [windowMode, setWindowMode] = useState<string>('-')
-    const [windowState, setWindowState] = useState<{ isMaximized: boolean; isAlwaysOnTop: boolean } | null>(null)
+    const childWindowsRef = useRef<ChildWindowRecord[]>([])
 
-    // SubInput 状态
+    const [windowType, setWindowType] = useState<WindowType | '-'>('-')
+    const [windowMode, setWindowMode] = useState<WindowMode | '-'>('-')
+    const [windowState, setWindowState] = useState<WindowStateSnapshot | null>(null)
+    const [bounds, setBounds] = useState<WindowBounds | null>(null)
+    const [opacity, setOpacityValue] = useState(1)
+    const [alwaysOnTop, setAlwaysOnTop] = useState(false)
+    const [backgroundThrottling, setBackgroundThrottling] = useState(true)
+    const [ignoreMouseEvents, setIgnoreMouseEvents] = useState(false)
+    const [visibleOnAllWorkspaces, setVisibleOnAllWorkspaces] = useState(false)
+    const [fullscreen, setFullscreen] = useState(false)
+    const [customTitle, setCustomTitle] = useState('Mulby Showcase Window')
     const [subInputEnabled, setSubInputEnabled] = useState(false)
     const [subInputText, setSubInputText] = useState('')
-
-    // FindInPage 状态
-    const [searchText, setSearchText] = useState('')
+    const [subInputPreset, setSubInputPreset] = useState('由插件写入的 SubInput 内容')
+    const [searchText, setSearchText] = useState('窗口')
+    const [matchCase, setMatchCase] = useState(false)
     const [findResult, setFindResult] = useState<number | null>(null)
-
-    // 子窗口状态 (支持多个子窗口)
-    const [childWindows, setChildWindows] = useState<{ id: number; proxy: any; name: string }[]>([])
-    const [childMessages, setChildMessages] = useState<string[]>([])
-
-    // 文件拖拽状态
-    const [dragFilePath, setDragFilePath] = useState<string>('')
-    const [generatedTextPath, setGeneratedTextPath] = useState<string>('')
-    const [generatedImagePath, setGeneratedImagePath] = useState<string>('')
-
-    // 加载窗口信息
-    const loadWindowInfo = useCallback(async () => {
-        try {
-            const type = await win.getWindowType()
-            setWindowType(type || '-')
-
-            const mode = await win.getMode()
-            setWindowMode(mode || '-')
-
-            const state = await win.getState()
-            setWindowState(state)
-        } catch (error) {
-            console.error('[WindowAPI] Error loading window info:', error)
-        }
-    }, [win])
+    const [childWindows, setChildWindows] = useState<ChildWindowRecord[]>([])
+    const [childMessages, setChildMessages] = useState<ChildMessage[]>([])
+    const [dragFilePath, setDragFilePath] = useState('')
+    const [generatedTextPath, setGeneratedTextPath] = useState('')
+    const [dragHint, setDragHint] = useState('先选择或生成文件')
+    const [loadingAction, setLoadingAction] = useState<LoadingAction>(null)
+    const [operationLog, setOperationLog] = useState<OperationLogItem[]>([])
+    const [resizeDrag, setResizeDrag] = useState<ResizeDragState | null>(null)
 
     useEffect(() => {
-        loadWindowInfo()
+        childWindowsRef.current = childWindows
+    }, [childWindows])
+
+    const pushOperation = useCallback((item: Omit<OperationLogItem, 'timestamp'>) => {
+        setOperationLog(current => [
+            { ...item, timestamp: Date.now() },
+            ...current,
+        ].slice(0, 12))
+    }, [])
+
+    const loadWindowInfo = useCallback(async () => {
+        setLoadingAction('refresh')
+        try {
+            const [type, mode, state, currentBounds, currentOpacity] = await Promise.all([
+                win.getWindowType(),
+                win.getMode(),
+                win.getState(),
+                win.getBounds(),
+                win.getOpacity(),
+            ])
+            setWindowType(type || '-')
+            setWindowMode(mode || '-')
+            setWindowState(state)
+            setBounds(currentBounds)
+            setOpacityValue(currentOpacity)
+            setAlwaysOnTop(Boolean(state?.isAlwaysOnTop))
+            pushOperation({
+                action: 'window.getState',
+                status: 'success',
+                message: '已刷新窗口状态',
+                details: { type, mode, state, bounds: currentBounds, opacity: currentOpacity },
+            })
+        } catch (error) {
+            pushOperation({
+                action: 'window.getState',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('刷新窗口状态失败')
+        } finally {
+            setLoadingAction(null)
+        }
+    }, [notify, pushOperation, win])
+
+    useEffect(() => {
+        void loadWindowInfo()
     }, [loadWindowInfo])
 
-    // 监听 SubInput 变化
     useEffect(() => {
-        if (subInput.onChange) {
-            subInput.onChange((data) => {
-                setSubInputText(data.text)
-            })
-        }
+        return subInput.onChange((data) => {
+            setSubInputText(data.text)
+        })
     }, [subInput])
 
-    // SubInput 操作
+    useEffect(() => {
+        if (!onWindowStateChange) return undefined
+
+        return onWindowStateChange((state) => {
+            setWindowState(current => ({
+                isMaximized: state.isMaximized,
+                isAlwaysOnTop: current?.isAlwaysOnTop ?? alwaysOnTop,
+                opacity: current?.opacity ?? opacity,
+            }))
+            pushOperation({
+                action: 'onWindowStateChange',
+                status: 'info',
+                message: `窗口最大化状态变为 ${state.isMaximized ? '是' : '否'}`,
+                details: state,
+            })
+        })
+    }, [alwaysOnTop, onWindowStateChange, opacity, pushOperation])
+
+    useEffect(() => {
+        return win.onChildMessage((channel, ...args) => {
+            const timestamp = Date.now()
+            setChildMessages(current => [
+                { channel, args, timestamp },
+                ...current,
+            ].slice(0, 12))
+
+            if (channel === 'child-event') {
+                notify.info(`收到子窗口消息: ${String(args[0] ?? '')}`)
+            }
+
+            if (channel === 'relay-request') {
+                const payload = args[0] as { from?: string; message?: string } | undefined
+                childWindowsRef.current.forEach((child) => {
+                    void child.proxy.postMessage('relayed', {
+                        originalFrom: payload?.from,
+                        message: payload?.message,
+                        relayedAt: timestamp,
+                    })
+                })
+                pushOperation({
+                    action: 'window.onChildMessage',
+                    status: 'info',
+                    message: '已将子窗口请求转发给当前插件创建的其他子窗口',
+                    details: { channel, args },
+                })
+            }
+        })
+    }, [notify, pushOperation, win])
+
+    const updateChild = useCallback((id: number, patch: Partial<ChildWindowRecord>) => {
+        setChildWindows(current => current.map(child => (
+            child.id === id ? { ...child, ...patch } : child
+        )))
+    }, [])
+
+    const removeChild = useCallback((id: number) => {
+        setChildWindows(current => current.filter(child => child.id !== id))
+    }, [])
+
+    const refreshChildBounds = useCallback(async (child: ChildWindowRecord) => {
+        const nextBounds = await child.proxy.getBounds()
+        updateChild(child.id, { bounds: nextBounds, lastAction: 'getBounds' })
+        return nextBounds
+    }, [updateChild])
+
+    const runWindowAction = useCallback(async (
+        action: string,
+        callback: () => unknown | Promise<unknown>,
+        options?: { refresh?: boolean; success?: string; warning?: string }
+    ) => {
+        try {
+            const details = await callback()
+            pushOperation({
+                action,
+                status: 'success',
+                message: options?.success || '操作已发送到宿主',
+                details,
+            })
+            if (options?.warning) {
+                notify.warning(options.warning)
+            }
+            if (options?.refresh) {
+                setTimeout(() => void loadWindowInfo(), 120)
+            }
+        } catch (error) {
+            pushOperation({
+                action,
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`${action} 失败`)
+        }
+    }, [loadWindowInfo, notify, pushOperation])
+
+    const handleSetTitle = () => {
+        void runWindowAction('window.setTitle', () => {
+            win.setTitle(customTitle)
+            return { title: customTitle }
+        }, { success: '已设置当前窗口标题' })
+    }
+
+    const handleSetSize = (width: number, height: number) => {
+        void runWindowAction('window.setSize', () => {
+            win.setSize(width, height)
+            return { width, height }
+        }, { refresh: true, success: `窗口大小已设置为 ${width}x${height}` })
+    }
+
+    const handleSetBounds = async () => {
+        if (!bounds) {
+            notify.warning('请先刷新窗口边界')
+            return
+        }
+
+        setLoadingAction('bounds')
+        try {
+            const nextBounds = {
+                x: bounds.x + 16,
+                y: bounds.y + 16,
+                width: Math.max(420, bounds.width),
+                height: Math.max(360, bounds.height),
+            }
+            const success = await win.setBounds(nextBounds)
+            setBounds(nextBounds)
+            pushOperation({
+                action: 'window.setBounds',
+                status: success ? 'success' : 'warning',
+                message: success ? '窗口边界已更新' : '宿主未应用窗口边界',
+                details: nextBounds,
+            })
+            setTimeout(() => void loadWindowInfo(), 120)
+        } catch (error) {
+            pushOperation({
+                action: 'window.setBounds',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('设置窗口边界失败')
+        } finally {
+            setLoadingAction(null)
+        }
+    }
+
+    const handleSetPosition = () => {
+        if (!bounds) {
+            notify.warning('请先刷新窗口边界')
+            return
+        }
+
+        void runWindowAction('window.setPosition', () => {
+            win.setPosition(bounds.x + 24, bounds.y + 24)
+            return { x: bounds.x + 24, y: bounds.y + 24 }
+        }, { refresh: true, success: '窗口位置已偏移' })
+    }
+
+    const handleSetHeight = (height: number, allowResize = false) => {
+        void runWindowAction('window.setExpendHeight', () => {
+            win.setExpendHeight(height, allowResize)
+            return { height, allowResize }
+        }, { refresh: true, success: `窗口高度已设置为 ${height}px` })
+    }
+
+    const handleToggleAlwaysOnTop = (flag: boolean) => {
+        void runWindowAction('window.setAlwaysOnTop', () => {
+            win.setAlwaysOnTop(flag, flag ? 'floating' : undefined)
+            setAlwaysOnTop(flag)
+            setWindowState(current => current ? { ...current, isAlwaysOnTop: flag } : current)
+            return { flag, level: flag ? 'floating' : undefined }
+        }, { refresh: true, success: flag ? '已设置当前窗口置顶' : '已取消当前窗口置顶' })
+    }
+
+    const handleOpacityChange = (nextOpacity: number) => {
+        const normalized = clampOpacity(nextOpacity)
+        setOpacityValue(normalized)
+        void runWindowAction('window.setOpacity', async () => {
+            await win.setOpacity(normalized)
+            setWindowState(current => current ? { ...current, opacity: normalized } : current)
+            return { opacity: normalized }
+        }, { refresh: true, success: `窗口透明度已设置为 ${normalized.toFixed(2)}` })
+    }
+
+    const handleToggleBackgroundThrottling = (allowed: boolean) => {
+        void runWindowAction('window.setBackgroundThrottling', async () => {
+            const success = await win.setBackgroundThrottling(allowed)
+            setBackgroundThrottling(allowed)
+            return { allowed, success }
+        }, { success: allowed ? '已允许后台节流' : '已禁用后台节流' })
+    }
+
+    const handleToggleIgnoreMouse = (ignore: boolean) => {
+        void runWindowAction('window.setIgnoreMouseEvents', () => {
+            win.setIgnoreMouseEvents(ignore, ignore ? { forward: true } : undefined)
+            setIgnoreMouseEvents(ignore)
+            return { ignore, forward: ignore }
+        }, {
+            success: ignore ? '已开启鼠标事件穿透' : '已关闭鼠标事件穿透',
+            warning: ignore ? '鼠标穿透后可能需要使用键盘或宿主窗口控制恢复' : undefined,
+        })
+    }
+
+    const handleToggleAllWorkspaces = (flag: boolean) => {
+        void runWindowAction('window.setVisibleOnAllWorkspaces', () => {
+            win.setVisibleOnAllWorkspaces(flag, { visibleOnFullScreen: flag })
+            setVisibleOnAllWorkspaces(flag)
+            return { flag, visibleOnFullScreen: flag }
+        }, { success: flag ? '已请求在所有工作区可见' : '已取消所有工作区可见' })
+    }
+
+    const handleToggleFullscreen = (flag: boolean) => {
+        void runWindowAction('window.setFullScreen', () => {
+            win.setFullScreen(flag)
+            setFullscreen(flag)
+            return { flag }
+        }, { refresh: true, success: flag ? '已进入全屏' : '已退出全屏' })
+    }
+
+    const handleResizeGripPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!bounds) {
+            notify.warning('请先刷新窗口边界')
+            return
+        }
+
+        event.currentTarget.setPointerCapture(event.pointerId)
+        setResizeDrag({
+            active: true,
+            edge: 'bottom-right',
+            startX: event.screenX,
+            startY: event.screenY,
+            baseBounds: bounds,
+        })
+    }
+
+    const handleResizeGripPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!resizeDrag?.active) return
+
+        win.resizeDrag({
+            edge: resizeDrag.edge,
+            startX: resizeDrag.startX,
+            startY: resizeDrag.startY,
+            currentX: event.screenX,
+            currentY: event.screenY,
+            baseBounds: resizeDrag.baseBounds,
+        })
+    }
+
+    const handleResizeGripPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (resizeDrag?.active) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+            setResizeDrag(null)
+            setTimeout(() => void loadWindowInfo(), 120)
+            pushOperation({
+                action: 'window.resizeDrag',
+                status: 'info',
+                message: '拖拽缩放已结束',
+                details: resizeDrag,
+            })
+        }
+    }
+
     const handleEnableSubInput = async () => {
         try {
             const result = await subInput.set('在这里输入内容...', true)
-            if (result) {
-                setSubInputEnabled(true)
-                notify.success('子输入框已启用')
-            }
+            setSubInputEnabled(result)
+            pushOperation({
+                action: 'subInput.set',
+                status: result ? 'success' : 'warning',
+                message: result ? '子输入框已启用' : '宿主未启用子输入框',
+            })
+            if (result) notify.success('子输入框已启用')
         } catch (error) {
+            pushOperation({
+                action: 'subInput.set',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
             notify.error('启用子输入框失败')
         }
     }
 
     const handleDisableSubInput = async () => {
         try {
-            await subInput.remove()
+            const result = await subInput.remove()
             setSubInputEnabled(false)
             setSubInputText('')
-            notify.success('子输入框已移除')
+            pushOperation({
+                action: 'subInput.remove',
+                status: result ? 'success' : 'warning',
+                message: result ? '子输入框已移除' : '宿主未返回移除成功',
+            })
         } catch (error) {
+            pushOperation({
+                action: 'subInput.remove',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
             notify.error('移除子输入框失败')
         }
     }
 
-    // 窗口操作
-    const handleSetHeight = (height: number) => {
-        win.setExpendHeight(height)
-        notify.info(`窗口高度设置为 ${height}px`)
+    const handleSetSubInputValue = () => {
+        subInput.setValue(subInputPreset)
+        setSubInputText(subInputPreset)
+        pushOperation({
+            action: 'subInput.setValue',
+            status: 'success',
+            message: '已写入子输入框内容',
+            details: { text: subInputPreset },
+        })
     }
 
-    const handleDetach = () => {
-        win.detach()
-        notify.info('已请求分离为独立窗口')
-    }
-
-    const handleMinimize = () => {
-        win.minimize()
-    }
-
-    const handleMaximize = () => {
-        win.maximize()
-        setTimeout(loadWindowInfo, 100)
-    }
-
-    // 页面内查找
-    const handleFindInPage = async () => {
+    const handleFindInPage = async (findNext = false) => {
         if (!searchText.trim()) {
             notify.warning('请输入搜索内容')
             return
         }
+
         try {
-            const requestId = await win.findInPage(searchText.trim())
+            const requestId = await win.findInPage(searchText.trim(), {
+                forward: true,
+                findNext,
+                matchCase,
+            })
             setFindResult(requestId)
-            notify.info(`查找请求 ID: ${requestId}`)
+            pushOperation({
+                action: 'window.findInPage',
+                status: 'success',
+                message: `查找请求 ID: ${requestId}`,
+                details: { text: searchText.trim(), findNext, matchCase },
+            })
         } catch (error) {
+            pushOperation({
+                action: 'window.findInPage',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
             notify.error('查找失败')
         }
     }
@@ -139,125 +601,276 @@ export function WindowAPIModule() {
     const handleStopFind = () => {
         win.stopFindInPage('clearSelection')
         setFindResult(null)
-        notify.info('已停止查找')
+        pushOperation({
+            action: 'window.stopFindInPage',
+            status: 'info',
+            message: '已停止页面查找并清除选区',
+        })
     }
 
-    // 子窗口操作 - 支持创建多个
+    const addChildRecord = useCallback(async (
+        proxy: ChildWindowHandle,
+        name: string,
+        kind: ChildWindowRecord['kind'],
+        patch?: Partial<ChildWindowRecord>
+    ) => {
+        let childBounds: WindowBounds | null = null
+        try {
+            childBounds = await proxy.getBounds()
+        } catch {
+            childBounds = null
+        }
+
+        setChildWindows(current => [
+            ...current,
+            {
+                id: proxy.id,
+                name,
+                kind,
+                proxy,
+                createdAt: Date.now(),
+                bounds: childBounds ?? patch?.bounds ?? null,
+                opacity: patch?.opacity ?? 1,
+                alwaysOnTop: patch?.alwaysOnTop ?? false,
+                backgroundThrottling: patch?.backgroundThrottling ?? true,
+                ignoreMouseEvents: patch?.ignoreMouseEvents ?? false,
+                visibleOnAllWorkspaces: patch?.visibleOnAllWorkspaces ?? false,
+                fullscreen: patch?.fullscreen ?? false,
+                lastAction: 'created',
+            },
+        ])
+    }, [])
+
     const handleCreateChild = async () => {
+        setLoadingAction('child')
         try {
-            const childIndex = childWindows.length + 1
-            const proxy = await win.create('/child-window', {
-                width: 550,
-                height: 380,
-                title: `子窗口 #${childIndex}`
+            const childIndex = childWindows.filter(child => child.kind === 'route').length + 1
+            const proxy = await win.create('child-window', {
+                loadMode: 'route',
+                width: 560,
+                height: 420,
+                title: `Showcase 子窗口 #${childIndex}`,
+                backgroundThrottling: false,
+                params: {
+                    source: 'window-api',
+                    index: String(childIndex),
+                },
+            }) as ChildWindowHandle | null
+            if (!proxy) {
+                pushOperation({
+                    action: 'window.create',
+                    status: 'warning',
+                    message: '宿主未返回子窗口句柄',
+                })
+                return
+            }
+
+            await addChildRecord(proxy, `子窗口 #${childIndex}`, 'route', { backgroundThrottling: false })
+            pushOperation({
+                action: 'window.create',
+                status: 'success',
+                message: `已创建子窗口 #${childIndex}`,
+                details: { id: proxy.id, loadMode: 'route' },
             })
-            if (proxy) {
-                setChildWindows(prev => [...prev, { id: proxy.id, proxy, name: `子窗口 #${childIndex}` }])
-                notify.success(`子窗口 #${childIndex} 创建成功`)
-            }
         } catch (error) {
+            pushOperation({
+                action: 'window.create',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
             notify.error('创建子窗口失败')
+        } finally {
+            setLoadingAction(null)
         }
     }
 
-    const handleChildAction = async (action: 'show' | 'hide' | 'close' | 'focus' | 'ping', childId?: number) => {
-        const targetChild = childId
-            ? childWindows.find(c => c.id === childId)
-            : childWindows[childWindows.length - 1]
-        if (!targetChild) return
-
+    const handleCreateOverlay = async () => {
+        setLoadingAction('overlay')
         try {
-            switch (action) {
-                case 'show': await targetChild.proxy.show(); break
-                case 'hide': await targetChild.proxy.hide(); break
-                case 'close':
-                    await targetChild.proxy.close()
-                    setChildWindows(prev => prev.filter(c => c.id !== targetChild.id))
-                    break
-                case 'focus': await targetChild.proxy.focus(); break
-                case 'ping':
-                    await targetChild.proxy.postMessage('ping', `来自父窗口的消息 @${new Date().toLocaleTimeString()}`)
-                    break
+            const primary = await screen.getPrimaryDisplay() as DisplaySnapshot
+            const displayBounds = toWindowBounds(primary?.bounds) || { x: 0, y: 0, width: 640, height: 420 }
+            const overlayWidth = Math.min(420, Math.max(320, displayBounds.width - 160))
+            const overlayHeight = 240
+            const overlayBounds = {
+                x: displayBounds.x + Math.max(24, displayBounds.width - overlayWidth - 80),
+                y: displayBounds.y + 80,
+                width: overlayWidth,
+                height: overlayHeight,
             }
+            const proxy = await win.create('child-window', {
+                loadMode: 'route',
+                title: 'Showcase 覆盖层子窗口',
+                type: 'borderless',
+                titleBar: false,
+                x: overlayBounds.x,
+                y: overlayBounds.y,
+                width: overlayBounds.width,
+                height: overlayBounds.height,
+                transparent: true,
+                alwaysOnTop: true,
+                alwaysOnTopLevel: 'screen-saver',
+                focusable: false,
+                skipTaskbar: true,
+                enableLargerThanScreen: true,
+                ignoreMouseEvents: true,
+                forwardMouseEvents: true,
+                visibleOnAllWorkspaces: true,
+                visibleOnFullScreen: true,
+                backgroundThrottling: false,
+                opacity: 0.92,
+                params: {
+                    source: 'window-api',
+                    overlay: 'true',
+                },
+            }) as ChildWindowHandle | null
+
+            if (!proxy) {
+                pushOperation({
+                    action: 'window.create overlay',
+                    status: 'warning',
+                    message: '宿主未返回覆盖层子窗口句柄',
+                })
+                return
+            }
+
+            await addChildRecord(proxy, '覆盖层窗口', 'overlay', {
+                bounds: overlayBounds,
+                opacity: 0.92,
+                alwaysOnTop: true,
+                backgroundThrottling: false,
+                ignoreMouseEvents: true,
+                visibleOnAllWorkspaces: true,
+            })
+            pushOperation({
+                action: 'window.create overlay',
+                status: 'success',
+                message: '已创建覆盖层子窗口',
+                details: { id: proxy.id, bounds: overlayBounds, display: primary },
+            })
         } catch (error) {
-            console.error('Child action failed:', error)
+            pushOperation({
+                action: 'window.create overlay',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('创建覆盖层子窗口失败')
+        } finally {
+            setLoadingAction(null)
         }
     }
 
-    // 关闭所有子窗口
+    const handleChildAction = async (
+        child: ChildWindowRecord,
+        label: string,
+        callback: (proxy: ChildWindowHandle) => Promise<unknown>,
+        patch?: Partial<ChildWindowRecord>
+    ) => {
+        try {
+            const details = await callback(child.proxy)
+            updateChild(child.id, { ...patch, lastAction: label })
+            pushOperation({
+                action: `child.${label}`,
+                status: 'success',
+                message: `${child.name} 已执行 ${label}`,
+                details: { id: child.id, result: details },
+            })
+        } catch (error) {
+            pushOperation({
+                action: `child.${label}`,
+                status: 'error',
+                message: getErrorMessage(error),
+                details: { id: child.id },
+            })
+            notify.error(`${child.name} 操作失败`)
+        }
+    }
+
+    const handleCloseChild = async (child: ChildWindowRecord, destroy = false) => {
+        try {
+            if (destroy) {
+                await child.proxy.destroy()
+            } else {
+                await child.proxy.close()
+            }
+            removeChild(child.id)
+            pushOperation({
+                action: destroy ? 'child.destroy' : 'child.close',
+                status: 'success',
+                message: `${child.name} 已${destroy ? '销毁' : '关闭'}`,
+                details: { id: child.id },
+            })
+        } catch (error) {
+            pushOperation({
+                action: destroy ? 'child.destroy' : 'child.close',
+                status: 'error',
+                message: getErrorMessage(error),
+                details: { id: child.id },
+            })
+            notify.error('关闭子窗口失败')
+        }
+    }
+
     const handleCloseAllChildren = async () => {
-        for (const child of childWindows) {
-            try { await child.proxy.close() } catch (e) { /* ignore */ }
+        const windows = [...childWindows]
+        for (const child of windows) {
+            try {
+                await child.proxy.close()
+            } catch {
+                // Child windows can already be closed by the user.
+            }
         }
         setChildWindows([])
         setChildMessages([])
-        notify.info('已关闭所有子窗口')
+        pushOperation({
+            action: 'child.closeAll',
+            status: 'info',
+            message: `已请求关闭 ${windows.length} 个子窗口`,
+        })
     }
 
-    // 广播消息给所有子窗口
     const handleBroadcast = async () => {
-        const msg = `广播消息 @${new Date().toLocaleTimeString()}`
-        for (const child of childWindows) {
-            try { await child.proxy.postMessage('broadcast', msg) } catch (e) { /* ignore */ }
+        const payload = {
+            from: 'window-api',
+            message: `父窗口广播 ${formatTime(Date.now())}`,
         }
-        notify.success(`已广播给 ${childWindows.length} 个子窗口`)
+        await Promise.allSettled(childWindows.map(child => child.proxy.postMessage('broadcast', payload)))
+        pushOperation({
+            action: 'child.postMessage broadcast',
+            status: 'success',
+            message: `已广播给 ${childWindows.length} 个子窗口`,
+            details: payload,
+        })
     }
 
-    // 监听子窗口消息 + 转发逻辑
-    useEffect(() => {
-        const handleMessage = (channel: string, ...args: unknown[]) => {
-            const timestamp = new Date().toLocaleTimeString()
-            console.log('[WindowAPI] Received child message:', channel, args)
-            setChildMessages(prev => [...prev.slice(-9), `[${timestamp}] ${channel}: ${JSON.stringify(args)}`])
-
-            if (channel === 'child-event') {
-                notify.info(`收到子窗口消息: ${args[0]}`)
-            }
-
-            // 处理转发请求 - 向其他所有子窗口广播
-            if (channel === 'relay-request') {
-                const data = args[0] as { from?: string; message?: string }
-                childWindows.forEach(child => {
-                    child.proxy.postMessage('relayed', {
-                        originalFrom: data?.from,
-                        message: data?.message,
-                        relayedAt: timestamp
-                    })
-                })
-                notify.info('已转发消息给所有子窗口')
-            }
-        }
-        win.onChildMessage(handleMessage)
-    }, [win, notify, childWindows])
-
-    // 文件拖拽
     const handlePickDragFile = async () => {
         try {
-            const files = await dialog.showOpenDialog({ properties: ['openFile'] })
+            const files = await dialog.showOpenDialog({
+                title: '选择要拖出的文件',
+                properties: ['openFile'],
+            })
             const filePath = files?.[0]
             if (filePath) {
                 setDragFilePath(filePath)
-                notify.success('已选择拖拽文件')
+                setDragHint(`已选择 ${pathBasename(filePath)}`)
+                pushOperation({
+                    action: 'dialog.showOpenDialog',
+                    status: 'success',
+                    message: '已选择拖拽文件',
+                    details: { filePath },
+                })
             }
         } catch (error) {
+            pushOperation({
+                action: 'dialog.showOpenDialog',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
             notify.error('选择文件失败')
         }
     }
 
-    const handleStartDrag = (filePath: string, event?: DragEvent<HTMLDivElement>) => {
-        if (!filePath) {
-            notify.warning('请先选择或生成文件')
-            return
-        }
-        event?.preventDefault()
-        try {
-            win.startDrag(filePath)
-        } catch (e) {
-            notify.error('拖拽失败')
-        }
-    }
-
-    const createTempFile = useCallback(async (type: 'text' | 'image') => {
+    const createTempFile = useCallback(async () => {
+        setLoadingAction('drag')
         try {
             const tempDir = await system.getPath('temp')
             if (!tempDir) {
@@ -265,337 +878,621 @@ export function WindowAPIModule() {
                 return ''
             }
             const timestamp = Date.now()
-            if (type === 'text') {
-                const filePath = `${tempDir}/mulby-drag-${timestamp}.txt`
-                const content = `Mulby Drag Demo\n${new Date(timestamp).toISOString()}`
-                await filesystem.writeFile(filePath, content, 'utf-8')
-                setGeneratedTextPath(filePath)
-                notify.success('已生成临时文本文件')
-                return filePath
-            }
-            const filePath = `${tempDir}/mulby-drag-${timestamp}.png`
-            const base64Png =
-                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOqz9uoAAAAASUVORK5CYII='
-            await filesystem.writeFile(filePath, base64Png, 'base64')
-            setGeneratedImagePath(filePath)
-            notify.success('已生成临时图片文件')
+            const filePath = `${tempDir}/mulby-window-drag-${timestamp}.txt`
+            const content = [
+                'Mulby Showcase Window Drag Demo',
+                `createdAt=${new Date(timestamp).toISOString()}`,
+                `bounds=${JSON.stringify(bounds)}`,
+            ].join('\n')
+            await filesystem.writeFile(filePath, content, 'utf-8')
+            setGeneratedTextPath(filePath)
+            setDragHint(`已生成 ${pathBasename(filePath)}`)
+            pushOperation({
+                action: 'filesystem.writeFile',
+                status: 'success',
+                message: '已生成临时拖拽文件',
+                details: { filePath },
+            })
             return filePath
         } catch (error) {
+            pushOperation({
+                action: 'filesystem.writeFile',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
             notify.error('生成临时文件失败')
             return ''
+        } finally {
+            setLoadingAction(null)
         }
-    }, [filesystem, system, notify])
+    }, [bounds, filesystem, notify, pushOperation, system])
 
-    // 插件导航
-    const handleOutPlugin = async (isKill: boolean) => {
+    const handleStartDrag = (filePath: string, event?: DragEvent<HTMLDivElement>) => {
+        event?.preventDefault()
+        if (!filePath) {
+            notify.warning('请先选择或生成文件')
+            return
+        }
+
         try {
-            await plugin.outPlugin(isKill)
-            notify.info(isKill ? '插件已关闭' : '插件已隐藏')
+            win.startDrag(filePath)
+            pushOperation({
+                action: 'window.startDrag',
+                status: 'success',
+                message: '已启动系统原生文件拖拽',
+                details: { filePath },
+            })
         } catch (error) {
-            notify.error('操作失败')
+            pushOperation({
+                action: 'window.startDrag',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error('拖拽失败')
         }
     }
+
+    const apiGroups: ApiReferenceGroup[] = useMemo(() => [
+        {
+            title: 'Window Status',
+            items: [
+                { name: 'window.getWindowType()', description: '获取当前窗口类型，主面板返回 main，独立/子窗口返回 detach。' },
+                { name: 'window.getMode()', description: '获取插件窗口模式：attached 或 detached。' },
+                { name: 'window.getState()', description: '读取最大化、置顶和透明度状态。' },
+                { name: 'window.getBounds()', description: '读取当前窗口屏幕边界。' },
+                { name: 'window.getOpacity()', description: '读取当前窗口透明度。' },
+                { name: 'onWindowStateChange(callback)', description: '监听窗口最大化状态变化，回调需要在卸载时释放。' },
+            ],
+        },
+        {
+            title: 'Current Window Control',
+            items: [
+                { name: 'window.invalidate()', description: '请求重绘当前窗口。' },
+                { name: 'window.show()', description: '显示并聚焦当前窗口。' },
+                { name: 'window.showInactive()', description: '显示窗口但不主动抢焦点。' },
+                { name: 'window.focus()', description: '请求当前窗口和插件内容获得焦点。' },
+                { name: 'window.setTitle(title)', description: '设置当前窗口标题。' },
+                { name: 'window.setSize(width, height)', description: '设置当前窗口大小。' },
+                { name: 'window.setPosition(x, y)', description: '设置当前窗口左上角坐标。' },
+                { name: 'window.setBounds(bounds)', description: '设置当前窗口位置和尺寸，字段可部分传入。' },
+                { name: 'window.setExpendHeight(height, allowResize)', description: '只调整窗口高度，可选择放开尺寸限制。' },
+                { name: 'window.center()', description: '将当前窗口移动到屏幕中心。' },
+                { name: 'window.detach()', description: '将当前插件从主面板分离为独立窗口。' },
+                { name: 'window.minimize()', description: '最小化当前窗口。' },
+                { name: 'window.maximize()', description: '最大化或还原当前窗口。' },
+                { name: 'window.reload()', description: '重新加载当前插件窗口。' },
+                { name: 'window.setAlwaysOnTop(flag, level)', description: '设置当前窗口置顶状态和层级。' },
+                { name: 'window.setOpacity(opacity)', description: '设置当前窗口透明度。' },
+                { name: 'window.setBackgroundThrottling(allowed)', description: '控制当前 WebContents 后台节流。' },
+                { name: 'window.setIgnoreMouseEvents(ignore, options)', description: '设置鼠标事件穿透，forward 可继续接收鼠标移动。' },
+                { name: 'window.setVisibleOnAllWorkspaces(flag, options)', description: '请求当前窗口在所有工作区可见。' },
+                { name: 'window.setFullScreen(flag)', description: '设置当前窗口全屏状态。' },
+                { name: 'window.resizeDrag(payload)', description: '自定义边框拖拽缩放时把拖拽数据交给宿主执行。' },
+            ],
+        },
+        {
+            title: 'Child Windows',
+            items: [
+                { name: 'window.create(route, options)', description: '以路由模式创建当前插件的子窗口，返回同插件作用域内的控制句柄。' },
+                { name: 'child.show() / hide() / showInactive()', description: '控制子窗口显示状态。' },
+                { name: 'child.focus()', description: '请求子窗口获得焦点。' },
+                { name: 'child.setTitle(title)', description: '修改子窗口标题。' },
+                { name: 'child.setSize(width, height)', description: '修改子窗口大小。' },
+                { name: 'child.setPosition(x, y)', description: '修改子窗口坐标。' },
+                { name: 'child.setBounds(bounds)', description: '修改子窗口边界。' },
+                { name: 'child.getBounds()', description: '读取子窗口边界。' },
+                { name: 'child.setOpacity(opacity)', description: '修改子窗口透明度。' },
+                { name: 'child.setBackgroundThrottling(allowed)', description: '控制子窗口后台节流。' },
+                { name: 'child.setIgnoreMouseEvents(ignore, options)', description: '控制子窗口鼠标穿透。' },
+                { name: 'child.setAlwaysOnTop(flag, level)', description: '控制子窗口置顶。' },
+                { name: 'child.setVisibleOnAllWorkspaces(flag, options)', description: '控制子窗口全工作区可见。' },
+                { name: 'child.setFullScreen(flag)', description: '控制子窗口全屏。' },
+                { name: 'child.postMessage(channel, ...args)', description: '向子窗口发送消息。' },
+                { name: 'child.close() / destroy()', description: '关闭或销毁当前插件创建的子窗口。' },
+            ],
+        },
+        {
+            title: 'Messaging, Search, Drag, SubInput',
+            items: [
+                { name: 'window.onChildMessage(callback)', description: '监听直接子窗口发来的消息，监听器需要释放。' },
+                { name: 'window.findInPage(text, options)', description: '在当前页面内查找文本。' },
+                { name: 'window.stopFindInPage(action)', description: '停止页面查找并控制选区行为。' },
+                { name: 'window.startDrag(filePath)', description: '以真实本地文件路径启动系统原生拖拽。' },
+                { name: 'subInput.set(placeholder, isFocus)', description: '显示宿主子输入框并可请求焦点。' },
+                { name: 'subInput.remove()', description: '移除宿主子输入框。' },
+                { name: 'subInput.setValue(text)', description: '向宿主子输入框写入文本。' },
+                { name: 'subInput.focus() / blur() / select()', description: '控制宿主子输入框焦点和选区。' },
+                { name: 'subInput.onChange(callback)', description: '监听宿主子输入框文本变化，监听器需要释放。' },
+            ],
+        },
+        {
+            title: 'Related APIs Used By This Page',
+            items: [
+                { name: 'screen.getPrimaryDisplay()', description: '为覆盖层子窗口计算主显示器边界。' },
+                { name: 'dialog.showOpenDialog(options)', description: '选择用于原生拖拽的文件。' },
+                { name: 'system.getPath("temp")', description: '获取临时目录以生成演示拖拽文件。' },
+                { name: 'filesystem.writeFile(path, data, encoding)', description: '写入演示拖拽文件。' },
+            ],
+        },
+    ], [])
+
+    const apiExamples: ApiExample[] = useMemo(() => [
+        {
+            title: '读取并控制当前窗口',
+            code: `const state = await window.mulby.window.getState()
+const bounds = await window.mulby.window.getBounds()
+const opacity = await window.mulby.window.getOpacity()
+
+await window.mulby.window.setBounds({
+  x: bounds.x + 16,
+  y: bounds.y + 16,
+  width: bounds.width,
+  height: bounds.height
+})
+
+window.mulby.window.setAlwaysOnTop(true, 'floating')
+await window.mulby.window.setOpacity(0.9)`,
+        },
+        {
+            title: '创建路由子窗口并通信',
+            code: `const child = await window.mulby.window.create('child-window', {
+  loadMode: 'route',
+  width: 560,
+  height: 420,
+  title: 'Showcase 子窗口',
+  params: { source: 'window-api' }
+})
+
+await child?.postMessage('ping', { at: Date.now() })
+
+const dispose = window.mulby.window.onChildMessage((channel, ...args) => {
+  console.log(channel, args)
+})
+
+dispose()`,
+        },
+        {
+            title: '覆盖层子窗口',
+            code: `const display = await window.mulby.screen.getPrimaryDisplay()
+
+const overlay = await window.mulby.window.create('child-window', {
+  x: display.bounds.x,
+  y: display.bounds.y,
+  width: display.bounds.width,
+  height: display.bounds.height,
+  type: 'borderless',
+  titleBar: false,
+  transparent: true,
+  alwaysOnTop: true,
+  alwaysOnTopLevel: 'screen-saver',
+  focusable: false,
+  skipTaskbar: true,
+  ignoreMouseEvents: true,
+  forwardMouseEvents: true,
+  visibleOnAllWorkspaces: true,
+  visibleOnFullScreen: true,
+  backgroundThrottling: false
+})
+
+await overlay?.setIgnoreMouseEvents(false)`,
+        },
+        {
+            title: 'SubInput、查找和文件拖拽',
+            code: `await window.mulby.subInput.set('输入内容...', true)
+window.mulby.subInput.setValue('preset')
+
+const requestId = await window.mulby.window.findInPage('窗口', {
+  forward: true,
+  findNext: false,
+  matchCase: false
+})
+window.mulby.window.stopFindInPage('clearSelection')
+
+window.mulby.window.startDrag('/absolute/path/to/file.txt')`,
+        },
+    ], [])
+
+    const rawData = useMemo(() => ({
+        currentWindow: {
+            windowType,
+            windowMode,
+            windowState,
+            bounds,
+            opacity,
+            alwaysOnTop,
+            backgroundThrottling,
+            ignoreMouseEvents,
+            visibleOnAllWorkspaces,
+            fullscreen,
+            customTitle,
+        },
+        subInput: {
+            enabled: subInputEnabled,
+            text: subInputText,
+            preset: subInputPreset,
+        },
+        findInPage: {
+            searchText,
+            matchCase,
+            findResult,
+        },
+        childWindows: childWindows.map(child => ({
+            id: child.id,
+            name: child.name,
+            kind: child.kind,
+            createdAt: child.createdAt,
+            bounds: child.bounds,
+            opacity: child.opacity,
+            alwaysOnTop: child.alwaysOnTop,
+            backgroundThrottling: child.backgroundThrottling,
+            ignoreMouseEvents: child.ignoreMouseEvents,
+            visibleOnAllWorkspaces: child.visibleOnAllWorkspaces,
+            fullscreen: child.fullscreen,
+            lastAction: child.lastAction,
+        })),
+        childMessages,
+        drag: {
+            selectedFile: dragFilePath,
+            generatedTextPath,
+            hint: dragHint,
+        },
+        operationLog,
+    }), [
+        alwaysOnTop,
+        backgroundThrottling,
+        bounds,
+        childMessages,
+        childWindows,
+        customTitle,
+        dragFilePath,
+        dragHint,
+        findResult,
+        fullscreen,
+        generatedTextPath,
+        ignoreMouseEvents,
+        matchCase,
+        opacity,
+        operationLog,
+        searchText,
+        subInputEnabled,
+        subInputPreset,
+        subInputText,
+        visibleOnAllWorkspaces,
+        windowMode,
+        windowState,
+        windowType,
+    ])
 
     return (
         <div className="main-content">
             <PageHeader
                 icon={PanelsTopLeft}
                 title="窗口 API"
-                description="演示新增的窗口控制和 SubInput API"
-                actions={<Button onClick={loadWindowInfo}>刷新状态</Button>}
+                description="当前窗口控制、子窗口、窗口通信、页面查找、文件拖拽与 SubInput"
+                actions={
+                    <Button variant="secondary" onClick={() => void loadWindowInfo()} loading={loadingAction === 'refresh'}>
+                        <RefreshCw aria-hidden="true" size={14} />刷新状态
+                    </Button>
+                }
             />
-            <div className="page-content">
-                {/* 窗口状态 */}
-                <div className="stats-grid" style={{ marginBottom: 'var(--spacing-lg)' }}>
-                    <div className="stat-item">
-                        <div className="stat-icon"><Tag aria-hidden="true" size={24} /></div>
-                        <div className="stat-value">{windowType}</div>
-                        <div className="stat-label">窗口类型</div>
-                    </div>
-                    <div className="stat-item">
-                        <div className="stat-icon"><Pin aria-hidden="true" size={24} /></div>
-                        <div className="stat-value">{windowMode}</div>
-                        <div className="stat-label">插件模式</div>
-                    </div>
-                    <div className="stat-item">
-                        <div className="stat-icon">
-                            {windowState?.isMaximized ? <Maximize aria-hidden="true" size={24} /> : <Minimize aria-hidden="true" size={24} />}
-                        </div>
-                        <div className="stat-value">{windowState?.isMaximized ? '最大化' : '正常'}</div>
-                        <div className="stat-label">窗口大小</div>
-                    </div>
-                    <div className="stat-item">
-                        <div className="stat-icon">
-                            {windowState?.isAlwaysOnTop ? <LocateFixed aria-hidden="true" size={24} /> : <Paperclip aria-hidden="true" size={24} />}
-                        </div>
-                        <div className="stat-value">{windowState?.isAlwaysOnTop ? '置顶' : '普通'}</div>
-                        <div className="stat-label">窗口层级</div>
-                    </div>
-                </div>
 
-                <div className="grid grid-2">
-                    {/* SubInput Card */}
-                    <Card title="子输入框 (SubInput)" icon={Keyboard}>
-                        <div style={{ marginBottom: 'var(--spacing-md)' }}>
-                            <StatusBadge status={subInputEnabled ? 'success' : 'info'}>
-                                {subInputEnabled ? '已启用' : '未启用'}
-                            </StatusBadge>
+            <div className="page-with-api-panel">
+                <div className="page-content">
+                    <div className="stats-grid" style={{ marginBottom: 'var(--spacing-lg)' }}>
+                        <div className="stat-item">
+                            <div className="stat-icon"><AppWindow aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{windowType}</div>
+                            <div className="stat-label">窗口类型</div>
                         </div>
-                        {subInputEnabled && subInputText && (
-                            <div style={{ marginBottom: 'var(--spacing-md)', padding: 'var(--spacing-sm)', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
-                                <strong>输入内容:</strong> {subInputText}
+                        <div className="stat-item">
+                            <div className="stat-icon"><PanelTopOpen aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{windowMode}</div>
+                            <div className="stat-label">插件模式</div>
+                        </div>
+                        <div className="stat-item">
+                            <div className="stat-icon">
+                                {windowState?.isMaximized ? <Maximize aria-hidden="true" size={24} /> : <Minimize aria-hidden="true" size={24} />}
                             </div>
-                        )}
-                        <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
-                            {!subInputEnabled ? (
-                                <Button onClick={handleEnableSubInput}>启用子输入框</Button>
-                            ) : (
-                                <>
-                                    <Button variant="secondary" onClick={() => subInput.focus()}>聚焦</Button>
-                                    <Button variant="secondary" onClick={() => subInput.select()}>全选</Button>
-                                    <Button variant="secondary" onClick={handleDisableSubInput}>移除</Button>
-                                </>
-                            )}
+                            <div className="stat-value">{windowState?.isMaximized ? '最大化' : '正常'}</div>
+                            <div className="stat-label">最大化状态</div>
                         </div>
-                        <div style={{ marginTop: 'var(--spacing-md)', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                            启用后，主窗口搜索栏将变为插件的输入框，输入内容会实时显示在上方。
+                        <div className="stat-item">
+                            <div className="stat-icon"><LocateFixed aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{bounds ? `${bounds.width}x${bounds.height}` : '-'}</div>
+                            <div className="stat-label">窗口尺寸</div>
                         </div>
-                    </Card>
-
-                    {/* 窗口控制 */}
-                    <Card title="窗口控制" icon={SlidersHorizontal}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)' }}>
-                            <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
-                                <Button variant="secondary" onClick={() => handleSetHeight(300)}>高度 300</Button>
-                                <Button variant="secondary" onClick={() => handleSetHeight(400)}>高度 400</Button>
-                                <Button variant="secondary" onClick={() => handleSetHeight(500)}>高度 500</Button>
-                            </div>
-                            <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
-                                <Button variant="secondary" onClick={handleMinimize}>最小化</Button>
-                                <Button variant="secondary" onClick={handleMaximize}>最大化/还原</Button>
-                                <Button onClick={handleDetach}>分离窗口</Button>
-                            </div>
+                        <div className="stat-item">
+                            <div className="stat-icon"><Pin aria-hidden="true" size={24} /></div>
+                            <div className="stat-value">{alwaysOnTop ? '置顶' : '普通'}</div>
+                            <div className="stat-label">窗口层级</div>
                         </div>
-                    </Card>
-                </div>
-
-                {/* 页面内查找 */}
-                <Card title="页面内查找" icon={Search}>
-                    <div style={{ display: 'flex', gap: 'var(--spacing-sm)', alignItems: 'center' }}>
-                        <input
-                            type="text"
-                            value={searchText}
-                            onChange={(e) => setSearchText(e.target.value)}
-                            placeholder="输入搜索内容..."
-                            style={{
-                                flex: 1,
-                                padding: 'var(--spacing-sm) var(--spacing-md)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: 'var(--radius-md)',
-                                background: 'var(--bg-primary)',
-                                color: 'var(--text-primary)'
-                            }}
-                            onKeyDown={(e) => e.key === 'Enter' && handleFindInPage()}
-                        />
-                        <Button onClick={handleFindInPage}>查找</Button>
-                        <Button variant="secondary" onClick={handleStopFind}>停止</Button>
                     </div>
-                    {findResult !== null && (
-                        <div style={{ marginTop: 'var(--spacing-sm)', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                            查找请求 ID: {findResult}
-                        </div>
-                    )}
-                </Card>
 
-                {/* 子窗口控制 */}
-                <Card title="多子窗口控制" icon={ContactRound}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-md)' }}>
-                        <div style={{ display: 'flex', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-                            <Button onClick={handleCreateChild}>创建子窗口 (+)</Button>
-                            <Button variant="secondary" onClick={handleBroadcast} disabled={childWindows.length === 0}>
-                                广播消息
-                            </Button>
-                            <Button variant="secondary" onClick={handleCloseAllChildren} disabled={childWindows.length === 0}>
-                                关闭全部
-                            </Button>
-                        </div>
+                    <div className="grid grid-2">
+                        <Card title="当前窗口控制" icon={AppWindow}>
+                            <div className="input-group" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <label className="input-label" htmlFor="window-title-input">窗口标题</label>
+                                <div className="input-row">
+                                    <input
+                                        id="window-title-input"
+                                        className="input"
+                                        value={customTitle}
+                                        onChange={(event) => setCustomTitle(event.target.value)}
+                                    />
+                                    <Button variant="secondary" onClick={handleSetTitle}>设置</Button>
+                                </div>
+                            </div>
 
-                        {childWindows.length > 0 && (
-                            <div style={{ display: 'flex', gap: 'var(--spacing-xs)', flexWrap: 'wrap' }}>
+                            <div className="info-grid" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <span className="info-label">Bounds</span>
+                                <span className="info-value">{bounds ? `${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}` : '-'}</span>
+                                <span className="info-label">Opacity</span>
+                                <span className="info-value">{opacity.toFixed(2)}</span>
+                            </div>
+
+                            <div className="action-bar" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <Button variant="secondary" onClick={() => handleSetSize(720, 520)}>720x520</Button>
+                                <Button variant="secondary" onClick={() => handleSetSize(920, 640)}>920x640</Button>
+                                <Button variant="secondary" onClick={() => handleSetHeight(420)}>高度 420</Button>
+                                <Button variant="secondary" onClick={() => handleSetHeight(560, true)}>高度 560 可调</Button>
+                                <Button variant="secondary" onClick={() => void handleSetBounds()} loading={loadingAction === 'bounds'}>偏移边界</Button>
+                                <Button variant="secondary" onClick={handleSetPosition}>偏移位置</Button>
+                            </div>
+
+                            <div className="action-bar">
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.show', () => win.show(), { success: '已显示并聚焦当前窗口' })}><AppWindow aria-hidden="true" size={14} />显示</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.showInactive', () => win.showInactive(), { success: '已请求不抢焦点显示' })}><Focus aria-hidden="true" size={14} />不抢焦点显示</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.focus', () => win.focus(), { success: '已请求窗口焦点' })}><Crosshair aria-hidden="true" size={14} />聚焦</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.center', () => win.center(), { refresh: true, success: '窗口已居中' })}>居中</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.invalidate', () => win.invalidate(), { success: '已请求窗口重绘' })}>重绘</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.minimize', () => win.minimize(), { success: '已请求最小化' })}>最小化</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.maximize', () => win.maximize(), { refresh: true, success: '已切换最大化状态' })}>最大化/还原</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.detach', () => win.detach(), { refresh: true, success: '已请求分离为独立窗口' })}>分离</Button>
+                                <Button variant="secondary" onClick={() => void runWindowAction('window.reload', () => win.reload(), { success: '已请求重新加载' })}>重新加载</Button>
+                            </div>
+                        </Card>
+
+                        <Card title="窗口行为开关" icon={MousePointer2}>
+                            <div className="input-group" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <label className="input-label" htmlFor="window-opacity-range">透明度</label>
+                                <input
+                                    id="window-opacity-range"
+                                    type="range"
+                                    min="0.3"
+                                    max="1"
+                                    step="0.05"
+                                    value={opacity}
+                                    onChange={(event) => handleOpacityChange(Number(event.target.value))}
+                                />
+                            </div>
+                            <div className="action-bar" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <Button variant={alwaysOnTop ? 'primary' : 'secondary'} onClick={() => handleToggleAlwaysOnTop(!alwaysOnTop)}>
+                                    <Pin aria-hidden="true" size={14} />{alwaysOnTop ? '取消置顶' : '置顶'}
+                                </Button>
+                                <Button variant={backgroundThrottling ? 'secondary' : 'primary'} onClick={() => handleToggleBackgroundThrottling(!backgroundThrottling)}>
+                                    <TimerReset aria-hidden="true" size={14} />{backgroundThrottling ? '禁用后台节流' : '允许后台节流'}
+                                </Button>
+                                <Button variant={ignoreMouseEvents ? 'primary' : 'secondary'} onClick={() => handleToggleIgnoreMouse(!ignoreMouseEvents)}>
+                                    <SquareDashedMousePointer aria-hidden="true" size={14} />{ignoreMouseEvents ? '关闭鼠标穿透' : '开启鼠标穿透'}
+                                </Button>
+                                <Button variant={visibleOnAllWorkspaces ? 'primary' : 'secondary'} onClick={() => handleToggleAllWorkspaces(!visibleOnAllWorkspaces)}>
+                                    <Layers aria-hidden="true" size={14} />{visibleOnAllWorkspaces ? '取消全工作区' : '全工作区可见'}
+                                </Button>
+                                <Button variant={fullscreen ? 'primary' : 'secondary'} onClick={() => handleToggleFullscreen(!fullscreen)}>
+                                    <Maximize aria-hidden="true" size={14} />{fullscreen ? '退出全屏' : '进入全屏'}
+                                </Button>
+                            </div>
+                            <div
+                                role="button"
+                                tabIndex={0}
+                                className="preview-box"
+                                style={{
+                                    minHeight: '88px',
+                                    cursor: 'nwse-resize',
+                                    justifyContent: 'space-between',
+                                    gap: 'var(--spacing-md)',
+                                }}
+                                onPointerDown={handleResizeGripPointerDown}
+                                onPointerMove={handleResizeGripPointerMove}
+                                onPointerUp={handleResizeGripPointerUp}
+                            >
+                                <span>按住这里拖动右下角，演示 resizeDrag</span>
+                                <Grip aria-hidden="true" size={20} />
+                            </div>
+                        </Card>
+                    </div>
+
+                    <div className="grid grid-2">
+                        <Card title="SubInput" icon={TextCursorInput}>
+                            <div style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <StatusBadge status={subInputEnabled ? 'success' : 'info'}>
+                                    {subInputEnabled ? '已启用' : '未启用'}
+                                </StatusBadge>
+                            </div>
+                            <div className="input-group" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <label className="input-label" htmlFor="subinput-preset">写入内容</label>
+                                <input
+                                    id="subinput-preset"
+                                    className="input"
+                                    value={subInputPreset}
+                                    onChange={(event) => setSubInputPreset(event.target.value)}
+                                />
+                            </div>
+                            <div className="preview-box" style={{ minHeight: '72px', justifyContent: 'flex-start' }}>
+                                {subInputText || '等待宿主子输入框输入...'}
+                            </div>
+                            <div className="action-bar" style={{ marginTop: 'var(--spacing-md)' }}>
+                                <Button onClick={() => void handleEnableSubInput()}>启用</Button>
+                                <Button variant="secondary" onClick={handleSetSubInputValue} disabled={!subInputEnabled}>写入</Button>
+                                <Button variant="secondary" onClick={() => subInput.focus()} disabled={!subInputEnabled}>聚焦</Button>
+                                <Button variant="secondary" onClick={() => subInput.blur()} disabled={!subInputEnabled}>失焦</Button>
+                                <Button variant="secondary" onClick={() => subInput.select()} disabled={!subInputEnabled}>全选</Button>
+                                <Button variant="secondary" onClick={() => void handleDisableSubInput()} disabled={!subInputEnabled}>移除</Button>
+                            </div>
+                        </Card>
+
+                        <Card title="页面内查找" icon={Search}>
+                            <div className="input-group" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <label className="input-label" htmlFor="find-text-input">查找文本</label>
+                                <input
+                                    id="find-text-input"
+                                    className="input"
+                                    value={searchText}
+                                    onChange={(event) => setSearchText(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter') void handleFindInPage(findResult !== null)
+                                    }}
+                                />
+                            </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-xs)', marginBottom: 'var(--spacing-md)' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={matchCase}
+                                    onChange={(event) => setMatchCase(event.target.checked)}
+                                />
+                                <span>区分大小写</span>
+                            </label>
+                            <div className="action-bar">
+                                <Button onClick={() => void handleFindInPage(false)}>查找</Button>
+                                <Button variant="secondary" onClick={() => void handleFindInPage(true)} disabled={findResult === null}>下一个</Button>
+                                <Button variant="secondary" onClick={handleStopFind} disabled={findResult === null}>停止</Button>
+                            </div>
+                            <div className="info-grid" style={{ marginTop: 'var(--spacing-md)' }}>
+                                <span className="info-label">Request ID</span>
+                                <span className="info-value">{findResult ?? '-'}</span>
+                            </div>
+                        </Card>
+                    </div>
+
+                    <Card
+                        title="子窗口与覆盖层"
+                        icon={Layers}
+                        actions={
+                            <>
+                                <Button onClick={() => void handleCreateChild()} loading={loadingAction === 'child'}>
+                                    <AppWindow aria-hidden="true" size={14} />创建子窗口
+                                </Button>
+                                <Button variant="secondary" onClick={() => void handleCreateOverlay()} loading={loadingAction === 'overlay'}>
+                                    <PanelTopOpen aria-hidden="true" size={14} />创建覆盖层
+                                </Button>
+                                <Button variant="secondary" onClick={() => void handleBroadcast()} disabled={childWindows.length === 0}>
+                                    <Send aria-hidden="true" size={14} />广播
+                                </Button>
+                                <Button variant="secondary" onClick={() => void handleCloseAllChildren()} disabled={childWindows.length === 0}>
+                                    <X aria-hidden="true" size={14} />关闭全部
+                                </Button>
+                            </>
+                        }
+                    >
+                        {childWindows.length > 0 ? (
+                            <div style={{ display: 'grid', gap: 'var(--spacing-sm)' }}>
                                 {childWindows.map((child) => (
-                                    <div key={child.id} style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '4px',
-                                        padding: '4px 8px',
-                                        background: 'var(--bg-secondary)',
-                                        borderRadius: 'var(--radius-sm)',
-                                        fontSize: '12px'
-                                    }}>
-                                        <span>{child.name}</span>
-                                        <button
-                                            onClick={() => handleChildAction('ping', child.id)}
-                                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px' }}
-                                            title="发送消息"
-                                        >
-                                            <Send className="inline-icon" aria-hidden="true" size={14} />
-                                        </button>
-                                        <button
-                                            onClick={() => handleChildAction('close', child.id)}
-                                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px' }}
-                                            title="关闭"
-                                        >
-                                            <X className="inline-icon" aria-hidden="true" size={14} />
-                                        </button>
+                                    <div key={child.id} className="history-item">
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', marginBottom: 'var(--spacing-xs)' }}>
+                                                <strong style={{ color: 'var(--text-primary)' }}>{child.name}</strong>
+                                                <StatusBadge status={child.kind === 'overlay' ? 'warning' : 'info'}>{child.kind}</StatusBadge>
+                                                <span className="list-row-meta">id={child.id}</span>
+                                            </div>
+                                            <div className="list-row-meta">
+                                                {child.bounds ? `${child.bounds.x},${child.bounds.y} ${child.bounds.width}x${child.bounds.height}` : '未读取边界'}
+                                                {' | '}
+                                                last={child.lastAction}
+                                            </div>
+                                            <div className="action-bar" style={{ marginTop: 'var(--spacing-sm)' }}>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'show', proxy => proxy.show())}>show</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'showInactive', proxy => proxy.showInactive())}>showInactive</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'hide', proxy => proxy.hide())}>hide</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'focus', proxy => proxy.focus())}>focus</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setTitle', proxy => proxy.setTitle(`${child.name} ${formatTime(Date.now())}`))}>title</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setSize', proxy => proxy.setSize(620, 440), { bounds: child.bounds ? { ...child.bounds, width: 620, height: 440 } : child.bounds })}>size</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setPosition', proxy => proxy.setPosition((child.bounds?.x ?? 80) + 24, (child.bounds?.y ?? 80) + 24))}>position</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setBounds', proxy => proxy.setBounds({ width: 600, height: 420 }))}>bounds</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'getBounds', async () => refreshChildBounds(child))}>getBounds</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setOpacity', proxy => proxy.setOpacity(child.opacity === 1 ? 0.82 : 1), { opacity: child.opacity === 1 ? 0.82 : 1 })}>opacity</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setBackgroundThrottling', proxy => proxy.setBackgroundThrottling(!child.backgroundThrottling), { backgroundThrottling: !child.backgroundThrottling })}>throttle</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setIgnoreMouseEvents', proxy => proxy.setIgnoreMouseEvents(!child.ignoreMouseEvents, !child.ignoreMouseEvents ? { forward: true } : undefined), { ignoreMouseEvents: !child.ignoreMouseEvents })}>mouse</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setAlwaysOnTop', proxy => proxy.setAlwaysOnTop(!child.alwaysOnTop, !child.alwaysOnTop ? 'floating' : undefined), { alwaysOnTop: !child.alwaysOnTop })}>pin</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setVisibleOnAllWorkspaces', proxy => proxy.setVisibleOnAllWorkspaces(!child.visibleOnAllWorkspaces, { visibleOnFullScreen: !child.visibleOnAllWorkspaces }), { visibleOnAllWorkspaces: !child.visibleOnAllWorkspaces })}>workspaces</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'setFullScreen', proxy => proxy.setFullScreen(!child.fullscreen), { fullscreen: !child.fullscreen })}>fullscreen</Button>
+                                                <Button variant="secondary" onClick={() => void handleChildAction(child, 'postMessage', proxy => proxy.postMessage('ping', { from: 'window-api', at: Date.now() }))}>message</Button>
+                                                <Button variant="secondary" onClick={() => void handleCloseChild(child)}>close</Button>
+                                                <Button variant="secondary" onClick={() => void handleCloseChild(child, true)}>destroy</Button>
+                                            </div>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
+                        ) : (
+                            <div className="empty-state">
+                                <Layers aria-hidden="true" size={32} />
+                                <p>尚未创建子窗口</p>
+                            </div>
                         )}
+                    </Card>
 
-                        <div style={{ padding: 'var(--spacing-sm)', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
-                            <div style={{ marginBottom: 'var(--spacing-sm)', fontWeight: 'bold', fontSize: '12px' }}>
-                                通信日志 (子窗口→父窗口):
+                    <div className="grid grid-2">
+                        <Card title="窗口通信日志" icon={BellRing}>
+                            <div className="preview-box" style={{ alignItems: 'stretch', justifyContent: 'flex-start', minHeight: '180px' }}>
+                                <div style={{ display: 'grid', gap: 'var(--spacing-xs)', width: '100%' }}>
+                                    {childMessages.length > 0 ? childMessages.map((message, index) => (
+                                        <div key={`${message.timestamp}-${index}`} className="list-row">
+                                            <span className="list-row-main">
+                                                [{formatTime(message.timestamp)}] {message.channel}: {summarizeArgs(message.args)}
+                                            </span>
+                                        </div>
+                                    )) : (
+                                        <span>等待子窗口消息...</span>
+                                    )}
+                                </div>
                             </div>
-                            <div style={{ maxHeight: '100px', overflowY: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>
-                                {childMessages.length > 0 ? childMessages.map((m, i) => (
-                                    <div key={i}>{m}</div>
-                                )) : <span style={{ color: 'var(--text-tertiary)' }}>等待子窗口消息...</span>}
-                            </div>
-                        </div>
+                        </Card>
 
-                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                            子窗口发送的消息只会到达直接父窗口，不会被兄弟窗口收到。
-                            父窗口可通过"广播消息"将消息转发给所有子窗口。
-                        </div>
-                    </div>
-                </Card>
-
-                {/* 其他工具 */}
-                <Card title="其他工具" icon={Hammer}>
-                    <div style={{ display: 'flex', gap: 'var(--spacing-lg)', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)' }}>
-                            <div style={{ fontSize: '14px', fontWeight: 'bold' }}>拖拽已有文件</div>
-                            <div style={{ display: 'flex', gap: 'var(--spacing-sm)', alignItems: 'center' }}>
-                                <Button variant="secondary" onClick={handlePickDragFile}>选择文件</Button>
-                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                                    {dragFilePath || '未选择'}
-                                </span>
+                        <Card title="原生文件拖拽" icon={FileDown}>
+                            <div className="action-bar" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <Button variant="secondary" onClick={() => void handlePickDragFile()}>选择文件</Button>
+                                <Button variant="secondary" onClick={() => void createTempFile()} loading={loadingAction === 'drag'}>生成文本文件</Button>
                             </div>
                             <div
-                                draggable
+                                draggable={Boolean(dragFilePath || generatedTextPath)}
+                                className="preview-box"
                                 style={{
-                                    width: '120px',
-                                    height: '60px',
-                                    background: 'var(--bg-secondary)',
-                                    border: '1px dashed var(--border-color)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    cursor: 'grab',
-                                    userSelect: 'none'
+                                    minHeight: '120px',
+                                    cursor: dragFilePath || generatedTextPath ? 'grab' : 'default',
+                                    flexDirection: 'column',
+                                    gap: 'var(--spacing-sm)',
                                 }}
-                                onDragStart={(e) => handleStartDrag(dragFilePath, e)}
+                                onDragStart={(event) => handleStartDrag(dragFilePath || generatedTextPath, event)}
                             >
-                                <span>拖拽文件</span>
+                                <FileDown aria-hidden="true" size={28} />
+                                <span>{dragHint}</span>
+                                {(dragFilePath || generatedTextPath) && (
+                                    <code style={{ fontSize: 'var(--font-size-xs)' }}>{pathBasename(dragFilePath || generatedTextPath)}</code>
+                                )}
                             </div>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)' }}>
-                            <div style={{ fontSize: '14px', fontWeight: 'bold' }}>拖拽生成内容</div>
-                            <div style={{ display: 'flex', gap: 'var(--spacing-sm)', alignItems: 'center' }}>
-                                <Button variant="secondary" onClick={() => createTempFile('text')}>生成文本</Button>
-                                <Button variant="secondary" onClick={() => createTempFile('image')}>生成图片</Button>
-                            </div>
-                            <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
-                                <div
-                                    draggable
-                                    style={{
-                                        width: '120px',
-                                        height: '60px',
-                                        background: 'var(--bg-secondary)',
-                                        border: '1px dashed var(--border-color)',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        cursor: 'grab',
-                                        userSelect: 'none'
-                                    }}
-                                    onMouseDown={() => {
-                                        if (!generatedTextPath) void createTempFile('text')
-                                    }}
-                                    onDragStart={(e) => handleStartDrag(generatedTextPath, e)}
-                                >
-                                    <span>拖拽文本</span>
+                        </Card>
+                    </div>
+
+                    <Card title="最近操作" icon={RefreshCw}>
+                        <div style={{ display: 'grid', gap: 'var(--spacing-sm)' }}>
+                            {operationLog.length > 0 ? operationLog.map((item, index) => (
+                                <div key={`${item.timestamp}-${index}`} className="list-row">
+                                    <StatusBadge status={item.status}>{item.status}</StatusBadge>
+                                    <span className="list-row-main">{item.action}</span>
+                                    <span className="list-row-meta">{item.message}</span>
+                                    <span className="list-row-meta">{formatTime(item.timestamp)}</span>
                                 </div>
-                                <div
-                                    draggable
-                                    style={{
-                                        width: '120px',
-                                        height: '60px',
-                                        background: 'var(--bg-secondary)',
-                                        border: '1px dashed var(--border-color)',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        cursor: 'grab',
-                                        userSelect: 'none'
-                                    }}
-                                    onMouseDown={() => {
-                                        if (!generatedImagePath) void createTempFile('image')
-                                    }}
-                                    onDragStart={(e) => handleStartDrag(generatedImagePath, e)}
-                                >
-                                    <span>拖拽图片</span>
+                            )) : (
+                                <div className="empty-state">
+                                    <RefreshCw aria-hidden="true" size={28} />
+                                    <p>暂无操作记录</p>
                                 </div>
-                            </div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                                生成内容会写入系统临时目录，然后通过路径拖拽。
-                            </div>
+                            )}
                         </div>
-                    </div>
-                </Card>
+                    </Card>
+                </div>
 
-                {/* 插件导航 */}
-                <Card title="插件导航" icon={Rocket}>
-                    <div style={{ display: 'flex', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-                        <Button variant="secondary" onClick={() => handleOutPlugin(false)}>
-                            退出插件 (隐藏)
-                        </Button>
-                        <Button variant="secondary" onClick={() => handleOutPlugin(true)}>
-                            退出插件 (关闭)
-                        </Button>
-                        <Button variant="secondary" onClick={() => win.reload()}>
-                            重新加载
-                        </Button>
-                    </div>
-                    <div style={{ marginTop: 'var(--spacing-md)', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                        提示: redirect API 需要传入目标插件名称和功能代码，此处仅演示 outPlugin。
-                    </div>
-                </Card>
-
-                {/* API 说明 */}
-                <Card title="新增 API 说明" icon={BookOpen}>
-                    <CodeBlock>
-                        {`// 子输入框 API
-await subInput.set('placeholder', true)  // 启用
-await subInput.remove()                   // 移除
-subInput.setValue('text')                 // 设置值
-subInput.focus() / blur() / select()     // 焦点控制
-subInput.onChange(({ text }) => {...})   // 监听变化
-
-// 窗口控制
-window.setExpendHeight(400)              // 设置高度
-window.getWindowType()                   // 获取类型: main | detach
-window.sendToParent(channel, ...args)    // 窗口通信
-window.findInPage(text, options)         // 页面内查找
-window.stopFindInPage(action)            // 停止查找
-window.startDrag(filePath)               // 文件拖拽
-
-// 插件导航
-plugin.redirect('翻译', 'hello')         // 跳转插件
-plugin.outPlugin(false)                  // 退出到后台
-plugin.outPlugin(true)                   // 彻底关闭`}
-                    </CodeBlock>
-                </Card>
+                <ApiReferencePanel apiGroups={apiGroups} examples={apiExamples} rawData={rawData} />
             </div>
         </div>
     )

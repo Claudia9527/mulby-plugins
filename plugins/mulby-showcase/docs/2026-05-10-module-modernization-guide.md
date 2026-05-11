@@ -185,3 +185,16 @@ Manual review:
 - TTS is renderer-only (`window.mulby.tts`) and belongs in Media. It should include voice loading, delayed `voiceschanged` refresh, playback controls, and state polling with `tts.isSpeaking()`.
 - `shell.beep()` can stay in Media as an audio feedback example, but command execution, file opening, and other shell behaviors belong in File Manager or a dedicated shell module.
 - Redact device IDs, group IDs, media track device IDs, and object URLs in `rawData`. Show stream shape, track settings, recording size, duration, and MIME type instead of exposing sensitive identifiers.
+
+## Window and Child Window Module Lessons
+
+- Prefer route-mode child windows: call `window.create('child-window', { loadMode: 'route', params })`. Do not use old `/index.html#...` paths unless migrating a multi-HTML legacy plugin with declared `manifest.assets`.
+- `window.create()` loads the same plugin UI entry and passes routing through hash/search plus `onPluginInit().params`. Child pages should read both URL state and `onPluginInit()` payloads, because `options.params` are not guaranteed to appear as URL query parameters.
+- Always return disposers from `window.onChildMessage()`, `subInput.onChange()`, and `onWindowStateChange()`. Re-registering these listeners on every child window state update causes duplicated messages.
+- Keep current-window controls and child-window controls separate. Current-window APIs use `window.*`; child handles returned by `window.create()` expose their own `show`, `hide`, `focus`, `setBounds`, `setOpacity`, `postMessage`, `close`, and related methods.
+- Demonstrate only windows created by the current plugin. The host enforces plugin ownership for child handles, and showcase pages should not try to operate host windows, settings pages, plugin manager windows, or super panel windows.
+- Keep risky actions visible and scoped. Avoid casual demos of `window.hide()` and `window.terminatePlugin()`; `window.close()` is acceptable inside the child-window page where it only closes the current child window.
+- Overlay examples are plugin-facing, but they should stay in the Window module and use `screen.getPrimaryDisplay()` only for geometry. Keep screen capture, recording, and media stream constraints in the Screen module.
+- `window.startDrag()` needs real existing local files. Generate temporary files with `system.getPath('temp')` plus `filesystem.writeFile()`, or let the user choose a file with `dialog.showOpenDialog()`.
+- `resizeDrag()` is for custom frameless/titlebar resize surfaces. Use a small explicit drag target rather than binding it to broad page areas.
+- Move all route-mode, overlay, messaging, SubInput, find-in-page, and drag examples into the right-side `ApiReferencePanel`; main content should stay focused on live controls, state, message logs, and operation logs.
