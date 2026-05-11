@@ -14,7 +14,8 @@
     "geolocation": true,
     "clipboard": true,
     "accessibility": true,
-    "screen": true
+    "screen": true,
+    "microphone": true
   },
   "features": [
     {
