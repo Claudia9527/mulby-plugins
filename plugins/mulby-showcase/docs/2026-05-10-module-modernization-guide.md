@@ -175,3 +175,13 @@ Manual review:
 - Permission API calls are gated by the manifest before the system prompt runs. Missing entries fail immediately with `Plugin "<pluginId>" lacks manifest.permissions.<permission>`, so `permission.request('microphone')` must never be added without the matching `manifest.permissions.microphone`.
 - Avoid routing from the screen page into unrelated plugins or host pages. Color picking should demonstrate `screen.colorPick()` and clipboard copy only, not plugin orchestration.
 - Raw data should summarize thumbnails and screenshots instead of storing full Data URLs. Include capture metadata, selected source IDs, bounds, generated media constraints, coordinate conversions, and operation logs.
+
+## Media Module Lessons
+
+- Media API currently manages camera and microphone permissions only: `media.getAccessStatus`, `media.askForAccess`, `media.hasCameraAccess`, and `media.hasMicrophoneAccess`.
+- Declare `permissions.camera` before calling camera media APIs or `permission.*('camera')`; declare `permissions.microphone` before calling microphone media APIs, `permission.*('microphone')`, `getUserMedia({ audio: true })`, or `MediaRecorder` microphone flows.
+- Mulby does not wrap camera preview or microphone recording data. After permission checks, use standard browser APIs such as `navigator.mediaDevices.enumerateDevices()`, `navigator.mediaDevices.getUserMedia()`, and `MediaRecorder` in the renderer.
+- Keep desktop capture and screen recording constraints in the Screen module. `screen.getMediaStreamConstraints()` uses `permissions.screen`; adding desktop video examples to Media would blur the module boundary and can lead to incorrect `camera` permission assumptions.
+- TTS is renderer-only (`window.mulby.tts`) and belongs in Media. It should include voice loading, delayed `voiceschanged` refresh, playback controls, and state polling with `tts.isSpeaking()`.
+- `shell.beep()` can stay in Media as an audio feedback example, but command execution, file opening, and other shell behaviors belong in File Manager or a dedicated shell module.
+- Redact device IDs, group IDs, media track device IDs, and object URLs in `rawData`. Show stream shape, track settings, recording size, duration, and MIME type instead of exposing sensitive identifiers.

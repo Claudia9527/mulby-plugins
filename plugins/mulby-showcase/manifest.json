@@ -15,7 +15,8 @@
     "clipboard": true,
     "accessibility": true,
     "screen": true,
-    "microphone": true
+    "microphone": true,
+    "camera": true
   },
   "features": [
     {
@@ -162,6 +163,30 @@
         {
           "type": "keyword",
           "value": "朗读"
+        },
+        {
+          "type": "keyword",
+          "value": "media"
+        },
+        {
+          "type": "keyword",
+          "value": "媒体"
+        },
+        {
+          "type": "keyword",
+          "value": "camera"
+        },
+        {
+          "type": "keyword",
+          "value": "摄像头"
+        },
+        {
+          "type": "keyword",
+          "value": "麦克风"
+        },
+        {
+          "type": "keyword",
+          "value": "录音"
         }
       ]
     },
