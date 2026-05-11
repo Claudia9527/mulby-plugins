@@ -156,3 +156,12 @@ Manual review:
 - `shell.openPath()` and `shell.openFolder()` return an error string on failure and an empty string on success, so page code should check the returned string instead of assuming the promise resolving means the action succeeded.
 - Desktop file and app search is a renderer-facing API (`window.mulby.desktop`). Search results can be previewed with `filesystem` calls and opened or revealed with basic `shell` APIs.
 - Raw data for file pages should include path, stat, directory entries, search results, dialog returns, and operation logs, but large file contents and long directory listings must be truncated.
+
+## Network Module Lessons
+
+- `http.request()` supports `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, and `HEAD`; shortcut methods currently cover `get`, `post`, `put`, and `delete`.
+- `http.request()` rejects on timeout or connection errors, but HTTP error statuses are still normal responses. The UI should show status codes instead of treating every non-2xx status as a thrown error.
+- Validate JSON request headers before sending. If the page stores raw request state in the API panel, redact sensitive header values such as authorization, cookies, tokens, and API keys.
+- Build response previews as a single string before passing them to `CodeBlock`; adjacent JSX expressions create `string[]` children and break strict TypeScript checks.
+- `network.onOnline()` and `network.onOffline()` are renderer-only event helpers. The page can record event callbacks, while backend examples should only use `network.isOnline()`.
+- Do not add host settings, proxy configuration, update-center, plugin-store, or command-runner network examples to this page; keep it focused on plugin-facing HTTP and online status APIs.
