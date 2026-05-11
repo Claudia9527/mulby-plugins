@@ -147,3 +147,12 @@ Manual review:
 - If the page calls `permission.isAccessibilityTrusted()` or `permission.openSystemSettings('accessibility')`, add `permissions.accessibility` to `manifest.json`; those permission APIs are gated by the same manifest permission.
 - Use `screen.getCursorScreenPoint()` as a related API for mouse-coordinate demos, but keep it in the related API group rather than treating it as an input method.
 - Run a TypeScript check or targeted symbol scan after cleaning imports. Vite/esbuild can build while still leaving unresolved JSX identifiers in TSX.
+
+## File Manager Module Lessons
+
+- The file page should cover plugin-facing `filesystem`, `dialog`, basic `shell`, and `desktop` search APIs together. Do not include `shell.runCommand`, command policy, or command audit management in this module unless a later task explicitly adds the permission and a risk-aware workflow.
+- `filesystem.exists`, `stat`, `readFile`, `writeFile`, `readdir`, `mkdir`, `copy`, `move`, and `unlink` are available to renderer plugins. Backend-only path helpers such as `join`, `dirname`, `basename`, and `extname` should not be shown on the renderer page unless the page actually bridges to backend RPC.
+- Keep permanent deletion scoped to files created by the demo. For user-selected files, prefer `shell.trashItem()` with a confirmation dialog because it is reversible through the OS trash/recycle-bin flow.
+- `shell.openPath()` and `shell.openFolder()` return an error string on failure and an empty string on success, so page code should check the returned string instead of assuming the promise resolving means the action succeeded.
+- Desktop file and app search is a renderer-facing API (`window.mulby.desktop`). Search results can be previewed with `filesystem` calls and opened or revealed with basic `shell` APIs.
+- Raw data for file pages should include path, stat, directory entries, search results, dialog returns, and operation logs, but large file contents and long directory listings must be truncated.
