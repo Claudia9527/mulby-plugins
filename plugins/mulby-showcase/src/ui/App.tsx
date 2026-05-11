@@ -58,6 +58,7 @@ const featureToModule: Record<string, ModuleId> = {
   'showcase:inbrowser': 'inbrowser',
   sharp: 'sharp',
   'showcase:sharp': 'sharp',
+  ffmpeg: 'ffmpeg',
   'showcase:ffmpeg': 'ffmpeg',
   'attachments': 'attachments'
 }

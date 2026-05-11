@@ -260,6 +260,28 @@
       ]
     },
     {
+      "code": "ffmpeg",
+      "explain": "FFmpeg 音视频处理",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "ffmpeg"
+        },
+        {
+          "type": "keyword",
+          "value": "音视频处理"
+        },
+        {
+          "type": "keyword",
+          "value": "视频处理"
+        },
+        {
+          "type": "keyword",
+          "value": "转码"
+        }
+      ]
+    },
+    {
       "code": "settings",
       "explain": "高级设置",
       "cmds": [

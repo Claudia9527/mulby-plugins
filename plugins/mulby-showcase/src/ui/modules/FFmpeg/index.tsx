@@ -1,706 +1,1217 @@
-import { useState, useCallback, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-    AlertTriangle,
-    ArchiveRestore,
     AudioLines,
-    BookOpen,
+    BadgeInfo,
     ChartColumn,
-    CheckCircle2,
     CircleStop,
     Download,
+    FileAudio,
+    FileDown,
+    FileImage,
+    FileVideo,
     Film,
     FolderOpen,
     Gauge,
     Info,
-    Mic,
-    Music,
-    Palette,
+    List,
     Pause,
+    Play,
+    RefreshCw,
+    Scissors,
     Search,
     Shrink,
+    Sparkles,
     Video,
     X,
 } from 'lucide-react'
-import { PageHeader, Card, Button, CodeBlock } from '../../components'
-import { useNotification } from '../../hooks'
+import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
+import type { ApiExample, ApiReferenceGroup } from '../../components'
+import { useMulby, useNotification } from '../../hooks'
 
-/**
- * FFmpeg 音视频处理模块演示
- * 展示 mulby.ffmpeg API 的各种功能
- */
+type OperationStatus = 'success' | 'error' | 'info' | 'warning'
+type StopMode = 'quit' | 'kill'
+type FfmpegTaskHandle = ReturnType<MulbyFFmpeg['run']>
+
+interface OperationLogItem {
+    action: string
+    status: OperationStatus
+    message: string
+    timestamp: number
+    details?: unknown
+}
+
+interface MediaInfo {
+    duration: string | null
+    durationSeconds: number | null
+    bitrate: string | null
+    video: string[]
+    audio: string[]
+    subtitle: string[]
+    rawPreview: string
+}
+
+interface OutputFileInfo {
+    path: string
+    name?: string
+    size?: number
+    modifiedAt?: number
+}
+
+interface CommandRecord {
+    label: string
+    args: string[]
+    startedAt?: number
+}
+
+const MEDIA_EXTENSIONS = [
+    'mp4',
+    'mkv',
+    'avi',
+    'mov',
+    'webm',
+    'm4v',
+    'mp3',
+    'wav',
+    'flac',
+    'aac',
+    'ogg',
+    'm4a',
+]
+
+function getErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error)
+}
+
+function truncateText(text: string, limit = 4000) {
+    return text.length > limit ? `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]` : text
+}
+
+function formatBytes(bytes?: number) {
+    if (bytes === undefined) return 'N/A'
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function formatTime(timestamp?: number) {
+    if (!timestamp) return 'N/A'
+    return new Date(timestamp).toLocaleTimeString()
+}
+
+function pathJoin(base: string, name: string) {
+    const separator = base.includes('\\') ? '\\' : '/'
+    return `${base.replace(/[\\/]+$/, '')}${separator}${name}`
+}
+
+function splitPath(path: string) {
+    const normalized = path.replace(/[\\/]+$/, '')
+    const separatorIndex = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'))
+    if (separatorIndex < 0) return { dir: '', name: normalized }
+    return { dir: normalized.slice(0, separatorIndex), name: normalized.slice(separatorIndex + 1) }
+}
+
+function replaceExtension(path: string, suffix: string, extension: string) {
+    const { dir, name } = splitPath(path)
+    const dotIndex = name.lastIndexOf('.')
+    const baseName = dotIndex > 0 ? name.slice(0, dotIndex) : name
+    const outputName = `${baseName}${suffix}.${extension}`
+    return dir ? pathJoin(dir, outputName) : outputName
+}
+
+function quoteArg(arg: string) {
+    if (!arg) return '""'
+    if (/[\s"'()&|<>]/.test(arg)) return `"${arg.replace(/"/g, '\\"')}"`
+    return arg
+}
+
+function formatCommand(args: string[]) {
+    return ['ffmpeg', ...args].map(quoteArg).join(' ')
+}
+
+function parseDurationSeconds(value: string) {
+    const match = value.match(/(\d+):(\d+):(\d+)(?:\.(\d+))?/)
+    if (!match) return null
+    const [, hours, minutes, seconds, fraction = '0'] = match
+    return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds) + Number(`0.${fraction}`)
+}
+
+function parseMediaInfo(stderr: string): MediaInfo {
+    const durationMatch = stderr.match(/Duration:\s*([^,\r\n]+)/)
+    const bitrateMatch = stderr.match(/bitrate:\s*([^,\r\n]+)/)
+    const video: string[] = []
+    const audio: string[] = []
+    const subtitle: string[] = []
+
+    for (const rawLine of stderr.split(/\r?\n/)) {
+        const line = rawLine.trim()
+        if (!line.includes('Stream #')) continue
+        const videoIndex = line.indexOf('Video:')
+        const audioIndex = line.indexOf('Audio:')
+        const subtitleIndex = line.indexOf('Subtitle:')
+        if (videoIndex >= 0) video.push(line.slice(videoIndex + 'Video:'.length).trim())
+        if (audioIndex >= 0) audio.push(line.slice(audioIndex + 'Audio:'.length).trim())
+        if (subtitleIndex >= 0) subtitle.push(line.slice(subtitleIndex + 'Subtitle:'.length).trim())
+    }
+
+    const duration = durationMatch?.[1]?.trim() || null
+    return {
+        duration,
+        durationSeconds: duration ? parseDurationSeconds(duration) : null,
+        bitrate: bitrateMatch?.[1]?.trim() || null,
+        video,
+        audio,
+        subtitle,
+        rawPreview: truncateText(stderr.trim(), 2400),
+    }
+}
+
+function statusText(status: OperationStatus) {
+    if (status === 'success') return '成功'
+    if (status === 'error') return '失败'
+    if (status === 'warning') return '警告'
+    return '信息'
+}
+
+function downloadPhaseText(phase?: string) {
+    if (phase === 'downloading') return '下载中'
+    if (phase === 'extracting') return '解压中'
+    if (phase === 'done') return '完成'
+    return '待开始'
+}
+
+function summarizeProgress(progress: FFmpegRunProgress | null) {
+    if (!progress) return null
+    return {
+        frame: progress.frame,
+        fps: progress.fps,
+        percent: progress.percent,
+        time: progress.time,
+        speed: progress.speed,
+        size: progress.size,
+        bitrate: progress.bitrate,
+        q: progress.q,
+    }
+}
+
 export function FFmpegModule() {
+    const { ffmpeg, dialog, filesystem, system, shell } = useMulby()
     const notify = useNotification()
 
-    // 状态
     const [isAvailable, setIsAvailable] = useState<boolean | null>(null)
     const [version, setVersion] = useState<string | null>(null)
     const [ffmpegPath, setFFmpegPath] = useState<string | null>(null)
-    const [downloading, setDownloading] = useState(false)
-    const [downloadProgress, setDownloadProgress] = useState<{ phase: string; percent: number } | null>(null)
-    const [running, setRunning] = useState(false)
-    const [runProgress, setRunProgress] = useState<{ percent?: number; time?: string; speed?: string } | null>(null)
-    const [inputFile, setInputFile] = useState<string>('')
-    const [outputFile, setOutputFile] = useState<string>('')
+    const [platformLabel, setPlatformLabel] = useState('unknown')
+    const [downloadProgress, setDownloadProgress] = useState<FFmpegDownloadProgress | null>(null)
+    const [runProgress, setRunProgress] = useState<FFmpegRunProgress | null>(null)
+    const [inputFile, setInputFile] = useState('')
+    const [outputFile, setOutputFile] = useState('')
+    const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null)
+    const [lastOutput, setLastOutput] = useState<OutputFileInfo | null>(null)
+    const [lastCommand, setLastCommand] = useState<CommandRecord | null>(null)
+    const [loadingAction, setLoadingAction] = useState<string | null>(null)
+    const [activeTask, setActiveTask] = useState<{ id: string; label: string; startedAt: number } | null>(null)
+    const [recordMouse, setRecordMouse] = useState(true)
+    const [operationLog, setOperationLog] = useState<OperationLogItem[]>([])
 
-    // 存储当前任务的取消函数
-    const currentTaskRef = useRef<{ kill: () => void; quit: () => void } | null>(null)
+    const currentTaskRef = useRef<{ task: FfmpegTaskHandle; action: string } | null>(null)
+    const stopModeRef = useRef<StopMode | null>(null)
 
-    // 检查 FFmpeg 是否可用
-    const handleCheckAvailability = useCallback(async () => {
+    const pushOperation = useCallback((item: Omit<OperationLogItem, 'timestamp'>) => {
+        setOperationLog(current => [
+            { ...item, timestamp: Date.now() },
+            ...current,
+        ].slice(0, 14))
+    }, [])
+
+    const loadPlatform = useCallback(async () => {
         try {
-            const available = await window.mulby?.ffmpeg?.isAvailable()
-            setIsAvailable(available)
+            const [isWindows, isMacOS, isLinux] = await Promise.all([
+                system.isWindows(),
+                system.isMacOS(),
+                system.isLinux(),
+            ])
+            setPlatformLabel(isWindows ? 'windows' : isMacOS ? 'macos' : isLinux ? 'linux' : 'unknown')
+        } catch (error) {
+            pushOperation({
+                action: 'system.isWindows/isMacOS/isLinux',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+        }
+    }, [pushOperation, system])
 
+    const refreshAvailability = useCallback(async () => {
+        setLoadingAction('status')
+        try {
+            const available = await ffmpeg.isAvailable()
+            setIsAvailable(available)
             if (available) {
-                const ver = await window.mulby?.ffmpeg?.getVersion()
-                setVersion(ver)
-                const path = await window.mulby?.ffmpeg?.getPath()
-                setFFmpegPath(path)
+                const [nextVersion, nextPath] = await Promise.all([
+                    ffmpeg.getVersion(),
+                    ffmpeg.getPath(),
+                ])
+                setVersion(nextVersion)
+                setFFmpegPath(nextPath)
+                pushOperation({
+                    action: 'ffmpeg.isAvailable/getVersion/getPath',
+                    status: 'success',
+                    message: 'FFmpeg 运行时可用',
+                    details: { version: nextVersion, path: nextPath },
+                })
                 notify.success('FFmpeg 已安装')
             } else {
+                setVersion(null)
+                setFFmpegPath(null)
+                pushOperation({
+                    action: 'ffmpeg.isAvailable',
+                    status: 'warning',
+                    message: 'FFmpeg 未安装',
+                })
                 notify.warning('FFmpeg 未安装，请先下载')
             }
-        } catch (error: any) {
-            notify.error(`检查失败: ${error.message}`)
-        }
-    }, [notify])
-
-    // 下载 FFmpeg
-    const handleDownload = useCallback(async () => {
-        setDownloading(true)
-        setDownloadProgress(null)
-        try {
-            const result = await window.mulby?.ffmpeg?.download((progress) => {
-                setDownloadProgress({ phase: progress.phase, percent: progress.percent })
+        } catch (error) {
+            pushOperation({
+                action: 'ffmpeg.isAvailable',
+                status: 'error',
+                message: getErrorMessage(error),
             })
-
-            if (result?.success) {
-                notify.success('FFmpeg 下载安装完成！')
-                // 刷新状态
-                await handleCheckAvailability()
-            } else {
-                notify.error(`下载失败: ${result?.error || '未知错误'}`)
-            }
-        } catch (error: any) {
-            notify.error(`下载失败: ${error.message}`)
+            notify.error(`检查 FFmpeg 失败: ${getErrorMessage(error)}`)
         } finally {
-            setDownloading(false)
-            setDownloadProgress(null)
+            setLoadingAction(null)
         }
-    }, [notify, handleCheckAvailability])
+    }, [ffmpeg, notify, pushOperation])
 
-    // 选择输入文件
-    const handleSelectInput = useCallback(async () => {
+    useEffect(() => {
+        void loadPlatform()
+        void refreshAvailability()
+    }, [loadPlatform, refreshAvailability])
+
+    const ensureAvailable = useCallback(async () => {
+        const available = isAvailable ?? await ffmpeg.isAvailable()
+        setIsAvailable(available)
+        if (!available) {
+            throw new Error('FFmpeg 未安装，请先下载')
+        }
+    }, [ffmpeg, isAvailable])
+
+    const refreshOutputInfo = useCallback(async (path: string) => {
+        const exists = await filesystem.exists(path)
+        if (!exists) {
+            setLastOutput({ path })
+            return { path }
+        }
+        const stat = await filesystem.stat(path)
+        const info = {
+            path,
+            name: stat?.name,
+            size: stat?.size,
+            modifiedAt: stat?.modifiedAt,
+        }
+        setLastOutput(info)
+        return info
+    }, [filesystem])
+
+    const chooseSavePath = useCallback(async (defaultPath: string, extensions: string[], title = '选择输出文件') => {
+        return dialog.showSaveDialog({
+            title,
+            defaultPath,
+            filters: [{ name: extensions.map(ext => ext.toUpperCase()).join('/'), extensions }],
+        })
+    }, [dialog])
+
+    const runFfmpegTask = useCallback(async (
+        id: string,
+        label: string,
+        args: string[],
+        options?: { outputPath?: string; successMessage?: string; expectedStop?: boolean }
+    ) => {
+        await ensureAvailable()
+        setRunProgress(null)
+        setActiveTask({ id, label, startedAt: Date.now() })
+        setLastCommand({ label, args, startedAt: Date.now() })
+        stopModeRef.current = null
+
+        const task = ffmpeg.run(args, progress => {
+            setRunProgress(progress)
+        })
+        currentTaskRef.current = { task, action: label }
+
         try {
-            const paths = await window.mulby?.dialog?.showOpenDialog({
-                title: '选择视频/音频文件',
-                filters: [
-                    { name: '媒体文件', extensions: ['mp4', 'mkv', 'avi', 'mov', 'mp3', 'wav', 'flac', 'webm'] }
-                ],
-                properties: ['openFile']
+            await task.promise
+            const stopMode = stopModeRef.current
+            const outputInfo = options?.outputPath ? await refreshOutputInfo(options.outputPath) : null
+            const message = stopMode
+                ? `${label}已${stopMode === 'quit' ? '优雅结束' : '强制终止'}`
+                : options?.successMessage || `${label}完成`
+            pushOperation({
+                action: `ffmpeg.run: ${label}`,
+                status: stopMode ? 'warning' : 'success',
+                message,
+                details: {
+                    command: formatCommand(args),
+                    output: outputInfo,
+                },
             })
-            if (paths && paths.length > 0) {
-                setInputFile(paths[0])
-                // 自动生成输出文件名
-                const inputPath = paths[0]
-                const lastDot = inputPath.lastIndexOf('.')
-                const outputPath = lastDot > 0
-                    ? inputPath.substring(0, lastDot) + '_output.mp4'
-                    : inputPath + '_output.mp4'
-                setOutputFile(outputPath)
-                notify.success('已选择文件')
+            if (stopMode) {
+                notify.info(message)
+            } else {
+                notify.success(message)
             }
         } catch (error) {
-            notify.error('选择文件失败')
+            const message = getErrorMessage(error)
+            if (stopModeRef.current || options?.expectedStop) {
+                pushOperation({
+                    action: `ffmpeg.run: ${label}`,
+                    status: 'warning',
+                    message: `${label}已停止`,
+                    details: { error: truncateText(message, 1200), command: formatCommand(args) },
+                })
+                notify.info(`${label}已停止`)
+            } else {
+                pushOperation({
+                    action: `ffmpeg.run: ${label}`,
+                    status: 'error',
+                    message: truncateText(message, 300),
+                    details: { error: truncateText(message, 2000), command: formatCommand(args) },
+                })
+                notify.error(`${label}失败: ${truncateText(message, 160)}`)
+            }
+        } finally {
+            currentTaskRef.current = null
+            stopModeRef.current = null
+            setActiveTask(null)
+            setRunProgress(null)
         }
-    }, [notify])
+    }, [ensureAvailable, ffmpeg, notify, pushOperation, refreshOutputInfo])
 
-    // 视频压缩
-    const handleCompress = useCallback(async () => {
+    const handleDownload = useCallback(async () => {
+        setLoadingAction('download')
+        setDownloadProgress(null)
+        try {
+            const result = await ffmpeg.download(progress => {
+                setDownloadProgress(progress)
+            })
+            if (result.success) {
+                pushOperation({
+                    action: 'ffmpeg.download',
+                    status: 'success',
+                    message: 'FFmpeg 下载并解压完成',
+                })
+                notify.success('FFmpeg 下载完成')
+                await refreshAvailability()
+            } else {
+                pushOperation({
+                    action: 'ffmpeg.download',
+                    status: 'error',
+                    message: result.error || '下载失败',
+                })
+                notify.error(result.error || 'FFmpeg 下载失败')
+            }
+        } catch (error) {
+            pushOperation({
+                action: 'ffmpeg.download',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`FFmpeg 下载失败: ${getErrorMessage(error)}`)
+        } finally {
+            setLoadingAction(null)
+        }
+    }, [ffmpeg, notify, pushOperation, refreshAvailability])
+
+    const handleSelectInput = useCallback(async () => {
+        setLoadingAction('select-input')
+        try {
+            const [path] = await dialog.showOpenDialog({
+                title: '选择视频或音频文件',
+                filters: [{ name: '媒体文件', extensions: MEDIA_EXTENSIONS }],
+                properties: ['openFile'],
+            })
+            if (!path) {
+                pushOperation({
+                    action: 'dialog.showOpenDialog',
+                    status: 'info',
+                    message: '已取消选择输入文件',
+                })
+                return
+            }
+            const defaultOutput = replaceExtension(path, '_compressed', 'mp4')
+            setInputFile(path)
+            setOutputFile(defaultOutput)
+            setMediaInfo(null)
+            setLastOutput(null)
+            pushOperation({
+                action: 'dialog.showOpenDialog',
+                status: 'success',
+                message: '已选择输入媒体文件',
+                details: { input: path, output: defaultOutput },
+            })
+            notify.success('已选择输入文件')
+        } catch (error) {
+            pushOperation({
+                action: 'dialog.showOpenDialog',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`选择文件失败: ${getErrorMessage(error)}`)
+        } finally {
+            setLoadingAction(null)
+        }
+    }, [dialog, notify, pushOperation])
+
+    const handleChooseOutput = useCallback(async () => {
+        const baseOutput = outputFile || (inputFile ? replaceExtension(inputFile, '_output', 'mp4') : 'mulby-ffmpeg-output.mp4')
+        try {
+            const path = await chooseSavePath(baseOutput, ['mp4'], '选择默认 MP4 输出路径')
+            if (path) {
+                setOutputFile(path)
+                setLastOutput(null)
+                pushOperation({
+                    action: 'dialog.showSaveDialog',
+                    status: 'success',
+                    message: '已选择默认输出路径',
+                    details: { output: path },
+                })
+            }
+        } catch (error) {
+            pushOperation({
+                action: 'dialog.showSaveDialog',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`选择输出路径失败: ${getErrorMessage(error)}`)
+        }
+    }, [chooseSavePath, inputFile, notify, outputFile, pushOperation])
+
+    const handleGetMediaInfo = useCallback(async () => {
         if (!inputFile) {
             notify.warning('请先选择输入文件')
             return
         }
-
-        setRunning(true)
-        setRunProgress(null)
-
+        await ensureAvailable()
+        setLoadingAction('media-info')
+        setMediaInfo(null)
+        const args = ['-hide_banner', '-i', inputFile]
+        setLastCommand({ label: '读取媒体信息', args, startedAt: Date.now() })
+        const task = ffmpeg.run(args)
+        currentTaskRef.current = { task, action: '读取媒体信息' }
         try {
-            const task = window.mulby?.ffmpeg?.run(
-                [
-                    '-i', inputFile,
-                    '-c:v', 'libx264',
-                    '-crf', '28',
-                    '-preset', 'fast',
-                    '-c:a', 'aac',
-                    '-b:a', '128k',
-                    '-y',
-                    outputFile
-                ],
-                (progress) => {
-                    setRunProgress({
-                        percent: progress.percent,
-                        time: progress.time,
-                        speed: progress.speed
-                    })
-                }
-            )
-
-            if (task) {
-                currentTaskRef.current = task
-                await task.promise
-                notify.success('视频压缩完成！')
+            await task.promise
+            pushOperation({
+                action: 'ffmpeg.run: 读取媒体信息',
+                status: 'warning',
+                message: 'FFmpeg 未返回可解析的媒体信息',
+                details: { command: formatCommand(args) },
+            })
+        } catch (error) {
+            const message = getErrorMessage(error)
+            const info = parseMediaInfo(message)
+            if (info.duration || info.video.length > 0 || info.audio.length > 0 || info.subtitle.length > 0) {
+                setMediaInfo(info)
+                pushOperation({
+                    action: 'ffmpeg.run: 读取媒体信息',
+                    status: 'success',
+                    message: '已从 FFmpeg stderr 解析媒体信息',
+                    details: { command: formatCommand(args), info },
+                })
+                notify.success('媒体信息已读取')
+            } else {
+                pushOperation({
+                    action: 'ffmpeg.run: 读取媒体信息',
+                    status: 'error',
+                    message: '无法解析媒体信息',
+                    details: { error: truncateText(message, 2000), command: formatCommand(args) },
+                })
+                notify.error('无法解析媒体信息')
             }
-        } catch (error: any) {
-            notify.error(`压缩失败: ${error.message}`)
         } finally {
-            setRunning(false)
-            setRunProgress(null)
             currentTaskRef.current = null
+            setLoadingAction(null)
         }
-    }, [inputFile, outputFile, notify])
+    }, [ensureAvailable, ffmpeg, inputFile, notify, pushOperation])
 
-    // 提取音频
+    const handleCompressVideo = useCallback(async () => {
+        if (!inputFile) {
+            notify.warning('请先选择输入文件')
+            return
+        }
+        const outputPath = outputFile || replaceExtension(inputFile, '_compressed', 'mp4')
+        setOutputFile(outputPath)
+        await runFfmpegTask('compress', '压缩 MP4', [
+            '-y',
+            '-i', inputFile,
+            '-c:v', 'libx264',
+            '-crf', '28',
+            '-preset', 'fast',
+            '-tag:v', 'avc1',
+            '-movflags', '+faststart',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-map', '0:v?',
+            '-map', '0:a?',
+            outputPath,
+        ], {
+            outputPath,
+            successMessage: '视频压缩完成',
+        })
+    }, [inputFile, notify, outputFile, runFfmpegTask])
+
     const handleExtractAudio = useCallback(async () => {
         if (!inputFile) {
             notify.warning('请先选择输入文件')
             return
         }
+        const defaultPath = replaceExtension(inputFile, '_audio', 'mp3')
+        const outputPath = await chooseSavePath(defaultPath, ['mp3'], '保存提取的音频')
+        if (!outputPath) return
+        await runFfmpegTask('extract-audio', '提取 MP3 音频', [
+            '-y',
+            '-i', inputFile,
+            '-vn',
+            '-q:a', '2',
+            '-map', '0:a?',
+            outputPath,
+        ], {
+            outputPath,
+            successMessage: '音频提取完成',
+        })
+    }, [chooseSavePath, inputFile, notify, runFfmpegTask])
 
-        const audioOutput = inputFile.replace(/\.[^/.]+$/, '.mp3')
-        setRunning(true)
-
-        try {
-            const task = window.mulby?.ffmpeg?.run(
-                [
-                    '-i', inputFile,
-                    '-q:a', '0',
-                    '-map', 'a',
-                    '-y',
-                    audioOutput
-                ],
-                (progress) => {
-                    setRunProgress({
-                        percent: progress.percent,
-                        time: progress.time,
-                        speed: progress.speed
-                    })
-                }
-            )
-
-            if (task) {
-                currentTaskRef.current = task
-                await task.promise
-                notify.success(`音频提取完成：${audioOutput}`)
-            }
-        } catch (error: any) {
-            notify.error(`提取失败: ${error.message}`)
-        } finally {
-            setRunning(false)
-            setRunProgress(null)
-            currentTaskRef.current = null
-        }
-    }, [inputFile, notify])
-
-    // 取消任务
-    const handleCancel = useCallback(() => {
-        if (currentTaskRef.current) {
-            currentTaskRef.current.kill()
-            notify.info('任务已取消')
-        }
-    }, [notify])
-
-    // 优雅退出
-    const handleQuit = useCallback(() => {
-        if (currentTaskRef.current) {
-            currentTaskRef.current.quit()
-            notify.info('正在优雅退出...')
-        }
-    }, [notify])
-
-    // 视频信息状态
-    const [videoInfo, setVideoInfo] = useState<{
-        duration: string | null
-        bitrate: string | null
-        video: string | null
-        audio: string | null
-    } | null>(null)
-    const [gettingInfo, setGettingInfo] = useState(false)
-
-    // 获取视频信息
-    const handleGetVideoInfo = useCallback(async () => {
+    const handleConvertGif = useCallback(async () => {
         if (!inputFile) {
             notify.warning('请先选择输入文件')
             return
         }
+        const outputPath = await chooseSavePath(replaceExtension(inputFile, '_preview', 'gif'), ['gif'], '保存 GIF')
+        if (!outputPath) return
+        await runFfmpegTask('gif', '转换 GIF', [
+            '-y',
+            '-i', inputFile,
+            '-vf', 'fps=12,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+            '-loop', '0',
+            outputPath,
+        ], {
+            outputPath,
+            successMessage: 'GIF 转换完成',
+        })
+    }, [chooseSavePath, inputFile, notify, runFfmpegTask])
 
-        setGettingInfo(true)
-        setVideoInfo(null)
-
-        try {
-            // FFmpeg 不指定输出文件时会报错，但 stderr 包含媒体信息
-            await window.mulby?.ffmpeg?.run(['-i', inputFile])
-        } catch (error: any) {
-            // 从错误信息中提取媒体元数据
-            const message = error.message || ''
-            const videoStream = message.match(/Stream #\d+:\d+.*Video: ([^\n]+)/)
-            const audioStream = message.match(/Stream #\d+:\d+.*Audio: ([^\n]+)/)
-            const durationMatch = message.match(/Duration: ([^,]+)/)
-            const bitrateMatch = message.match(/bitrate:\s*(\d+ kb\/s)/)
-
-            const metadata = {
-                duration: durationMatch?.[1] || null,
-                bitrate: bitrateMatch?.[1] || null,
-                video: videoStream?.[1] || null,
-                audio: audioStream?.[1] || null,
-            }
-
-            if (metadata.duration || metadata.video || metadata.audio) {
-                setVideoInfo(metadata)
-                notify.success('获取视频信息成功')
-            } else {
-                notify.error('无法解析视频信息')
-            }
-        } finally {
-            setGettingInfo(false)
+    const handleExtractFrame = useCallback(async () => {
+        if (!inputFile) {
+            notify.warning('请先选择输入文件')
+            return
         }
-    }, [inputFile, notify])
+        const outputPath = await chooseSavePath(replaceExtension(inputFile, '_frame', 'png'), ['png'], '保存视频帧')
+        if (!outputPath) return
+        await runFfmpegTask('frame', '抽取单帧', [
+            '-y',
+            '-ss', '00:00:01',
+            '-i', inputFile,
+            '-frames:v', '1',
+            '-q:v', '2',
+            outputPath,
+        ], {
+            outputPath,
+            successMessage: '视频帧已导出',
+        })
+    }, [chooseSavePath, inputFile, notify, runFfmpegTask])
 
+    const handleGenerateTestVideo = useCallback(async () => {
+        const tempDir = await system.getPath('temp')
+        const outputPath = await chooseSavePath(pathJoin(tempDir, `mulby-ffmpeg-test-${Date.now()}.mp4`), ['mp4'], '保存测试视频')
+        if (!outputPath) return
+        await runFfmpegTask('test-video', '生成测试视频', [
+            '-y',
+            '-f', 'lavfi',
+            '-i', 'testsrc2=duration=5:size=1280x720:rate=30',
+            '-f', 'lavfi',
+            '-i', 'sine=frequency=880:duration=5',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            '-shortest',
+            outputPath,
+        ], {
+            outputPath,
+            successMessage: '测试视频已生成',
+        })
+    }, [chooseSavePath, runFfmpegTask, system])
 
-    // 屏幕录制状态
-    const [recording, setRecording] = useState(false)
-    const [recordMouse, setRecordMouse] = useState(true)
-
-    // 生成录屏参数
-    const getRecordingArgs = async (
-        speaker: boolean | string,
-        microphone: string | boolean,
-        captureMouse: boolean,
-        area: { x: number; y: number; width: number; height: number; screenId?: string } | string | null,
-        outputFile: string
-    ) => {
-        const isWindows = await window.mulby.system.isWindows()
-        const isMacOS = await window.mulby.system.isMacOS()
+    const buildScreenRecordingArgs = useCallback(async (outputPath: string) => {
+        const [isWindows, isMacOS, isLinux] = await Promise.all([
+            system.isWindows(),
+            system.isMacOS(),
+            system.isLinux(),
+        ])
 
         if (isWindows) {
-            if (speaker && typeof speaker !== 'string') {
-                throw new Error('扬声器录制需要启用「立体声混音」')
-            }
             return [
-                ...(microphone ? ['-f', 'dshow', '-i', `audio=${microphone}`] : []),
-                ...(speaker ? ['-f', 'dshow', '-i', `audio=${speaker}`] : []),
+                '-y',
                 '-f', 'gdigrab',
                 '-framerate', '30',
-                '-draw_mouse', captureMouse ? '1' : '0',
-                ...(area && typeof area === 'object'
-                    ? ['-offset_x', String(Math.round(area.x)), '-offset_y', String(Math.round(area.y)), '-video_size', `${Math.round(area.width)}x${Math.round(area.height)}`]
-                    : []),
+                '-draw_mouse', recordMouse ? '1' : '0',
                 '-i', 'desktop',
-                ...((microphone && speaker) ? ['-filter_complex', '[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[aout]', '-map', '2:v', '-map', '[aout]'] : []),
-                '-r', '30',
                 '-c:v', 'libx264',
                 '-pix_fmt', 'yuv420p',
                 '-preset', 'ultrafast',
                 '-crf', '23',
-                ...((microphone || speaker) ? ['-c:a', 'aac', '-b:a', '192k'] : []),
-                '-y',
-                outputFile
+                outputPath,
             ]
         }
 
         if (isMacOS) {
-            if (speaker || microphone) {
-                throw new Error('当前示例 macOS 暂不支持录制声音')
-            }
-            // macOS 需要 avfoundation，通常 -i "1" 为主屏幕
-            // 注意：需要确保终端/应用有屏幕录制权限
             return [
+                '-y',
                 '-f', 'avfoundation',
                 '-framerate', '30',
-                '-capture_cursor', captureMouse ? '1' : '0',
-                ...(
-                    area && typeof area === 'object'
-                        ? ['-i', String(area.screenId || '1'), '-vf', `crop=${area.width}:${area.height}:${area.x}:${area.y}`]
-                        : ['-i', String(area || '1')]
-                ),
+                '-capture_cursor', recordMouse ? '1' : '0',
+                '-i', '1',
                 '-c:v', 'libx264',
                 '-pix_fmt', 'yuv420p',
                 '-preset', 'ultrafast',
                 '-crf', '23',
-                '-y',
-                outputFile
+                outputPath,
             ]
         }
 
-        throw new Error('不支持当前平台录制')
-    }
+        if (isLinux) {
+            return [
+                '-y',
+                '-f', 'x11grab',
+                '-framerate', '30',
+                '-draw_mouse', recordMouse ? '1' : '0',
+                '-i', ':0.0',
+                '-c:v', 'libx264',
+                '-pix_fmt', 'yuv420p',
+                '-preset', 'ultrafast',
+                '-crf', '23',
+                outputPath,
+            ]
+        }
 
-    // 开始录制
+        throw new Error('当前平台未提供 FFmpeg 录屏参数示例')
+    }, [recordMouse, system])
+
     const handleStartRecording = useCallback(async () => {
+        const tempDir = await system.getPath('temp')
+        const outputPath = await chooseSavePath(pathJoin(tempDir, `mulby-ffmpeg-record-${Date.now()}.mp4`), ['mp4'], '保存 FFmpeg 录屏')
+        if (!outputPath) return
         try {
-            // 选择保存路径
-            const savePath = await window.mulby.dialog.showSaveDialog({
-                title: '保存录屏文件',
-                defaultPath: 'capture.mp4',
-                filters: [{ name: '视频文件', extensions: ['mp4'] }]
+            const args = await buildScreenRecordingArgs(outputPath)
+            await runFfmpegTask('record-screen', 'FFmpeg 全屏录制', args, {
+                outputPath,
+                successMessage: '录屏任务结束',
+                expectedStop: true,
             })
-
-            if (!savePath) return
-
-            setRecording(true)
-            setRunProgress(null)
-            notify.info('开始录制...')
-
-            // 开始录制 (全屏，捕获鼠标，无音频)
-            // windows 需要 gdigrab, macos 需要 avfoundation
-            // 这里为了演示，传 null 表示全屏
-            const args = await getRecordingArgs(false, false, recordMouse, null, savePath)
-
-            const task = window.mulby.ffmpeg.run(
-                args,
-                (progress) => {
-                    setRunProgress({
-                        percent: undefined,
-                        time: progress.time,
-                        speed: progress.speed
-                    })
-                }
-            )
-
-            if (task) {
-                currentTaskRef.current = task
-                await task.promise  // 等待 Promise 完成
-                notify.success(`录制完成: ${savePath}`)
-            }
-        } catch (error: any) {
-            if (error.message.includes('SIGKILL') || error.message.includes('exit code: 255')) {
-                // 忽略 kill/quit 导致的错误
-                return
-            }
-            notify.error(`录制失败: ${error.message}`)
-        } finally {
-            setRecording(false)
-            setRunProgress(null)
-            currentTaskRef.current = null
+        } catch (error) {
+            pushOperation({
+                action: 'buildScreenRecordingArgs',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`无法开始录屏: ${getErrorMessage(error)}`)
         }
-    }, [recordMouse, notify])
+    }, [buildScreenRecordingArgs, chooseSavePath, notify, pushOperation, runFfmpegTask, system])
 
-    // 停止录制
-    const handleStopRecording = useCallback(() => {
-        console.log('[FFmpeg UI] handleStopRecording 被调用')
-        console.log('[FFmpeg UI] currentTaskRef.current:', currentTaskRef.current)
-        if (currentTaskRef.current) {
-            console.log('[FFmpeg UI] 调用 quit()')
-            currentTaskRef.current.quit() // 发送 q 停止录制
-            notify.info('正在停止录制...')
-        } else {
-            console.log('[FFmpeg UI] currentTaskRef.current 为空，无法停止')
-            notify.warning('没有正在进行的录制任务')
+    const handleQuitTask = useCallback(() => {
+        if (!currentTaskRef.current) {
+            notify.warning('没有正在运行的 FFmpeg 任务')
+            return
         }
-    }, [notify])
+        stopModeRef.current = 'quit'
+        currentTaskRef.current.task.quit()
+        pushOperation({
+            action: 'task.quit',
+            status: 'info',
+            message: `已请求优雅退出: ${currentTaskRef.current.action}`,
+        })
+        notify.info('已请求 FFmpeg 优雅退出')
+    }, [notify, pushOperation])
+
+    const handleKillTask = useCallback(() => {
+        if (!currentTaskRef.current) {
+            notify.warning('没有正在运行的 FFmpeg 任务')
+            return
+        }
+        stopModeRef.current = 'kill'
+        currentTaskRef.current.task.kill()
+        pushOperation({
+            action: 'task.kill',
+            status: 'warning',
+            message: `已请求强制终止: ${currentTaskRef.current.action}`,
+        })
+        notify.warning('已请求强制终止 FFmpeg')
+    }, [notify, pushOperation])
+
+    const handleRevealOutput = useCallback(async () => {
+        if (!lastOutput?.path) {
+            notify.warning('没有可定位的输出文件')
+            return
+        }
+        try {
+            await shell.showItemInFolder(lastOutput.path)
+            pushOperation({
+                action: 'shell.showItemInFolder',
+                status: 'success',
+                message: '已在文件管理器中定位输出文件',
+                details: { path: lastOutput.path },
+            })
+        } catch (error) {
+            pushOperation({
+                action: 'shell.showItemInFolder',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`定位输出文件失败: ${getErrorMessage(error)}`)
+        }
+    }, [lastOutput, notify, pushOperation, shell])
+
+    const statusBadge = useMemo(() => {
+        if (isAvailable === null) return { status: 'info' as const, text: '未检测' }
+        if (isAvailable) return { status: 'success' as const, text: '已安装' }
+        return { status: 'warning' as const, text: '未安装' }
+    }, [isAvailable])
+
+    const currentCommandText = useMemo(() => (
+        lastCommand ? formatCommand(lastCommand.args) : ''
+    ), [lastCommand])
+
+    const apiGroups: ApiReferenceGroup[] = useMemo(() => [
+        {
+            title: 'FFmpeg API',
+            items: [
+                { name: 'ffmpeg.isAvailable()', description: '检查宿主 FFmpeg 二进制是否已安装。' },
+                { name: 'ffmpeg.getVersion()', description: '读取 FFmpeg 版本字符串。' },
+                { name: 'ffmpeg.getPath()', description: '读取宿主管理的 FFmpeg 可执行文件路径，未安装时返回 null。' },
+                { name: 'ffmpeg.download(onProgress?)', description: '下载并解压宿主 FFmpeg 运行时。' },
+                { name: 'ffmpeg.run(args, onProgress?)', description: '以参数数组执行 FFmpeg 命令并监听进度。' },
+                { name: 'task.promise', description: '等待 FFmpeg 进程结束。' },
+                { name: 'task.quit()', description: '向 FFmpeg 发送 q/SIGINT，适合录制类任务优雅停止。' },
+                { name: 'task.kill()', description: '强制终止 FFmpeg 进程。' },
+            ],
+        },
+        {
+            title: '辅助 API',
+            items: [
+                { name: 'dialog.showOpenDialog(options)', description: '选择输入音视频文件。' },
+                { name: 'dialog.showSaveDialog(options)', description: '选择输出文件路径。' },
+                { name: 'filesystem.exists(path)', description: '检查输出文件是否存在。' },
+                { name: 'filesystem.stat(path)', description: '读取输出文件大小和修改时间。' },
+                { name: 'system.getPath("temp")', description: '生成测试视频和录屏的默认临时路径。' },
+                { name: 'system.isWindows/isMacOS/isLinux()', description: '为 FFmpeg 原生录屏构造平台参数。' },
+                { name: 'shell.showItemInFolder(path)', description: '在系统文件管理器中定位输出文件。' },
+            ],
+        },
+    ], [])
+
+    const apiExamples: ApiExample[] = useMemo(() => [
+        {
+            title: '检测与下载 FFmpeg',
+            code: `const available = await window.mulby.ffmpeg.isAvailable()
+
+if (!available) {
+  const result = await window.mulby.ffmpeg.download(progress => {
+    console.log(progress.phase, progress.percent)
+  })
+  if (!result.success) throw new Error(result.error || 'FFmpeg download failed')
+}
+
+const version = await window.mulby.ffmpeg.getVersion()
+const path = await window.mulby.ffmpeg.getPath()`,
+        },
+        {
+            title: '执行并控制任务',
+            code: `const task = window.mulby.ffmpeg.run([
+  '-y',
+  '-i', inputPath,
+  '-c:v', 'libx264',
+  '-crf', '28',
+  '-c:a', 'aac',
+  outputPath,
+], progress => {
+  console.log(progress.percent, progress.time, progress.speed)
+})
+
+// task.quit() sends a graceful stop request
+// task.kill() force terminates the process
+await task.promise`,
+        },
+        {
+            title: '读取媒体信息',
+            code: `try {
+  await window.mulby.ffmpeg.run(['-hide_banner', '-i', inputPath]).promise
+} catch (error) {
+  const stderr = error instanceof Error ? error.message : String(error)
+  const duration = stderr.match(/Duration:\\s*([^,]+)/)?.[1]
+  const streams = stderr.split('\\n').filter(line => line.includes('Stream #'))
+  console.log(duration, streams)
+}`,
+        },
+        {
+            title: '生成测试视频',
+            code: `const task = window.mulby.ffmpeg.run([
+  '-y',
+  '-f', 'lavfi',
+  '-i', 'testsrc2=duration=5:size=1280x720:rate=30',
+  '-f', 'lavfi',
+  '-i', 'sine=frequency=880:duration=5',
+  '-c:v', 'libx264',
+  '-pix_fmt', 'yuv420p',
+  '-c:a', 'aac',
+  '-shortest',
+  outputPath,
+])
+
+await task.promise`,
+        },
+    ], [])
+
+    const rawData = useMemo(() => ({
+        status: {
+            isAvailable,
+            version,
+            ffmpegPath,
+            platformLabel,
+        },
+        downloadProgress,
+        activeTask,
+        runProgress: summarizeProgress(runProgress),
+        inputFile: inputFile || null,
+        outputFile: outputFile || null,
+        mediaInfo,
+        lastOutput,
+        lastCommand: lastCommand ? {
+            label: lastCommand.label,
+            command: formatCommand(lastCommand.args),
+            args: lastCommand.args,
+            startedAt: lastCommand.startedAt,
+        } : null,
+        recordMouse,
+        operations: operationLog,
+    }), [activeTask, downloadProgress, ffmpegPath, inputFile, isAvailable, lastCommand, lastOutput, mediaInfo, operationLog, outputFile, platformLabel, recordMouse, runProgress, version])
 
     return (
         <div className="main-content">
             <PageHeader
                 icon={Film}
                 title="FFmpeg 音视频处理"
-                description="音视频转换、压缩、提取 API 演示"
+                description="宿主 FFmpeg 运行时、任务执行、进度回调与音视频转码示例"
             />
-            <div className="page-content">
-                {/* FFmpeg 状态 */}
-                <Card title="FFmpeg 状态" icon={Info}>
-                    <div className="action-bar" style={{ marginBottom: 'var(--spacing-md)' }}>
-                        <Button variant="primary" onClick={handleCheckAvailability}>
-                            <Search className="inline-icon" aria-hidden="true" size={14} />
-                            检查状态
-                        </Button>
-                        {isAvailable === false && (
-                            <Button
-                                variant="secondary"
-                                onClick={handleDownload}
-                                loading={downloading}
-                            >
-                                <Download className="inline-icon" aria-hidden="true" size={14} />
-                                下载 FFmpeg
-                            </Button>
-                        )}
-                    </div>
+            <div className="page-with-api-panel">
+                <div className="page-content">
+                    <div className="ffmpeg-page-stack">
+                        <Card
+                            title="运行时状态"
+                            icon={Info}
+                            actions={(
+                                <>
+                                    <Button variant="secondary" onClick={refreshAvailability} loading={loadingAction === 'status'}>
+                                        <RefreshCw className="inline-icon" aria-hidden="true" size={14} />
+                                        刷新
+                                    </Button>
+                                    {isAvailable === false && (
+                                        <Button variant="primary" onClick={handleDownload} loading={loadingAction === 'download'}>
+                                            <Download className="inline-icon" aria-hidden="true" size={14} />
+                                            下载 FFmpeg
+                                        </Button>
+                                    )}
+                                </>
+                            )}
+                        >
+                            <div className="stats-grid" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <div className="stat-item">
+                                    <div className="stat-value">
+                                        <StatusBadge status={statusBadge.status}>{statusBadge.text}</StatusBadge>
+                                    </div>
+                                    <div className="stat-label">安装状态</div>
+                                </div>
+                                <div className="stat-item">
+                                    <div className="stat-value">{version || 'N/A'}</div>
+                                    <div className="stat-label">版本</div>
+                                </div>
+                                <div className="stat-item">
+                                    <div className="stat-value">{platformLabel}</div>
+                                    <div className="stat-label">平台</div>
+                                </div>
+                            </div>
 
-                    {downloadProgress && (
-                        <div style={{
-                            padding: 'var(--spacing-md)',
-                            background: 'var(--bg-tertiary)',
-                            borderRadius: 'var(--radius-md)',
-                            marginBottom: 'var(--spacing-md)'
-                        }}>
-                            <div style={{ marginBottom: 'var(--spacing-sm)' }}>
-                                {downloadProgress.phase === 'downloading' && '下载中...'}
-                                {downloadProgress.phase === 'extracting' && '解压中...'}
-                                {downloadProgress.phase === 'done' && '完成'}
-                            </div>
-                            <div style={{
-                                height: '8px',
-                                background: 'var(--bg-secondary)',
-                                borderRadius: '4px',
-                                overflow: 'hidden'
-                            }}>
-                                <div style={{
-                                    height: '100%',
-                                    width: `${downloadProgress.percent}%`,
-                                    background: 'var(--accent-primary)',
-                                    transition: 'width 0.3s ease'
-                                }} />
-                            </div>
-                        </div>
-                    )}
-
-                    {isAvailable !== null && (
-                        <div style={{
-                            padding: 'var(--spacing-md)',
-                            background: 'var(--bg-tertiary)',
-                            borderRadius: 'var(--radius-md)',
-                            fontSize: '13px'
-                        }}>
-                            <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 'var(--spacing-sm)',
-                                marginBottom: 'var(--spacing-sm)'
-                            }}>
-                                {isAvailable ? (
-                                    <CheckCircle2 className="inline-icon" aria-hidden="true" size={16} style={{ color: 'var(--success)' }} />
-                                ) : (
-                                    <AlertTriangle className="inline-icon" aria-hidden="true" size={16} style={{ color: 'var(--warning)' }} />
-                                )}
-                                <span>{isAvailable ? '已安装' : '未安装'}</span>
-                            </div>
-                            {version && <div><strong>版本:</strong> {version}</div>}
                             {ffmpegPath && (
-                                <div style={{
-                                    wordBreak: 'break-all',
-                                    color: 'var(--text-secondary)',
-                                    fontSize: '12px',
-                                    marginTop: 'var(--spacing-sm)'
-                                }}>
-                                    <strong>路径:</strong> {ffmpegPath}
+                                <div className="list-row">
+                                    <BadgeInfo className="inline-icon" aria-hidden="true" size={14} />
+                                    <span className="list-row-main">{ffmpegPath}</span>
                                 </div>
                             )}
-                        </div>
-                    )}
-                </Card>
 
-                {/* 文件选择 */}
-                <Card title="文件选择" icon={FolderOpen}>
-                    <div className="action-bar" style={{ marginBottom: 'var(--spacing-md)' }}>
-                        <Button onClick={handleSelectInput}>
-                            <FolderOpen className="inline-icon" aria-hidden="true" size={14} />
-                            选择输入文件
-                        </Button>
-                    </div>
-                    {inputFile && (
-                        <div style={{
-                            padding: 'var(--spacing-md)',
-                            background: 'var(--bg-tertiary)',
-                            borderRadius: 'var(--radius-md)',
-                            fontSize: '12px',
-                            wordBreak: 'break-all'
-                        }}>
-                            <div><strong>输入:</strong> {inputFile}</div>
-                            <div style={{ marginTop: 'var(--spacing-sm)' }}>
-                                <strong>输出:</strong> {outputFile}
-                            </div>
-                        </div>
-                    )}
-                </Card>
-
-                {/* 屏幕录制 */}
-                <Card title="屏幕录制 (实验性)" icon={Video}>
-                    <div style={{ marginBottom: 'var(--spacing-md)' }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', cursor: 'pointer' }}>
-                            <input
-                                type="checkbox"
-                                checked={recordMouse}
-                                onChange={e => setRecordMouse(e.target.checked)}
-                            />
-                            捕获鼠标光标
-                        </label>
-                    </div>
-                    <div className="action-bar">
-                        {!recording ? (
-                            <Button
-                                variant="primary"
-                                onClick={handleStartRecording}
-                                disabled={isAvailable === false}
-                            >
-                                <Video className="inline-icon" aria-hidden="true" size={14} />
-                                开始录制
-                            </Button>
-                        ) : (
-                            <Button
-                                variant="secondary"
-                                onClick={handleStopRecording}
-                                style={{
-                                    borderColor: 'var(--error)',
-                                    color: 'var(--error)'
-                                }}
-                            >
-                                <CircleStop className="inline-icon" aria-hidden="true" size={14} />
-                                停止录制
-                            </Button>
-                        )}
-                    </div>
-                </Card>
-
-                {/* 处理操作 */}
-                <Card title="处理操作" icon={Palette}>
-                    {runProgress && (
-                        <div style={{
-                            padding: 'var(--spacing-md)',
-                            background: 'var(--bg-tertiary)',
-                            borderRadius: 'var(--radius-md)',
-                            marginBottom: 'var(--spacing-md)'
-                        }}>
-                            <div style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                marginBottom: 'var(--spacing-sm)',
-                                fontSize: '13px'
-                            }}>
-                                <span>{recording ? '录制中...' : '处理中...'}</span>
-                                <span>{runProgress.percent !== undefined ? `${runProgress.percent}%` : runProgress.time}</span>
-                            </div>
-                            {runProgress.percent !== undefined && (
-                                <div style={{
-                                    height: '8px',
-                                    background: 'var(--bg-secondary)',
-                                    borderRadius: '4px',
-                                    overflow: 'hidden'
-                                }}>
-                                    <div style={{
-                                        height: '100%',
-                                        width: `${runProgress.percent || 0}%`,
-                                        background: 'var(--accent-primary)',
-                                        transition: 'width 0.3s ease'
-                                    }} />
+                            {downloadProgress && (
+                                <div style={{ marginTop: 'var(--spacing-md)' }}>
+                                    <div className="list-row" style={{ marginBottom: 'var(--spacing-sm)' }}>
+                                        <Download className="inline-icon" aria-hidden="true" size={14} />
+                                        <span className="list-row-main">{downloadPhaseText(downloadProgress.phase)}</span>
+                                        <span className="list-row-meta">{Math.round(downloadProgress.percent)}%</span>
+                                        {downloadProgress.total ? (
+                                            <span className="list-row-meta">
+                                                {formatBytes(downloadProgress.downloaded)} / {formatBytes(downloadProgress.total)}
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                    <div style={{ height: 8, background: 'var(--bg-tertiary)', borderRadius: 4, overflow: 'hidden' }}>
+                                        <div
+                                            style={{
+                                                width: `${downloadProgress.percent}%`,
+                                                height: '100%',
+                                                background: 'var(--accent-primary)',
+                                                transition: 'width 0.2s ease',
+                                            }}
+                                        />
+                                    </div>
                                 </div>
                             )}
-                            {runProgress.speed && (
-                                <div style={{
-                                    fontSize: '12px',
-                                    color: 'var(--text-secondary)',
-                                    marginTop: 'var(--spacing-sm)'
-                                }}>
-                                    速度: {runProgress.speed}
-                                </div>
-                            )}
-                        </div>
-                    )}
+                        </Card>
 
-                    {videoInfo && (
-                        <div style={{
-                            padding: 'var(--spacing-md)',
-                            background: 'var(--bg-tertiary)',
-                            borderRadius: 'var(--radius-md)',
-                            marginBottom: 'var(--spacing-md)',
-                            fontSize: '13px',
-                            lineHeight: '1.6'
-                        }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 'var(--spacing-sm)', marginBottom: 'var(--spacing-sm)' }}>
-                                <div><strong>时长:</strong> {videoInfo.duration || '未知'}</div>
-                                <div><strong>码率:</strong> {videoInfo.bitrate || '未知'}</div>
-                            </div>
-                            {videoInfo.video && (
-                                <div style={{ marginBottom: 'var(--spacing-xs)' }}>
-                                    <strong>视频流:</strong>
-                                    <div style={{ color: 'var(--text-secondary)', fontSize: '12px', marginLeft: '1em' }}>{videoInfo.video}</div>
-                                </div>
-                            )}
-                            {videoInfo.audio && (
-                                <div>
-                                    <strong>音频流:</strong>
-                                    <div style={{ color: 'var(--text-secondary)', fontSize: '12px', marginLeft: '1em' }}>{videoInfo.audio}</div>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="action-bar">
-                        <Button
-                            variant="primary"
-                            onClick={handleCompress}
-                            loading={running}
-                            disabled={!inputFile || isAvailable === false}
-                        >
-                            <Shrink className="inline-icon" aria-hidden="true" size={14} />
-                            压缩视频
-                        </Button>
-                        <Button
-                            onClick={handleExtractAudio}
-                            loading={running}
-                            disabled={!inputFile || isAvailable === false}
-                        >
-                            <Music className="inline-icon" aria-hidden="true" size={14} />
-                            提取音频
-                        </Button>
-                        <Button
-                            onClick={handleGetVideoInfo}
-                            loading={gettingInfo}
-                            disabled={!inputFile || isAvailable === false}
-                        >
-                            <ChartColumn className="inline-icon" aria-hidden="true" size={14} />
-                            获取信息
-                        </Button>
-                        {running && (
-                            <>
-                                <Button variant="secondary" onClick={handleQuit}>
-                                    <Pause className="inline-icon" aria-hidden="true" size={14} />
-                                    优雅退出
+                        <Card title="输入与输出" icon={FolderOpen}>
+                            <div className="action-bar" style={{ marginBottom: 'var(--spacing-md)' }}>
+                                <Button variant="primary" onClick={handleSelectInput} loading={loadingAction === 'select-input'}>
+                                    <FolderOpen className="inline-icon" aria-hidden="true" size={14} />
+                                    选择输入文件
                                 </Button>
-                                <Button variant="secondary" onClick={handleCancel}>
-                                    <X className="inline-icon" aria-hidden="true" size={14} />
-                                    取消任务
+                                <Button variant="secondary" onClick={handleChooseOutput} disabled={!inputFile}>
+                                    <FileDown className="inline-icon" aria-hidden="true" size={14} />
+                                    选择 MP4 输出
                                 </Button>
-                            </>
+                                <Button variant="secondary" onClick={handleGenerateTestVideo} disabled={Boolean(activeTask)}>
+                                    <Sparkles className="inline-icon" aria-hidden="true" size={14} />
+                                    生成测试视频
+                                </Button>
+                            </div>
+
+                            {inputFile || outputFile ? (
+                                <div style={{ display: 'grid', gap: 'var(--spacing-sm)' }}>
+                                    {inputFile && (
+                                        <div className="list-row">
+                                            <FileVideo className="inline-icon" aria-hidden="true" size={14} />
+                                            <span className="list-row-main">{inputFile}</span>
+                                            <span className="list-row-meta">输入</span>
+                                        </div>
+                                    )}
+                                    {outputFile && (
+                                        <div className="list-row">
+                                            <FileDown className="inline-icon" aria-hidden="true" size={14} />
+                                            <span className="list-row-main">{outputFile}</span>
+                                            <span className="list-row-meta">默认输出</span>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="empty-state">
+                                    <FolderOpen aria-hidden="true" size={28} />
+                                    <p>选择媒体文件，或先生成一个测试视频</p>
+                                </div>
+                            )}
+                        </Card>
+
+                        <Card
+                            title="任务进度"
+                            icon={Gauge}
+                            actions={activeTask ? (
+                                <>
+                                    <Button variant="secondary" onClick={handleQuitTask}>
+                                        <Pause className="inline-icon" aria-hidden="true" size={14} />
+                                        优雅停止
+                                    </Button>
+                                    <Button variant="secondary" onClick={handleKillTask}>
+                                        <X className="inline-icon" aria-hidden="true" size={14} />
+                                        强制终止
+                                    </Button>
+                                </>
+                            ) : null}
+                        >
+                            {activeTask ? (
+                                <div style={{ display: 'grid', gap: 'var(--spacing-md)' }}>
+                                    <div className="list-row">
+                                        <Play className="inline-icon" aria-hidden="true" size={14} />
+                                        <span className="list-row-main">{activeTask.label}</span>
+                                        <span className="list-row-meta">开始于 {formatTime(activeTask.startedAt)}</span>
+                                    </div>
+                                    <div style={{ height: 8, background: 'var(--bg-tertiary)', borderRadius: 4, overflow: 'hidden' }}>
+                                        <div
+                                            style={{
+                                                width: `${runProgress?.percent ?? 0}%`,
+                                                height: '100%',
+                                                background: runProgress?.percent === undefined ? 'var(--warning)' : 'var(--accent-primary)',
+                                                transition: 'width 0.2s ease',
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="stats-grid">
+                                        <div className="stat-item">
+                                            <div className="stat-value">{runProgress?.percent !== undefined ? `${runProgress.percent}%` : 'N/A'}</div>
+                                            <div className="stat-label">进度</div>
+                                        </div>
+                                        <div className="stat-item">
+                                            <div className="stat-value">{runProgress?.time || 'N/A'}</div>
+                                            <div className="stat-label">时间</div>
+                                        </div>
+                                        <div className="stat-item">
+                                            <div className="stat-value">{runProgress?.speed || 'N/A'}</div>
+                                            <div className="stat-label">速度</div>
+                                        </div>
+                                        <div className="stat-item">
+                                            <div className="stat-value">{runProgress?.size || 'N/A'}</div>
+                                            <div className="stat-label">输出大小</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="empty-state">
+                                    <Gauge aria-hidden="true" size={28} />
+                                    <p>当前没有正在运行的 FFmpeg 任务</p>
+                                </div>
+                            )}
+
+                            {currentCommandText && (
+                                <div className="preview-box" style={{ marginTop: 'var(--spacing-md)', justifyContent: 'flex-start', alignItems: 'stretch' }}>
+                                    <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>{currentCommandText}</code>
+                                </div>
+                            )}
+                        </Card>
+
+                        <Card title="处理操作" icon={Scissors}>
+                            <div className="action-bar">
+                                <Button variant="primary" onClick={handleCompressVideo} disabled={!inputFile || Boolean(activeTask) || isAvailable === false}>
+                                    <Shrink className="inline-icon" aria-hidden="true" size={14} />
+                                    压缩 MP4
+                                </Button>
+                                <Button variant="secondary" onClick={handleExtractAudio} disabled={!inputFile || Boolean(activeTask) || isAvailable === false}>
+                                    <FileAudio className="inline-icon" aria-hidden="true" size={14} />
+                                    提取音频
+                                </Button>
+                                <Button variant="secondary" onClick={handleConvertGif} disabled={!inputFile || Boolean(activeTask) || isAvailable === false}>
+                                    <Film className="inline-icon" aria-hidden="true" size={14} />
+                                    转 GIF
+                                </Button>
+                                <Button variant="secondary" onClick={handleExtractFrame} disabled={!inputFile || Boolean(activeTask) || isAvailable === false}>
+                                    <FileImage className="inline-icon" aria-hidden="true" size={14} />
+                                    抽取单帧
+                                </Button>
+                                <Button variant="secondary" onClick={handleGetMediaInfo} loading={loadingAction === 'media-info'} disabled={!inputFile || Boolean(activeTask) || isAvailable === false}>
+                                    <Search className="inline-icon" aria-hidden="true" size={14} />
+                                    读取信息
+                                </Button>
+                            </div>
+                        </Card>
+
+                        <Card
+                            title="FFmpeg 原生录屏"
+                            icon={Video}
+                            actions={activeTask?.id === 'record-screen' ? (
+                                <Button variant="secondary" onClick={handleQuitTask}>
+                                    <CircleStop className="inline-icon" aria-hidden="true" size={14} />
+                                    停止录制
+                                </Button>
+                            ) : null}
+                        >
+                            <div style={{ display: 'grid', gap: 'var(--spacing-md)' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', color: 'var(--text-primary)' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={recordMouse}
+                                        onChange={event => setRecordMouse(event.target.checked)}
+                                    />
+                                    捕获鼠标光标
+                                </label>
+                                <div className="action-bar">
+                                    <Button
+                                        variant="secondary"
+                                        onClick={handleStartRecording}
+                                        disabled={Boolean(activeTask) || isAvailable === false}
+                                    >
+                                        <Video className="inline-icon" aria-hidden="true" size={14} />
+                                        开始全屏录制
+                                    </Button>
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                    这里仅演示 FFmpeg 原生命令参数，不请求麦克风或摄像头权限。桌面流录制和权限流程在屏幕模块中展示。
+                                </div>
+                            </div>
+                        </Card>
+
+                        {(mediaInfo || lastOutput) && (
+                            <Card
+                                title="结果"
+                                icon={ChartColumn}
+                                actions={lastOutput?.path ? (
+                                    <Button variant="secondary" onClick={handleRevealOutput}>
+                                        <FolderOpen className="inline-icon" aria-hidden="true" size={14} />
+                                        定位输出
+                                    </Button>
+                                ) : null}
+                            >
+                                {mediaInfo && (
+                                    <div style={{ display: 'grid', gap: 'var(--spacing-md)', marginBottom: lastOutput ? 'var(--spacing-md)' : 0 }}>
+                                        <div className="stats-grid">
+                                            <div className="stat-item">
+                                                <div className="stat-value">{mediaInfo.duration || 'N/A'}</div>
+                                                <div className="stat-label">时长</div>
+                                            </div>
+                                            <div className="stat-item">
+                                                <div className="stat-value">{mediaInfo.bitrate || 'N/A'}</div>
+                                                <div className="stat-label">码率</div>
+                                            </div>
+                                            <div className="stat-item">
+                                                <div className="stat-value">{mediaInfo.video.length}</div>
+                                                <div className="stat-label">视频流</div>
+                                            </div>
+                                            <div className="stat-item">
+                                                <div className="stat-value">{mediaInfo.audio.length}</div>
+                                                <div className="stat-label">音频流</div>
+                                            </div>
+                                        </div>
+                                        {[...mediaInfo.video.map(stream => ({ type: '视频', icon: FileVideo, stream })), ...mediaInfo.audio.map(stream => ({ type: '音频', icon: AudioLines, stream })), ...mediaInfo.subtitle.map(stream => ({ type: '字幕', icon: List, stream }))].map((item, index) => {
+                                            const Icon = item.icon
+                                            return (
+                                                <div className="list-row" key={`${item.type}-${index}`}>
+                                                    <Icon className="inline-icon" aria-hidden="true" size={14} />
+                                                    <span className="list-row-main">{item.stream}</span>
+                                                    <span className="list-row-meta">{item.type}</span>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+
+                                {lastOutput && (
+                                    <div className="list-row">
+                                        <FileDown className="inline-icon" aria-hidden="true" size={14} />
+                                        <span className="list-row-main">{lastOutput.path}</span>
+                                        <span className="list-row-meta">{formatBytes(lastOutput.size)}</span>
+                                        <span className="list-row-meta">{formatTime(lastOutput.modifiedAt)}</span>
+                                    </div>
+                                )}
+                            </Card>
                         )}
+
+                        <Card title="最近操作" icon={List}>
+                            <div style={{ display: 'grid', gap: 'var(--spacing-sm)' }}>
+                                {operationLog.length > 0 ? operationLog.map((item, index) => (
+                                    <div className="list-row" key={`${item.timestamp}-${index}`}>
+                                        <StatusBadge status={item.status}>{statusText(item.status)}</StatusBadge>
+                                        <span className="list-row-main">{item.action}</span>
+                                        <span className="list-row-meta">{item.message}</span>
+                                        <span className="list-row-meta">{formatTime(item.timestamp)}</span>
+                                    </div>
+                                )) : (
+                                    <div className="empty-state">
+                                        <List aria-hidden="true" size={28} />
+                                        <p>暂无操作记录</p>
+                                    </div>
+                                )}
+                            </div>
+                        </Card>
                     </div>
-                </Card>
+                </div>
 
-                {/* API 参考 */}
-                <Card title="使用的 API" icon={BookOpen}>
-                    <CodeBlock>
-                        {`// 生成录屏参数
-async function getRecordingArgs (speaker, microphone, captureMouse, area, outputFile) {
-  const isWindows = await mulby.system.isWindows()
-
-                        if (isWindows) {
-    // Windows 参数构造 (gdigrab + dshow)
-    return [
-                        // ... 省略具体参数构造细节 ...
-                        '-f', 'gdigrab', '-i', 'desktop',
-                        '-y', outputFile
-                        ]
-  }
-
-                        // macOS 参数构造 (avfoundation)
-                        return ['-f', 'avfoundation', '-i', '1', '-y', outputFile]
-}
-
-                        // 使用示例：
-                        // 1. 获取参数
-                        const args = await getRecordingArgs(false, false, true, null, '/path/to.mp4')
-
-// 2. 启动任务 (注意：不要 await run，先拿到 task 对象以便控制)
-const task = mulby.ffmpeg.run(args, (progress) => {
-                            console.log('录制时间:', progress.time)
-                        })
-
-// 3. 10秒后停止录制 (发送 'q' 命令)
-setTimeout(() => task.quit(), 10000)
-
-// 4. 等待任务结束
-await task`}
-                    </CodeBlock>
-                </Card>
+                <ApiReferencePanel apiGroups={apiGroups} examples={apiExamples} rawData={rawData} />
             </div>
         </div>
     )

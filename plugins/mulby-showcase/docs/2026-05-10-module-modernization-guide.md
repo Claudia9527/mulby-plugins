@@ -226,3 +226,16 @@ Manual review:
 - Redact binary outputs in `rawData`: show byte lengths, MIME headers, metadata, stats, and save paths instead of dumping ArrayBuffers, Data URLs, EXIF, ICC, IPTC, or XMP payloads.
 - Use typed Sharp method options in `src/types/mulby.d.ts`. Broad `object` signatures hide stale examples and make page code less useful as API documentation.
 - When saving, demonstrate both paths deliberately: `toBuffer()` plus `filesystem.writeFile()` for renderer-managed output, and `toFile(path)` for direct Sharp output.
+
+## FFmpeg Module Lessons
+
+- The current plugin-facing FFmpeg surface is intentionally small: `ffmpeg.isAvailable()`, `getVersion()`, `getPath()`, `download(onProgress?)`, and `run(args, onProgress?)`. Do not invent `ffprobe`, device listing, preset management, or host settings APIs unless the host exposes them.
+- `ffmpeg.run()` returns a task object immediately. Keep that task in a ref so the UI can call `task.quit()` or `task.kill()` while `task.promise` is still pending.
+- The progress callback is parsed from FFmpeg stderr and `percent` is only available when the host has parsed an input duration. UI should also display `time`, `speed`, `size`, `frame`, and `bitrate` so long-running tasks still show useful state when percent is missing.
+- Media probing can be demonstrated with `ffmpeg.run(['-hide_banner', '-i', input])`: FFmpeg exits with an error, but stderr contains the stream metadata. Parse it deliberately and treat the expected error path as a successful information read only when duration or streams are present.
+- Use argument arrays, not shell command strings. `ffmpeg.run(args)` spawns the host-managed binary directly, so examples should avoid `shell.runCommand`, command policy APIs, or any shell quoting requirement.
+- Downloading FFmpeg is a host-managed runtime install. Show download phase and progress, but do not expose downloader URLs, host storage internals, or update settings.
+- Use helper APIs only for workflow ergonomics: `dialog` for file paths, `filesystem.exists/stat` for output summaries, `system.getPath('temp')` for generated samples, `system.isWindows/isMacOS/isLinux` for platform-specific FFmpeg arguments, and basic `shell.showItemInFolder` to reveal outputs.
+- Screen recording through FFmpeg is just a command-argument example and does not replace the Screen module's `screen.getMediaStreamConstraints()` workflow. Keep microphone/camera permission flows in Media and desktop stream permission flows in Screen.
+- Redact raw FFmpeg stderr in `rawData`; keep a truncated preview, parsed streams, current command args, progress snapshot, and output file stat.
+- Add a static manifest feature for `ffmpeg` so the sidebar module can also be opened directly from launcher keywords.

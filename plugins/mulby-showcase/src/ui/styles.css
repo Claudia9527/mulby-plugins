@@ -205,6 +205,7 @@ body {
 /* ===== Main Content ===== */
 .main-content {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -233,8 +234,10 @@ body {
 
 .page-content {
   flex: 1;
+  min-width: 0;
   padding: var(--spacing-xl);
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .page-with-api-panel {
@@ -359,6 +362,8 @@ body {
 
 /* ===== Cards ===== */
 .card {
+  min-width: 0;
+  max-width: 100%;
   background: var(--bg-secondary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-lg);
@@ -370,10 +375,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--spacing-md);
+  min-width: 0;
   margin-bottom: var(--spacing-md);
 }
 
 .card-title {
+  min-width: 0;
   font-size: var(--font-size-md);
   font-weight: 600;
   color: var(--text-primary);
@@ -382,12 +390,20 @@ body {
   gap: var(--spacing-sm);
 }
 
+.card-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .card-icon {
   width: 16px;
   height: 16px;
 }
 
 .card-content {
+  min-width: 0;
   color: var(--text-secondary);
 }
 
@@ -537,6 +553,7 @@ body {
 
 /* ===== Code Block ===== */
 .code-block {
+  max-width: 100%;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
@@ -587,9 +604,13 @@ body {
 }
 
 .stat-value {
+  min-width: 0;
   font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat-label {
@@ -599,6 +620,8 @@ body {
 
 /* ===== Preview Box ===== */
 .preview-box {
+  min-width: 0;
+  max-width: 100%;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
@@ -648,12 +671,14 @@ body {
   display: flex;
   gap: var(--spacing-sm);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .list-row {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
+  min-width: 0;
   padding: var(--spacing-sm);
   background: var(--bg-tertiary);
   border-radius: var(--radius-sm);
@@ -671,8 +696,20 @@ body {
 }
 
 .list-row-meta {
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--text-tertiary);
   font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ffmpeg-page-stack {
+  display: grid;
+  gap: var(--spacing-lg);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .history-item {
