@@ -198,3 +198,18 @@ Manual review:
 - `window.startDrag()` needs real existing local files. Generate temporary files with `system.getPath('temp')` plus `filesystem.writeFile()`, or let the user choose a file with `dialog.showOpenDialog()`.
 - `resizeDrag()` is for custom frameless/titlebar resize surfaces. Use a small explicit drag target rather than binding it to broad page areas.
 - Move all route-mode, overlay, messaging, SubInput, find-in-page, and drag examples into the right-side `ApiReferencePanel`; main content should stay focused on live controls, state, message logs, and operation logs.
+
+## InBrowser Module Lessons
+
+- `inbrowser` is a renderer chain builder. Each chain method returns the same builder and nothing executes until `run()` is called.
+- The host appends an `InBrowserInstance` object to the end of the `run()` result array when the browser window is still alive. UI code should split operation outputs from the trailing instance metadata before rendering raw data.
+- Use a local `data:` fixture page for most live demos. It makes selectors stable, avoids relying on Google/Baidu or other external pages, and lets the module demonstrate input, mouse, upload, drop, cookies, screenshot, PDF, and extraction reliably.
+- Keep external URL demos configurable and conservative. Do not hard-code private links, real cloud-drive shares, or unreachable test domains as default demo paths.
+- Include current newer operations together: `dblclick`, `hover`, `input`, `when`, function-based `wait`, `markdown`, `screenshot`, `download`, `file`, `drop`, `setCookies`, `removeCookies`, and manager methods.
+- `run(id, options)` is the correct way to reuse an existing hidden InBrowser instance. Store the trailing instance id from a previous result, and keep a separate action for `getIdleInBrowsers()`.
+- `file()` and `drop()` need a real local path. Generate one with `system.getPath('temp')` plus `filesystem.writeFile()`, or let the user choose a file with `dialog.showOpenDialog()`.
+- `pdf()` and `screenshot()` can either return binary data or save to a path. Showcase UI should prefer `dialog.showSaveDialog()` for explicit save paths and summarize returned binary data in `rawData`.
+- `download()` is asynchronous from the browser session perspective; setting `savePath` controls the download target but the returned `run()` array may only contain instance metadata.
+- `setInBrowserProxy()` is global to InBrowser manager state and existing active windows. Provide an explicit direct-mode action and avoid treating proxy settings as host Settings API.
+- Do not add permissions for InBrowser itself. Add only related API permissions if the page calls permission-gated APIs; the current InBrowser page uses dialog/system/filesystem helpers and requires no new manifest permission.
+- Update `src/types/mulby.d.ts` when InBrowser docs/preload support more methods than the local declaration. Avoid using `any` for the entire chain surface because it hides stale API examples.

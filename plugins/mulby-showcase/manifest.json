@@ -16,7 +16,8 @@
     "accessibility": true,
     "screen": true,
     "microphone": true,
-    "camera": true
+    "camera": true,
+    "notification": true
   },
   "features": [
     {
@@ -219,6 +220,24 @@
         {
           "type": "keyword",
           "value": "子窗口"
+        }
+      ]
+    },
+    {
+      "code": "inbrowser",
+      "explain": "InBrowser 自动化浏览器",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "inbrowser"
+        },
+        {
+          "type": "keyword",
+          "value": "browser"
+        },
+        {
+          "type": "keyword",
+          "value": "浏览器自动化"
         }
       ]
     },

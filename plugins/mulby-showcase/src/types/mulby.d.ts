@@ -224,6 +224,188 @@ interface MulbyWindow {
   startDrag(filePath: string | string[]): void
 }
 
+type InBrowserMouseButton = 'left' | 'middle' | 'right'
+type InBrowserDevToolsMode = 'right' | 'bottom' | 'undocked' | 'detach'
+type InBrowserScreenshotTarget = string | { x: number; y: number; width: number; height: number }
+type InBrowserFilePayload = string | string[] | ArrayBuffer | Uint8Array
+
+interface InBrowserOptions {
+  show?: boolean
+  width?: number
+  height?: number
+  x?: number
+  y?: number
+  center?: boolean
+  minWidth?: number
+  minHeight?: number
+  maxWidth?: number
+  maxHeight?: number
+  resizable?: boolean
+  movable?: boolean
+  minimizable?: boolean
+  maximizable?: boolean
+  alwaysOnTop?: boolean
+  fullscreen?: boolean
+  fullscreenable?: boolean
+  enableLargerThanScreen?: boolean
+  opacity?: number
+  frame?: boolean
+  closable?: boolean
+  focusable?: boolean
+  skipTaskbar?: boolean
+  backgroundColor?: string
+  hasShadow?: boolean
+  transparent?: boolean
+  titleBarStyle?: 'default' | 'hidden' | 'hiddenInset' | 'customButtonsOnHover'
+  thickFrame?: boolean
+  webPreferences?: Record<string, unknown>
+}
+
+interface InBrowserInstance {
+  id: number
+  url: string
+  title: string
+  width: number
+  height: number
+  x: number
+  y: number
+}
+
+interface InBrowserCookieFilter {
+  url?: string
+  name?: string
+  domain?: string
+  path?: string
+  secure?: boolean
+  session?: boolean
+  httpOnly?: boolean
+}
+
+interface InBrowserProxyConfig {
+  proxyRules?: string
+  proxyBypassRules?: string
+  pacScript?: string
+  proxyMode?: string
+}
+
+interface InBrowserPrintToPdfOptions {
+  landscape?: boolean
+  displayHeaderFooter?: boolean
+  printBackground?: boolean
+  scale?: number
+  pageSize?: string | { width: number; height: number }
+  marginsType?: number
+  margins?: {
+    top?: number
+    bottom?: number
+    left?: number
+    right?: number
+  }
+  pageRanges?: string
+  headerTemplate?: string
+  footerTemplate?: string
+  preferCSSPageSize?: boolean
+}
+
+interface MulbyInBrowserBuilder {
+  goto(url: string, headers?: Record<string, string>, timeout?: number): MulbyInBrowserBuilder
+  useragent(ua: string): MulbyInBrowserBuilder
+  device(options: { userAgent: string; size: { width: number; height: number } } | string): MulbyInBrowserBuilder
+  click(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  click(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mousedown(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mousedown(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mouseup(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mouseup(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  dblclick(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  dblclick(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  hover(selector: string): MulbyInBrowserBuilder
+  hover(x: number, y: number): MulbyInBrowserBuilder
+  type(selector: string, text: string): MulbyInBrowserBuilder
+  input(text: string): MulbyInBrowserBuilder
+  input(selector: string, text: string): MulbyInBrowserBuilder
+  press(key: string, modifiers?: string[]): MulbyInBrowserBuilder
+  show(): MulbyInBrowserBuilder
+  hide(): MulbyInBrowserBuilder
+  viewport(width: number, height: number): MulbyInBrowserBuilder
+  css(cssText: string): MulbyInBrowserBuilder
+  when(selectorOrFunc: string | Function, ...params: unknown[]): MulbyInBrowserBuilder
+  wait(msOrSelectorOrFunc: number | string | Function, ...params: unknown[]): MulbyInBrowserBuilder
+  cookies(nameOrFilter?: string | InBrowserCookieFilter): MulbyInBrowserBuilder
+  setCookies(name: string, value: string): MulbyInBrowserBuilder
+  setCookies(cookies: Array<{ name: string; value: string }>): MulbyInBrowserBuilder
+  removeCookies(name: string): MulbyInBrowserBuilder
+  clearCookies(url?: string): MulbyInBrowserBuilder
+  value(selector: string, val: string): MulbyInBrowserBuilder
+  check(selector: string, checked: boolean): MulbyInBrowserBuilder
+  scroll(selector: string, options?: boolean | ScrollIntoViewOptions): MulbyInBrowserBuilder
+  scroll(y: number): MulbyInBrowserBuilder
+  scroll(x: number, y: number): MulbyInBrowserBuilder
+  devTools(mode?: InBrowserDevToolsMode): MulbyInBrowserBuilder
+  focus(selector: string): MulbyInBrowserBuilder
+  paste(text: string): MulbyInBrowserBuilder
+  end(): MulbyInBrowserBuilder
+  pdf(options?: InBrowserPrintToPdfOptions, savePath?: string): MulbyInBrowserBuilder
+  screenshot(target?: InBrowserScreenshotTarget, savePath?: string): MulbyInBrowserBuilder
+  markdown(selector?: string): MulbyInBrowserBuilder
+  download(urlOrFunc: string | Function, savePath?: string | null, ...params: unknown[]): MulbyInBrowserBuilder
+  evaluate(func: string | Function, ...params: unknown[]): MulbyInBrowserBuilder
+  file(selector: string, payload: InBrowserFilePayload): MulbyInBrowserBuilder
+  drop(selector: string, payload: InBrowserFilePayload): MulbyInBrowserBuilder
+  drop(x: number, y: number, payload: InBrowserFilePayload): MulbyInBrowserBuilder
+  run(idOrOptions?: number | InBrowserOptions, options?: InBrowserOptions): Promise<unknown[]>
+}
+
+interface MulbyInBrowser {
+  goto(url: string, headers?: Record<string, string>, timeout?: number): MulbyInBrowserBuilder
+  useragent(ua: string): MulbyInBrowserBuilder
+  device(options: { userAgent: string; size: { width: number; height: number } } | string): MulbyInBrowserBuilder
+  viewport(width: number, height: number): MulbyInBrowserBuilder
+  show(): MulbyInBrowserBuilder
+  hide(): MulbyInBrowserBuilder
+  devTools(mode?: InBrowserDevToolsMode): MulbyInBrowserBuilder
+  click(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  click(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mousedown(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mousedown(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mouseup(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  mouseup(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  dblclick(selector: string, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  dblclick(x: number, y: number, mouseButton?: InBrowserMouseButton): MulbyInBrowserBuilder
+  hover(selector: string): MulbyInBrowserBuilder
+  hover(x: number, y: number): MulbyInBrowserBuilder
+  type(selector: string, text: string): MulbyInBrowserBuilder
+  input(text: string): MulbyInBrowserBuilder
+  input(selector: string, text: string): MulbyInBrowserBuilder
+  value(selector: string, val: string): MulbyInBrowserBuilder
+  check(selector: string, checked: boolean): MulbyInBrowserBuilder
+  focus(selector: string): MulbyInBrowserBuilder
+  paste(text: string): MulbyInBrowserBuilder
+  press(key: string, modifiers?: string[]): MulbyInBrowserBuilder
+  scroll(selector: string, options?: boolean | ScrollIntoViewOptions): MulbyInBrowserBuilder
+  scroll(y: number): MulbyInBrowserBuilder
+  scroll(x: number, y: number): MulbyInBrowserBuilder
+  file(selector: string, payload: InBrowserFilePayload): MulbyInBrowserBuilder
+  drop(selector: string, payload: InBrowserFilePayload): MulbyInBrowserBuilder
+  drop(x: number, y: number, payload: InBrowserFilePayload): MulbyInBrowserBuilder
+  download(urlOrFunc: string | Function, savePath?: string | null, ...params: unknown[]): MulbyInBrowserBuilder
+  screenshot(target?: InBrowserScreenshotTarget, savePath?: string): MulbyInBrowserBuilder
+  markdown(selector?: string): MulbyInBrowserBuilder
+  evaluate(func: string | Function, ...params: unknown[]): MulbyInBrowserBuilder
+  cookies(nameOrFilter?: string | InBrowserCookieFilter): MulbyInBrowserBuilder
+  setCookies(name: string, value: string): MulbyInBrowserBuilder
+  setCookies(cookies: Array<{ name: string; value: string }>): MulbyInBrowserBuilder
+  removeCookies(name: string): MulbyInBrowserBuilder
+  clearCookies(url?: string): MulbyInBrowserBuilder
+  pdf(options?: InBrowserPrintToPdfOptions, savePath?: string): MulbyInBrowserBuilder
+  wait(msOrSelectorOrFunc: number | string | Function, ...params: unknown[]): MulbyInBrowserBuilder
+  when(selectorOrFunc: string | Function, ...params: unknown[]): MulbyInBrowserBuilder
+  end(): MulbyInBrowserBuilder
+  getIdleInBrowsers(): Promise<InBrowserInstance[]>
+  setInBrowserProxy(config: InBrowserProxyConfig): Promise<boolean>
+  clearInBrowserCache(): Promise<boolean>
+}
+
 interface MulbySubInput {
   set(placeholder?: string, isFocus?: boolean): Promise<boolean>
   remove(): Promise<boolean>
@@ -1781,47 +1963,7 @@ interface MulbyAPI {
   onPluginLaunchEnd(callback: (data: PluginLaunchEndEvent) => void): Disposable
   onThemeChange(callback: (theme: 'light' | 'dark') => void): Disposable
   onWindowStateChange(callback: (state: { isMaximized: boolean }) => void): Disposable
-  inbrowser: {
-    goto: (url: string, headers?: Record<string, string>, timeout?: number) => any
-    useragent: (ua: string) => any
-    device: (name: string) => any
-    viewport: (width: number, height: number) => any
-    show: () => any
-    hide: () => any
-    evaluate: (func: string | Function, ...params: any[]) => any
-    wait: (msOrSelector: number | string) => any
-    click: (selector: string) => any
-    mousedown: (selector: string) => any
-    mouseup: (selector: string) => any
-    scroll: (selector: string | number, y?: number) => any
-    devTools: (mode?: 'right' | 'bottom' | 'undocked' | 'detach') => any
-    paste: (text: string) => any
-    file: (selector: string, payload: string | string[]) => any
-    end: () => any
-    type: (selector: string, text: string) => any
-    press: (key: string, modifiers?: string[]) => any
-    check: (selector: string, checked: boolean) => any
-    value: (selector: string, val: string) => any
-    focus: (selector: string) => any
-    when: (selector: string | Function, ...params: any[]) => any
-    css: (css: string) => any
-    pdf: (options?: any, savePath?: string) => any
-    cookies: (nameOrFilter?: string | any) => any
-    clearCookies: (url?: string) => any
-    input: (selectorOrText: string, text?: string) => any
-    dblclick: (selector: string) => any
-    hover: (selector: string) => any
-    screenshot: (target?: any, savePath?: string) => any
-    drop: (selector: string, payload: any) => any
-    download: (urlOrFunc: string | Function, savePath?: string, ...params: any[]) => any
-    removeCookies: (name: string) => any
-    setCookies: (nameOrCookies: any, value?: string) => any
-    markdown: (selector?: string) => any
-    getIdleInBrowsers: () => Promise<any[]>
-    setInBrowserProxy: (config: any) => Promise<boolean>
-    clearInBrowserCache: () => Promise<boolean>
-    run: (idOrOptions?: number | any, options?: any) => Promise<any[]>
-  }
+  inbrowser: MulbyInBrowser
   openclaw: {
     getSettings(): Promise<unknown>
     updateSettings(partial: unknown): Promise<unknown>

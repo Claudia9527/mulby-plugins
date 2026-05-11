@@ -50,6 +50,7 @@ const featureToModule: Record<string, ModuleId> = {
   'window-api': 'window-api',
   childWindow: 'child-window',
   'child-window': 'child-window',
+  inbrowser: 'inbrowser',
   settings: 'settings',
   screenshot: 'screen',
   'showcase:ui-settings': 'settings',
