@@ -242,6 +242,24 @@
       ]
     },
     {
+      "code": "sharp",
+      "explain": "Sharp 图像处理",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "sharp"
+        },
+        {
+          "type": "keyword",
+          "value": "图像处理"
+        },
+        {
+          "type": "keyword",
+          "value": "图片处理"
+        }
+      ]
+    },
+    {
       "code": "settings",
       "explain": "高级设置",
       "cmds": [

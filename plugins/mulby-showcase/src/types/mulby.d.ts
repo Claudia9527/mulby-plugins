@@ -1979,7 +1979,7 @@ interface MulbyAPI {
     onLogsCleared(callback: () => void): Disposable
   }
   sharp: MulbySharpFunction
-  getSharpVersion: () => Promise<{ sharp: Record<string, string>; format: Record<string, any> }>
+  getSharpVersion: () => Promise<{ sharp: Record<string, string>; format: Record<string, unknown> }>
   ffmpeg: MulbyFFmpeg
 }
 
@@ -2309,65 +2309,171 @@ interface BackendPluginContext {
   attachments?: Attachment[]
 }
 
+type MulbySharpColor = string | { r: number; g: number; b: number; alpha?: number } | object
+type MulbySharpInput =
+  | string
+  | ArrayBuffer
+  | Uint8Array
+  | {
+      create?: {
+        width: number
+        height: number
+        channels: number
+        background?: MulbySharpColor
+        noise?: { type: 'gaussian'; mean?: number; sigma?: number }
+      }
+      text?: { text: string; width?: number; height?: number; channels?: number; rgba?: boolean }
+    }
+  | unknown[]
+
+interface MulbySharpOutputInfo {
+  format: string
+  width: number
+  height: number
+  channels: number
+  premultiplied?: boolean
+  size: number
+}
+
+interface MulbySharpMetadata {
+  format?: string
+  size?: number
+  width?: number
+  height?: number
+  space?: string
+  channels?: number
+  depth?: string
+  density?: number
+  chromaSubsampling?: string
+  isProgressive?: boolean
+  pages?: number
+  pageHeight?: number
+  loop?: number
+  delay?: number[]
+  hasProfile?: boolean
+  hasAlpha?: boolean
+  orientation?: number
+  exif?: ArrayBuffer
+  icc?: ArrayBuffer
+  iptc?: ArrayBuffer
+  xmp?: ArrayBuffer
+  tifftagPhotoshop?: ArrayBuffer
+}
+
+interface MulbySharpStats {
+  channels: {
+    min: number
+    max: number
+    sum: number
+    squaresSum: number
+    mean: number
+    stdev: number
+    minX: number
+    minY: number
+    maxX: number
+    maxY: number
+  }[]
+  isOpaque: boolean
+  entropy: number
+  sharpness: number
+  dominant: { r: number; g: number; b: number }
+}
+
 interface MulbySharpProxy {
-  resize(width?: number, height?: number, options?: object): MulbySharpProxy
-  extend(options: object): MulbySharpProxy
+  resize(width?: number, height?: number, options?: { fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside'; position?: string; background?: MulbySharpColor; withoutEnlargement?: boolean }): MulbySharpProxy
+  extend(options: { top?: number; bottom?: number; left?: number; right?: number; background?: MulbySharpColor }): MulbySharpProxy
   extract(options: { left: number; top: number; width: number; height: number }): MulbySharpProxy
-  trim(options?: object): MulbySharpProxy
-  rotate(angle?: number, options?: object): MulbySharpProxy
+  trim(options?: { threshold?: number; lineArt?: boolean }): MulbySharpProxy
+
+  rotate(angle?: number, options?: { background?: MulbySharpColor }): MulbySharpProxy
   flip(): MulbySharpProxy
   flop(): MulbySharpProxy
-  affine(matrix: number[][], options?: object): MulbySharpProxy
+  affine(matrix: number[][], options?: { background?: MulbySharpColor; idx?: number; idy?: number; odx?: number; ody?: number }): MulbySharpProxy
+
   median(size?: number): MulbySharpProxy
   blur(sigma?: number): MulbySharpProxy
-  sharpen(options?: object): MulbySharpProxy
-  flatten(options?: object): MulbySharpProxy
-  gamma(gamma?: number): MulbySharpProxy
-  negate(options?: object): MulbySharpProxy
-  normalise(options?: object): MulbySharpProxy
-  normalize(options?: object): MulbySharpProxy
-  clahe(options: object): MulbySharpProxy
-  convolve(options: object): MulbySharpProxy
-  threshold(threshold?: number, options?: object): MulbySharpProxy
+  sharpen(options?: { sigma?: number; m1?: number; m2?: number; x1?: number; y2?: number; y3?: number }): MulbySharpProxy
+  flatten(options?: { background?: MulbySharpColor }): MulbySharpProxy
+  gamma(gamma?: number, gammaOut?: number): MulbySharpProxy
+  negate(options?: { alpha?: boolean }): MulbySharpProxy
+  normalise(options?: { lower?: number; upper?: number }): MulbySharpProxy
+  normalize(options?: { lower?: number; upper?: number }): MulbySharpProxy
+  clahe(options: { width: number; height: number; maxSlope?: number }): MulbySharpProxy
+  convolve(options: { width: number; height: number; kernel: number[]; scale?: number; offset?: number }): MulbySharpProxy
+  threshold(threshold?: number, options?: { greyscale?: boolean }): MulbySharpProxy
   linear(a?: number | number[], b?: number | number[]): MulbySharpProxy
   recomb(inputMatrix: number[][]): MulbySharpProxy
-  modulate(options?: object): MulbySharpProxy
-  tint(color: string | object): MulbySharpProxy
+  modulate(options?: { brightness?: number; saturation?: number; hue?: number; lightness?: number }): MulbySharpProxy
+
+  tint(color: MulbySharpColor): MulbySharpProxy
   greyscale(greyscale?: boolean): MulbySharpProxy
   grayscale(grayscale?: boolean): MulbySharpProxy
   pipelineColorspace(colorspace: string): MulbySharpProxy
   toColorspace(colorspace: string): MulbySharpProxy
+
   removeAlpha(): MulbySharpProxy
   ensureAlpha(alpha?: number): MulbySharpProxy
   extractChannel(channel: number | 'red' | 'green' | 'blue' | 'alpha'): MulbySharpProxy
-  joinChannel(images: string | ArrayBuffer | Uint8Array | Array<string | ArrayBuffer | Uint8Array>, options?: object): MulbySharpProxy
+  joinChannel(images: string | ArrayBuffer | Uint8Array | Array<string | ArrayBuffer | Uint8Array>, options?: { raw?: { width: number; height: number; channels: number } }): MulbySharpProxy
   bandbool(boolOp: 'and' | 'or' | 'eor'): MulbySharpProxy
-  composite(images: object[]): MulbySharpProxy
-  png(options?: object): MulbySharpProxy
-  jpeg(options?: object): MulbySharpProxy
-  webp(options?: object): MulbySharpProxy
-  gif(options?: object): MulbySharpProxy
-  tiff(options?: object): MulbySharpProxy
-  avif(options?: object): MulbySharpProxy
-  heif(options?: object): MulbySharpProxy
-  raw(options?: object): MulbySharpProxy
-  withMetadata(options?: object): MulbySharpProxy
+
+  composite(images: {
+    input: string | ArrayBuffer | Uint8Array | {
+      create?: { width: number; height: number; channels: number; background?: MulbySharpColor }
+      text?: { text: string; width?: number; height?: number; channels?: number; rgba?: boolean }
+    }
+    gravity?: string
+    top?: number
+    left?: number
+    tile?: boolean
+    blend?: string
+    density?: number
+    raw?: { width: number; height: number; channels: number }
+  }[]): MulbySharpProxy
+
+  png(options?: { progressive?: boolean; compressionLevel?: number; palette?: boolean; quality?: number; effort?: number; colors?: number; dither?: number }): MulbySharpProxy
+  jpeg(options?: { quality?: number; progressive?: boolean; chromaSubsampling?: string; optimiseCoding?: boolean; mozjpeg?: boolean; trellisQuantisation?: boolean; overshootDeringing?: boolean; optimiseScans?: boolean; quantisationTable?: number }): MulbySharpProxy
+  webp(options?: { quality?: number; alphaQuality?: number; lossless?: boolean; nearLossless?: boolean; smartSubsample?: boolean; effort?: number; loop?: number; delay?: number | number[] }): MulbySharpProxy
+  gif(options?: { reuse?: boolean; progressive?: boolean; colors?: number; effort?: number; dither?: number; interFrameMaxError?: number; interPaletteMaxError?: number; loop?: number; delay?: number | number[]; force?: boolean }): MulbySharpProxy
+  tiff(options?: { quality?: number; force?: boolean; compression?: string; predictor?: string; pyramid?: boolean; tile?: boolean; tileWidth?: number; tileHeight?: number; xres?: number; yres?: number; resolutionUnit?: string; bitdepth?: number }): MulbySharpProxy
+  avif(options?: { quality?: number; lossless?: boolean; effort?: number; chromaSubsampling?: string }): MulbySharpProxy
+  heif(options?: { quality?: number; compression?: string; lossless?: boolean; effort?: number; chromaSubsampling?: string }): MulbySharpProxy
+  raw(options?: { depth?: string }): MulbySharpProxy
+
+  withMetadata(options?: { orientation?: number; icc?: string; exif?: object; density?: number }): MulbySharpProxy
   keepExif(): MulbySharpProxy
   withExif(exif: object): MulbySharpProxy
   keepIccProfile(): MulbySharpProxy
-  withIccProfile(icc: string, options?: object): MulbySharpProxy
+  withIccProfile(icc: string, options?: { attach?: boolean }): MulbySharpProxy
+
   timeout(options: { seconds: number }): MulbySharpProxy
-  tile(options?: object): MulbySharpProxy
+  tile(options?: { size?: number; overlap?: number; angle?: number; background?: MulbySharpColor; depth?: string; skipBlanks?: number; container?: string; layout?: string; centre?: boolean; id?: string; basename?: string }): MulbySharpProxy
   clone(): MulbySharpProxy
-  toBuffer(options?: object): Promise<ArrayBuffer>
-  toFile(fileOut: string): Promise<{ format: string; width: number; height: number; channels: number; size: number }>
-  metadata(): Promise<{ format?: string; width?: number; height?: number; channels?: number; space?: string; depth?: string; density?: number; hasAlpha?: boolean; orientation?: number }>
-  stats(): Promise<object>
+
+  toBuffer(options?: { resolveWithObject?: false }): Promise<ArrayBuffer>
+  toBuffer(options: { resolveWithObject: true }): Promise<{ data: ArrayBuffer; info: MulbySharpOutputInfo }>
+  toFile(fileOut: string): Promise<MulbySharpOutputInfo>
+  metadata(): Promise<MulbySharpMetadata>
+  stats(): Promise<MulbySharpStats>
 }
 
 type MulbySharpFunction = (
-  input?: string | ArrayBuffer | Uint8Array | object | any[],
-  options?: object
+  input?: MulbySharpInput,
+  options?: {
+    raw?: { width: number; height: number; channels: number }
+    create?: { width: number; height: number; channels: number; background?: MulbySharpColor }
+    text?: { text: string; width?: number; height?: number; channels?: number; rgba?: boolean }
+    animated?: boolean
+    limitInputPixels?: number
+    failOn?: 'error' | 'warning' | 'none'
+    density?: number
+    ignoreIcc?: boolean
+    pages?: number
+    page?: number
+    subifd?: number
+    level?: number
+    pdfBackground?: MulbySharpColor
+  }
 ) => MulbySharpProxy
 
 interface Window {

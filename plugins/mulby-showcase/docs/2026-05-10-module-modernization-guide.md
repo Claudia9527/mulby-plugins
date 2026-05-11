@@ -213,3 +213,16 @@ Manual review:
 - `setInBrowserProxy()` is global to InBrowser manager state and existing active windows. Provide an explicit direct-mode action and avoid treating proxy settings as host Settings API.
 - Do not add permissions for InBrowser itself. Add only related API permissions if the page calls permission-gated APIs; the current InBrowser page uses dialog/system/filesystem helpers and requires no new manifest permission.
 - Update `src/types/mulby.d.ts` when InBrowser docs/preload support more methods than the local declaration. Avoid using `any` for the entire chain surface because it hides stale API examples.
+
+## Sharp Module Lessons
+
+- `sharp(input, options?)` is a renderer chain builder backed by main-process IPC. Chain methods only record operations; execution happens only when the page calls `toBuffer()`, `toFile()`, `metadata()`, or `stats()`.
+- Do not bundle native `sharp` in the plugin. Use the host runtime through `window.mulby.sharp` or backend `context.api.sharp.execute`.
+- Keep examples focused on plugin-facing image processing. It is valid to use helper APIs such as `dialog`, `filesystem`, `system.getPath('temp')`, and `screen.capture()` to acquire or save images, but the Sharp module should not drift into AI image generation, host icon services, clipboard history, or host-only image pipelines.
+- `screen.capture()` is only an input-source helper and still requires `permissions.screen`; Sharp itself does not need a manifest permission.
+- Cover the current host chain surface in grouped UI/API docs: geometry (`resize`, `extract`, `extend`, `trim`, `rotate`, `flip`, `flop`, `affine`), filtering/color (`median`, `blur`, `sharpen`, `flatten`, `gamma`, `negate`, `normalise`, `clahe`, `convolve`, `threshold`, `linear`, `recomb`, `modulate`, `tint`, colorspace), channels/composite (`ensureAlpha`, `removeAlpha`, `extractChannel`, `bandbool`, `composite`), output formats, metadata, timeout, and tile.
+- Prefer live buttons for stable previewable formats such as PNG, JPEG, and WebP. List GIF/TIFF/AVIF/HEIF/RAW in the API panel because actual encoding support depends on the bundled sharp/libvips build returned by `getSharpVersion()`.
+- `clone()` is documented, but current preload implementation does not create an independent operation list. Avoid making it a primary clickable demo until the host bridge is corrected; mention the concept only if needed.
+- Redact binary outputs in `rawData`: show byte lengths, MIME headers, metadata, stats, and save paths instead of dumping ArrayBuffers, Data URLs, EXIF, ICC, IPTC, or XMP payloads.
+- Use typed Sharp method options in `src/types/mulby.d.ts`. Broad `object` signatures hide stale examples and make page code less useful as API documentation.
+- When saving, demonstrate both paths deliberately: `toBuffer()` plus `filesystem.writeFile()` for renderer-managed output, and `toFile(path)` for direct Sharp output.

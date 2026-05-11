@@ -56,6 +56,7 @@ const featureToModule: Record<string, ModuleId> = {
   'showcase:ui-settings': 'settings',
   'showcase:ui-detached': 'settings',
   'showcase:inbrowser': 'inbrowser',
+  sharp: 'sharp',
   'showcase:sharp': 'sharp',
   'showcase:ffmpeg': 'ffmpeg',
   'attachments': 'attachments'
