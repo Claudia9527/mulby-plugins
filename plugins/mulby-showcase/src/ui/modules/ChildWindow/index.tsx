@@ -101,6 +101,7 @@ function readRouteParams() {
         source: searchParams.get('source') || undefined,
         index: searchParams.get('index') || undefined,
         overlay: searchParams.get('overlay') === 'true',
+        instanceId: searchParams.get('instanceId') || undefined,
     }
 }
 
@@ -115,6 +116,7 @@ function mergeRouteParams(
         source: params.source || current.source,
         index: params.index || current.index,
         overlay: params.overlay === 'true' || current.overlay,
+        instanceId: params.instanceId || current.instanceId,
     }
 }
 
@@ -142,6 +144,7 @@ export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
     const [messageText, setMessageText] = useState('来自子窗口的消息')
     const [childMessageText, setChildMessageText] = useState('来自上一级窗口的消息')
     const [operationLog, setOperationLog] = useState<OperationLogItem[]>([])
+    const fallbackWindowToken = useMemo(() => `child-${Date.now()}-${Math.random().toString(36).slice(2)}`, [])
 
     const isOverlay = routeParams.overlay
 
@@ -199,6 +202,12 @@ export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
 
             if (channel === 'broadcast' && grandchild) {
                 void grandchild.postMessage('broadcast', ...args)
+            }
+
+            if (channel === 'child-window-closing' || channel === 'child-window-closed') {
+                setGrandchild(null)
+                setGrandchildBounds(null)
+                setGrandchildMuted(false)
             }
         })
     }, [grandchild, win])
@@ -276,6 +285,29 @@ export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
         })
     }
 
+    const notifyParentClosing = useCallback(() => {
+        const payload = {
+            instanceId: routeParams.instanceId || fallbackWindowToken,
+            source: routeParams.source,
+            index: routeParams.index,
+            overlay: routeParams.overlay,
+            label: windowLabel,
+            at: Date.now(),
+        }
+        win.sendToParent('child-window-closing', payload)
+        pushOperation({
+            action: 'window.sendToParent child-window-closing',
+            status: 'info',
+            message: '已通知父窗口当前子窗口将关闭',
+            details: payload,
+        })
+    }, [fallbackWindowToken, pushOperation, routeParams, win, windowLabel])
+
+    const handleCloseCurrentWindow = () => {
+        notifyParentClosing()
+        void runWindowAction('window.close', () => win.close(), '已请求关闭当前子窗口')
+    }
+
     const handleCreateGrandchild = async () => {
         if (grandchild) {
             notify.warning('已存在下一级子窗口')
@@ -292,6 +324,7 @@ export function ChildWindowModule({ initParams }: ChildWindowModuleProps = {}) {
                 params: {
                     source: windowLabel,
                     nested: 'true',
+                    instanceId: `child-${Date.now()}-${Math.random().toString(36).slice(2)}`,
                 },
             }) as ChildWindowHandle | null
 
@@ -461,6 +494,7 @@ await child?.setBackgroundThrottling(false)`,
 
     const rawData = useMemo(() => ({
         routeParams,
+        fallbackWindowToken,
         windowLabel,
         isOverlay,
         snapshot,
@@ -475,6 +509,7 @@ await child?.setBackgroundThrottling(false)`,
         operationLog,
     }), [
         childMessageText,
+        fallbackWindowToken,
         grandchild,
         grandchildBounds,
         grandchildMuted,
@@ -580,7 +615,7 @@ await child?.setBackgroundThrottling(false)`,
                                 </Button>
                                 <Button variant="secondary" onClick={() => void runWindowAction('window.focus', () => win.focus(), '已请求焦点')}>focus</Button>
                                 <Button variant="secondary" onClick={() => void runWindowAction('window.maximize', () => win.maximize(), '已切换最大化')}>最大化/还原</Button>
-                                <Button variant="secondary" onClick={() => void runWindowAction('window.close', () => win.close(), '已请求关闭当前子窗口')}>
+                                <Button variant="secondary" onClick={handleCloseCurrentWindow}>
                                     <X aria-hidden="true" size={14} />关闭当前窗口
                                 </Button>
                             </div>
@@ -629,8 +664,8 @@ await child?.setBackgroundThrottling(false)`,
 
                     <div className="grid grid-2">
                         <Card title="收到的消息" icon={MessageSquareText}>
-                            <div className="preview-box" style={{ alignItems: 'stretch', justifyContent: 'flex-start', minHeight: '180px' }}>
-                                <div style={{ display: 'grid', gap: 'var(--spacing-xs)', width: '100%' }}>
+                            <div className="preview-box window-message-log">
+                                <div className="window-message-log-content">
                                     {messages.length > 0 ? messages.map((message, index) => (
                                         <div key={`${message.timestamp}-${index}`} className="list-row">
                                             <span className="list-row-main">

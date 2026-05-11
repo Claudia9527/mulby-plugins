@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "mulby dev",
-    "test": "npm run test:layout && npm run test:window-init && npm run test:child-window-size",
+    "test": "npm run test:layout && npm run test:window-init && npm run test:child-window-size && npm run test:child-message-layout && npm run test:child-close-sync",
     "test:layout": "node scripts/test-window-log-layout.mjs",
     "test:window-init": "node scripts/test-child-window-init-listener.mjs",
     "test:child-window-size": "node scripts/test-child-window-create-size.mjs",
+    "test:child-message-layout": "node scripts/test-child-window-message-log-layout.mjs",
+    "test:child-close-sync": "node scripts/test-child-window-close-sync.mjs",
     "build": "npm run build:backend && npm run build:ui",
     "build:backend": "esbuild src/main.ts --bundle --platform=node --outfile=dist/main.js",
     "build:ui": "vite build",

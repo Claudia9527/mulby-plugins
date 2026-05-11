@@ -83,6 +83,7 @@ interface ChildWindowHandle {
 
 interface ChildWindowRecord {
     id: number
+    instanceId?: string
     name: string
     kind: 'route' | 'overlay'
     proxy: ChildWindowHandle
@@ -101,6 +102,16 @@ interface ChildMessage {
     channel: string
     args: unknown[]
     timestamp: number
+}
+
+interface ChildClosePayload {
+    id?: number
+    instanceId?: string
+    source?: string
+    index?: string
+    overlay?: boolean
+    label?: string
+    at?: number
 }
 
 interface OperationLogItem {
@@ -164,6 +175,10 @@ function pathBasename(path: string) {
     return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
+function createChildWindowInstanceId() {
+    return `child-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export function WindowAPIModule() {
     const {
         window: win,
@@ -214,6 +229,34 @@ export function WindowAPIModule() {
             ...current,
         ].slice(0, 12))
     }, [])
+
+    const removeClosedChild = useCallback((payload?: ChildClosePayload) => {
+        const matchesPayload = (child: ChildWindowRecord) => {
+            const matchesInstance = Boolean(payload?.instanceId && child.instanceId === payload.instanceId)
+            const matchesId = Boolean(payload?.id && child.id === payload.id)
+            const matchesRouteIndex = Boolean(
+                !payload?.instanceId
+                && !payload?.id
+                && payload?.index
+                && child.kind === 'route'
+                && child.name === `子窗口 #${payload.index}`
+            )
+
+            return matchesInstance || matchesId || matchesRouteIndex
+        }
+
+        const removedChild = childWindowsRef.current.find(matchesPayload)
+        if (!removedChild) return
+
+        setChildWindows(current => current.filter(child => !matchesPayload(child)))
+
+        pushOperation({
+            action: 'child.closed',
+            status: 'info',
+            message: `${removedChild.name} 已关闭并从列表移除`,
+            details: payload,
+        })
+    }, [pushOperation])
 
     const loadWindowInfo = useCallback(async () => {
         setLoadingAction('refresh')
@@ -289,6 +332,11 @@ export function WindowAPIModule() {
                 notify.info(`收到子窗口消息: ${String(args[0] ?? '')}`)
             }
 
+            if (channel === 'child-window-closing' || channel === 'child-window-closed') {
+                const payload = args[0] as ChildClosePayload | undefined
+                removeClosedChild(payload)
+            }
+
             if (channel === 'relay-request') {
                 const payload = args[0] as { from?: string; message?: string } | undefined
                 childWindowsRef.current.forEach((child) => {
@@ -306,7 +354,7 @@ export function WindowAPIModule() {
                 })
             }
         })
-    }, [notify, pushOperation, win])
+    }, [notify, pushOperation, removeClosedChild, win])
 
     const updateChild = useCallback((id: number, patch: Partial<ChildWindowRecord>) => {
         setChildWindows(current => current.map(child => (
@@ -625,6 +673,7 @@ export function WindowAPIModule() {
             ...current,
             {
                 id: proxy.id,
+                instanceId: patch?.instanceId,
                 name,
                 kind,
                 proxy,
@@ -645,6 +694,7 @@ export function WindowAPIModule() {
         setLoadingAction('child')
         try {
             const childIndex = childWindows.filter(child => child.kind === 'route').length + 1
+            const instanceId = createChildWindowInstanceId()
             const childWindowBounds = toWindowBounds(await win.getBounds()) || bounds || { x: 0, y: 0, width: 560, height: 420 }
             const proxy = await win.create('child-window', {
                 loadMode: 'route',
@@ -655,6 +705,7 @@ export function WindowAPIModule() {
                 params: {
                     source: 'window-api',
                     index: String(childIndex),
+                    instanceId,
                 },
             }) as ChildWindowHandle | null
             if (!proxy) {
@@ -667,6 +718,7 @@ export function WindowAPIModule() {
             }
 
             await addChildRecord(proxy, `子窗口 #${childIndex}`, 'route', {
+                instanceId,
                 backgroundThrottling: false,
                 bounds: childWindowBounds,
             })
@@ -701,6 +753,7 @@ export function WindowAPIModule() {
                 width: overlayWidth,
                 height: overlayHeight,
             }
+            const instanceId = createChildWindowInstanceId()
             const proxy = await win.create('child-window', {
                 loadMode: 'route',
                 title: 'Showcase 覆盖层子窗口',
@@ -725,6 +778,7 @@ export function WindowAPIModule() {
                 params: {
                     source: 'window-api',
                     overlay: 'true',
+                    instanceId,
                 },
             }) as ChildWindowHandle | null
 
@@ -738,6 +792,7 @@ export function WindowAPIModule() {
             }
 
             await addChildRecord(proxy, '覆盖层窗口', 'overlay', {
+                instanceId,
                 bounds: overlayBounds,
                 opacity: 0.92,
                 alwaysOnTop: true,
@@ -1134,6 +1189,7 @@ window.mulby.window.startDrag('/absolute/path/to/file.txt')`,
             ignoreMouseEvents: child.ignoreMouseEvents,
             visibleOnAllWorkspaces: child.visibleOnAllWorkspaces,
             fullscreen: child.fullscreen,
+            instanceId: child.instanceId,
             lastAction: child.lastAction,
         })),
         childMessages,
