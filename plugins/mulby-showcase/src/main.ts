@@ -83,8 +83,18 @@ interface ClipboardHistoryApi {
   stats: () => Promise<ClipboardHistoryStats>
 }
 
+interface BackendAiApi {
+  call(option: AiOption): Promise<AiMessage>
+}
+
+interface AiToolDemoInput {
+  model?: string
+  prompt?: string
+}
+
 declare const mulby: {
   clipboardHistory: ClipboardHistoryApi
+  ai: BackendAiApi
 }
 
 /**
@@ -202,6 +212,96 @@ export async function run(context: PluginContext) {
 }
 
 export const rpc = {
+  getShowcaseTime(input?: { timezone?: string }) {
+    const timezone = input?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'local'
+    const now = new Date()
+
+    return {
+      iso: now.toISOString(),
+      timezone,
+      local: now.toLocaleString('zh-CN', { timeZone: timezone }),
+      timestamp: now.getTime()
+    }
+  },
+
+  getShowcaseEcho(input?: { text?: string; upperCase?: boolean }) {
+    const text = input?.text || ''
+
+    return {
+      text: input?.upperCase ? text.toUpperCase() : text,
+      length: text.length,
+      receivedAt: new Date().toISOString()
+    }
+  },
+
+  async runAiToolDemo(input?: AiToolDemoInput) {
+    const prompt = input?.prompt?.trim() || '请先获取当前时间，再回显一段简短文本。'
+    const option: AiOption = {
+      model: input?.model || undefined,
+      messages: [
+        {
+          role: 'system',
+          content: '你正在 Mulby Showcase 示例插件中运行。需要本地信息时，优先调用提供的函数工具。'
+        },
+        { role: 'user', content: prompt }
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'getShowcaseTime',
+            description: '获取当前时间和时区信息。',
+            parameters: {
+              type: 'object',
+              properties: {
+                timezone: {
+                  type: 'string',
+                  description: '可选 IANA 时区，例如 Asia/Shanghai。'
+                }
+              },
+              additionalProperties: false
+            }
+          }
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'getShowcaseEcho',
+            description: '回显文本并返回长度，用于演示插件后端 helper 被 AI 工具调用。',
+            parameters: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: '要回显的文本。' },
+                upperCase: { type: 'boolean', description: '是否转为大写。' }
+              },
+              required: ['text'],
+              additionalProperties: false
+            }
+          }
+        }
+      ],
+      maxToolSteps: 4,
+      mcp: { mode: 'off' },
+      skills: { mode: 'off' },
+      toolingPolicy: { enableInternalTools: false },
+      params: {
+        temperature: 0.2,
+        maxOutputTokens: 600
+      }
+    }
+
+    const message = await mulby.ai.call(option)
+
+    return {
+      content: message.content,
+      reasoning: message.reasoning_content,
+      usage: message.usage,
+      toolCall: message.tool_call,
+      toolResult: message.tool_result,
+      policyDebug: message.policy_debug
+    }
+  },
+
   queryClipboardHistory(options?: ClipboardHistoryQueryOptions) {
     return mulby.clipboardHistory.query(options)
   },

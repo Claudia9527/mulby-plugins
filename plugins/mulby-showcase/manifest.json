@@ -334,6 +334,20 @@
           "value": "附件"
         }
       ]
+    },
+    {
+      "code": "ai",
+      "explain": "AI API",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "ai"
+        },
+        {
+          "type": "keyword",
+          "value": "AI 示例"
+        }
+      ]
     }
   ]
 }

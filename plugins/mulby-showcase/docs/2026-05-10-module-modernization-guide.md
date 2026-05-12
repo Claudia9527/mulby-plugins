@@ -260,3 +260,16 @@ Manual review:
 - Attachment demos should use small generated JSON/text snapshots. Show MIME type, size, and truncated preview; never dump large binary buffers in the API panel.
 - `storage.watch()` returns a disposer. Store it in a ref and always clean it up on unmount or when stopping the watcher.
 - Keep destructive actions explicit and scoped to the module prefix. Avoid namespace-wide `clear()` in renderer examples.
+
+## AI Module Lessons
+
+- Keep the AI page plugin-facing. Demonstrate `ai.call`, streaming, abort, models, connection checks, token estimation, attachments, images, and read-only discovery, but exclude host-only or settings-management surfaces such as AI settings editors, MCP Server management, plugin-store flows, and system pages.
+- Renderer streaming must follow the documented abort pattern: capture `chunk.__requestId` into a ref, keep an `abortedRef`, call top-level `ai.abort(requestId)`, and ignore late chunks after the user stops the request. Do not rely on `req.abort()` for text streaming in the renderer.
+- Use the backend `rpc` namespace for internal per-call tool demos. A UI action can call `host.call('@mulby/showcase', 'runAiToolDemo', ...)`, and the backend can call `mulby.ai.call({ tools })`; the host injects plugin context so tool names route back to the plugin's exported `rpc` helpers.
+- Do not add `manifest.tools` for an internal demo. `option.tools` is scoped to the current `ai.call`; `manifest.tools` is a public ecosystem contract and should only be added if the plugin intentionally exposes reusable tools to Mulby AI, other plugins, or external MCP clients.
+- Keep AI settings and management APIs out of the module: no `ai.settings.*`, no MCP server create/remove/activate/deactivate/restart/check flows, no skill install/remove/enable/disable flows, no web-search provider updates, and no plugin-tool disabled-list writes.
+- Read-only AI discovery is acceptable when useful: `ai.mcp.listServers()`, `ai.mcp.listTools(serverId)`, `ai.skills.listEnabled()`, `ai.skills.preview(input)`, `ai.tooling.webSearch.getSettings()`, and `ai.tooling.pluginTools.getDisabled()`.
+- `ai.models.fetch()` and `ai.testConnection()` can accept provider credentials. Redact API keys and sensitive provider input in `rawData`, operation logs, and examples.
+- Attachment and image examples should be guarded by model availability and user-selected paths. Show clear unavailable states when no image-capable model is configured.
+- Redact large generated assets in `rawData`: show base64 lengths, previews, MIME type, token usage, and attachment IDs rather than dumping full images or file contents.
+- Add a focused regression test for new modules that checks routing, manifest feature registration, API panel usage, required APIs, documented abort pattern, and excluded host-only APIs.

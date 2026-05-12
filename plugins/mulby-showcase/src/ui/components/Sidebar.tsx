@@ -14,6 +14,7 @@ import {
     ShieldCheck,
     SlidersHorizontal,
     Volume2,
+    WandSparkles,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -44,6 +45,7 @@ const modules: ModuleItem[] = [
     { id: 'settings', icon: Settings, label: '设置' },
     { id: 'security', icon: ShieldCheck, label: '存储与安全' },
     { id: 'attachments', icon: PackageOpen, label: '附件' },
+    { id: 'ai', icon: WandSparkles, label: 'AI' },
 ]
 
 export function Sidebar({ activeModule, onModuleChange }: SidebarProps) {
