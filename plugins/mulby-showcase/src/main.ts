@@ -38,6 +38,7 @@ interface PluginContext {
       redirectHotKeySetting: (cmdLabel: string, autocopy?: boolean) => void
       redirectAiModelsSetting: () => void
     }
+    messaging: BackendMessagingApi
   }
   input?: string
   featureCode?: string
@@ -85,6 +86,47 @@ interface ClipboardHistoryApi {
 
 interface BackendAiApi {
   call(option: AiOption): Promise<AiMessage>
+}
+
+interface PluginMessage {
+  id: string
+  from: string
+  to?: string
+  type: string
+  payload: unknown
+  timestamp: number
+}
+
+type ShowcaseMessageDirection = 'received' | 'sent' | 'broadcast'
+
+interface ShowcaseMessageRecord extends PluginMessage {
+  direction: ShowcaseMessageDirection
+  local?: boolean
+  note?: string
+}
+
+interface BackendMessagingApi {
+  send(targetPluginId: string, type: string, payload: unknown): Promise<void>
+  broadcast(type: string, payload: unknown): Promise<void>
+  on(handler: (message: PluginMessage) => void | Promise<void>): void
+  off(handler?: (message: PluginMessage) => void | Promise<void>): void
+}
+
+interface SendShowcaseMessageInput {
+  targetPluginId?: string
+  type?: string
+  payload?: unknown
+}
+
+interface BroadcastShowcaseMessageInput {
+  type?: string
+  payload?: unknown
+}
+
+interface RecentShowcaseMessagesInput {
+  limit?: number
+  direction?: ShowcaseMessageDirection | 'all'
+  type?: string
 }
 
 interface AiToolDemoInput {
@@ -168,12 +210,16 @@ declare const mulby: {
   clipboardHistory: ClipboardHistoryApi
   ai: BackendAiApi
   scheduler: BackendSchedulerApi
+  messaging: BackendMessagingApi
   notification: {
     show: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => Promise<void> | void
   }
 }
 
+const SHOWCASE_PLUGIN_ID = '@mulby/showcase'
 const SHOWCASE_TASK_PREFIX = 'Mulby Showcase'
+const recentMessages: ShowcaseMessageRecord[] = []
+let showcaseMessagingHandler: ((message: PluginMessage) => void | Promise<void>) | null = null
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number) {
   const numericValue = typeof value === 'number' ? value : Number(value)
@@ -216,14 +262,75 @@ async function showSchedulerNotification(
   await notification.show(message, type)
 }
 
+function normalizeMessageType(type: string | undefined, fallback = 'showcase-test') {
+  const normalized = type?.trim()
+  return normalized || fallback
+}
+
+function normalizeTargetPluginId(targetPluginId: string | undefined) {
+  const normalized = targetPluginId?.trim()
+  return normalized || SHOWCASE_PLUGIN_ID
+}
+
+function recordShowcaseMessage(message: PluginMessage, direction: ShowcaseMessageDirection, note?: string) {
+  const record: ShowcaseMessageRecord = {
+    ...message,
+    direction,
+    local: direction !== 'received',
+    note
+  }
+  recentMessages.unshift(record)
+  recentMessages.splice(50)
+  return record
+}
+
+function createLocalMessageRecord(
+  direction: ShowcaseMessageDirection,
+  type: string,
+  payload: unknown,
+  targetPluginId?: string,
+  note?: string
+) {
+  return recordShowcaseMessage({
+    id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    from: SHOWCASE_PLUGIN_ID,
+    to: targetPluginId,
+    type,
+    payload,
+    timestamp: Date.now()
+  }, direction, note)
+}
+
+function registerShowcaseMessaging(context: PluginContext) {
+  if (showcaseMessagingHandler) {
+    context.api.messaging.off(showcaseMessagingHandler)
+  }
+
+  showcaseMessagingHandler = async (message: PluginMessage) => {
+    recordShowcaseMessage(message, 'received')
+
+    if (message.type === 'showcase-ping') {
+      await context.api.messaging.send(message.from, 'showcase-pong', {
+        requestId: message.id,
+        receivedAt: new Date().toISOString(),
+        pluginId: SHOWCASE_PLUGIN_ID
+      })
+    }
+  }
+
+  context.api.messaging.on(showcaseMessagingHandler)
+}
+
 /**
  * 插件加载时调用
  * 用于初始化资源、注册服务等
  */
 export function onLoad(context?: PluginContext) {
-  console.log('[Mulby Showcase] 插件已加载')
+  if (!context) return
 
-  const features = context?.api.features
+  registerShowcaseMessaging(context)
+
+  const features = context.api.features
   if (!features) return
 
   registerDynamicFeatures(features)
@@ -233,8 +340,11 @@ export function onLoad(context?: PluginContext) {
  * 插件卸载时调用
  * 用于清理资源、保存状态等
  */
-export function onUnload() {
-  console.log('[Mulby Showcase] 插件即将卸载')
+export function onUnload(context?: PluginContext) {
+  if (showcaseMessagingHandler && context?.api.messaging) {
+    context.api.messaging.off(showcaseMessagingHandler)
+    showcaseMessagingHandler = null
+  }
 }
 
 /**
@@ -242,7 +352,6 @@ export function onUnload() {
  * 用于恢复服务、重新注册等
  */
 export function onEnable() {
-  console.log('[Mulby Showcase] 插件已启用')
 }
 
 /**
@@ -250,7 +359,15 @@ export function onEnable() {
  * 用于暂停服务、释放资源等
  */
 export function onDisable() {
-  console.log('[Mulby Showcase] 插件已禁用')
+}
+
+export function onBackground(context?: PluginContext) {
+  if (context) {
+    registerShowcaseMessaging(context)
+  }
+}
+
+export function onForeground() {
 }
 
 /**
@@ -264,9 +381,6 @@ export function onDisable() {
  */
 export async function run(context: PluginContext) {
   const { notification, clipboard } = context.api
-
-  // 记录功能触发
-  console.log(`[Mulby Showcase] 功能触发: ${context.featureCode || 'main'}`)
 
   // 对于 UI 插件，主要逻辑在前端处理
   // 这里可以做一些后端初始化工作
@@ -323,6 +437,9 @@ export async function run(context: PluginContext) {
       break
     case 'screenshot':
       notification.show('截图功能已就绪')
+      break
+    case 'messaging':
+      notification.show('插件通信模块已就绪')
       break
     default:
       // 不显示通知，让 UI 自己处理
@@ -552,11 +669,66 @@ export const rpc = {
       maxRetries: 0,
       timeout: 15000
     })
+  },
+
+  async sendShowcaseMessage(input?: SendShowcaseMessageInput) {
+    const targetPluginId = normalizeTargetPluginId(input?.targetPluginId)
+    const type = normalizeMessageType(input?.type)
+    const payload = input?.payload ?? {
+      text: 'Hello from Mulby Showcase messaging module',
+      sentAt: new Date().toISOString()
+    }
+
+    await mulby.messaging.send(targetPluginId, type, payload)
+
+    return createLocalMessageRecord(
+      'sent',
+      type,
+      payload,
+      targetPluginId,
+      targetPluginId === SHOWCASE_PLUGIN_ID
+        ? '发送给当前插件，可用于验证订阅 handler 和最近消息缓存。'
+        : '消息已发送；目标插件需要已启动并订阅消息才会处理。'
+    )
+  },
+
+  async broadcastShowcaseMessage(input?: BroadcastShowcaseMessageInput) {
+    const type = normalizeMessageType(input?.type, 'showcase-broadcast')
+    const payload = input?.payload ?? {
+      text: 'Broadcast from Mulby Showcase messaging module',
+      sentAt: new Date().toISOString()
+    }
+
+    await mulby.messaging.broadcast(type, payload)
+
+    return createLocalMessageRecord(
+      'broadcast',
+      type,
+      payload,
+      undefined,
+      '宿主广播不会发回发送者自己，因此这里记录的是本地发送摘要。'
+    )
+  },
+
+  getRecentShowcaseMessages(input?: RecentShowcaseMessagesInput) {
+    const limit = clampNumber(input?.limit, 30, 1, 50)
+    const direction = input?.direction || 'all'
+    const type = input?.type?.trim()
+
+    return recentMessages
+      .filter(message => direction === 'all' || message.direction === direction)
+      .filter(message => !type || message.type.includes(type))
+      .slice(0, limit)
+  },
+
+  clearShowcaseMessages() {
+    recentMessages.splice(0)
+    return { success: true }
   }
 }
 
 // 同时导出为 module.exports 以保持兼容性
-const plugin = { onLoad, onUnload, onEnable, onDisable, run }
+const plugin = { onLoad, onUnload, onEnable, onDisable, onBackground, onForeground, run }
 export default plugin
 
 function getDynamicFeatureCodes(): string[] {

@@ -19,6 +19,11 @@
     "camera": true,
     "notification": true
   },
+  "pluginSetting": {
+    "background": true,
+    "persistent": true,
+    "idleTimeoutMs": "never"
+  },
   "features": [
     {
       "code": "main",
@@ -360,6 +365,20 @@
         {
           "type": "keyword",
           "value": "任务调度"
+        }
+      ]
+    },
+    {
+      "code": "messaging",
+      "explain": "插件通信 API",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "messaging"
+        },
+        {
+          "type": "keyword",
+          "value": "插件通信"
         }
       ]
     }

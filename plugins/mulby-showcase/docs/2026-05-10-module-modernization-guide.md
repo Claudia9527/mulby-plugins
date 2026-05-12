@@ -286,3 +286,15 @@ Manual review:
 - Repeat-task demos should set a visible `maxExecutions` default to avoid leaving unbounded recurring tasks behind. Cleanup actions should be explicit and describe that only terminal records are cleaned by `cleanupTasks()`.
 - Destructive actions should be scoped and visible: delete only the selected task through `deleteTasks([task.id])`; use confirmation before deleting non-terminal tasks or running broader cleanup.
 - Add a focused module regression test for new missing modules. Check the right-side API panel, route/sidebar/manifest registration, backend callback/RPC exports, used scheduler APIs, and excluded host-only API names.
+
+## Messaging Module Lessons
+
+- Messaging is a backend-only plugin API in the current docs: use `context.api.messaging` in lifecycle hooks and global backend `mulby.messaging` in RPC methods. The UI should bridge through `host.call('@mulby/showcase', ...)`.
+- Subscribe in `onLoad(context)` with a stable handler reference and unsubscribe in `onUnload(context)` with `context.api.messaging.off(handler)`. The host also cleans up plugin handlers, but explicit cleanup keeps examples correct and prevents duplicate subscriptions after reloads.
+- The current message bus has internal `getHistory()` and stats helpers, but those are not exposed through the plugin-facing API. Showcase should maintain its own bounded `recentMessages` cache instead of demonstrating host internals.
+- `messaging.broadcast()` intentionally excludes the sender. If the UI needs immediate feedback for a broadcast action, record a local "broadcast summary" separately and clearly label it as not a received message.
+- Point-to-point self-send to `@mulby/showcase` is useful for testing the subscription handler because `send()` delivers to the target plugin, including the same plugin if it is subscribed.
+- Keep payloads JSON-serializable and non-sensitive. Validate JSON in the UI before sending, and show only summarized payload previews in `rawData` and operation logs.
+- For request/response demos, include a message type convention such as `showcase-ping` and `showcase-pong`, and include the original message id in the response payload.
+- Do not expose host-only message bus monitoring, message history, plugin manager, developer, settings, or system-page APIs in the messaging module.
+- Add a focused regression test for messaging modules that checks backend subscription/RPC exports, right-side API panel usage, route/sidebar/manifest registration, and excluded host-only API names.

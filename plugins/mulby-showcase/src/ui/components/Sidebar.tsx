@@ -7,6 +7,7 @@ import {
     FolderOpen,
     Image,
     Keyboard,
+    MessageSquare,
     Monitor,
     Network,
     PackageOpen,
@@ -48,6 +49,7 @@ const modules: ModuleItem[] = [
     { id: 'attachments', icon: PackageOpen, label: '附件' },
     { id: 'ai', icon: WandSparkles, label: 'AI' },
     { id: 'scheduler', icon: CalendarClock, label: '任务调度' },
+    { id: 'messaging', icon: MessageSquare, label: '插件通信' },
 ]
 
 export function Sidebar({ activeModule, onModuleChange }: SidebarProps) {
