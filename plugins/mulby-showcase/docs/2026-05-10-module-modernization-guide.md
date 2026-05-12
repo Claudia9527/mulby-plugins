@@ -239,3 +239,24 @@ Manual review:
 - Screen recording through FFmpeg is just a command-argument example and does not replace the Screen module's `screen.getMediaStreamConstraints()` workflow. Keep microphone/camera permission flows in Media and desktop stream permission flows in Screen.
 - Redact raw FFmpeg stderr in `rawData`; keep a truncated preview, parsed streams, current command args, progress snapshot, and output file stat.
 - Add a static manifest feature for `ffmpeg` so the sidebar module can also be opened directly from launcher keywords.
+
+## Settings Module Lessons
+
+- The showcase Settings page must not demonstrate `window.mulby.settings`. That API controls host settings, update center, startup behavior, and host shortcut recording, so it is outside plugin-facing examples.
+- Keep this module focused on plugin UI settings and affordances. Do not duplicate storage demos here; persistent storage, encrypted KV, and attachments belong in the Storage and Security module.
+- Theme examples should read and follow host theme state with `theme.get()`, `theme.getActual()`, and `onThemeChange()`. Avoid changing host-wide theme settings from the showcase page.
+- Shortcut examples should use the current disposer returned by `shortcut.onTriggered()` and provide unregister actions, because global shortcuts are persistent side effects owned by the plugin.
+- Tray examples should demonstrate plugin-owned `tray.create`, `setIcon`, `setTooltip`, `setTitle`, `exists`, and `destroy`, using local or data URL icons rather than external network images.
+- Context-menu separators need to satisfy the local type definitions. Use a blank `label` for separator items or update the shared type deliberately after checking host types.
+- Exclude tray-menu, host settings redirects, plugin manager, plugin store, AI settings redirects, and super panel flows from this module; those are host UI surfaces rather than normal plugin settings.
+
+## Storage and Security Module Lessons
+
+- Rename the old Security page to Storage and Security when it owns both `security` and `storage` examples. Keep the sidebar label and manifest feature explain aligned.
+- This module is the single place for storage demos: basic KV (`get`, `set`, `remove`), V2 storage (`list`, `getMany`, `setMany`, `getMeta`, `setWithVersion`, `removeWithVersion`, `transaction`, `append`, `watch`), encrypted KV, and attachment storage.
+- Keep storage demos scoped to a module-owned prefix such as `storage-security-demo:`. Do not call host storage explorer APIs such as `listNamespaces()` or `getAllWithMeta()` from plugin UI.
+- `security.encryptString()` and `storage.encrypted.*` solve different problems. Show raw string encryption/decryption with redacted byte summaries, and use `storage.encrypted.*` for persistent secrets.
+- Redact sensitive fields in `rawData`: encrypted values should show byte/base64 length and previews only; encrypted KV should show existence, label, token length, update time, and errors, not decrypted tokens.
+- Attachment demos should use small generated JSON/text snapshots. Show MIME type, size, and truncated preview; never dump large binary buffers in the API panel.
+- `storage.watch()` returns a disposer. Store it in a ref and always clean it up on unmount or when stopping the watcher.
+- Keep destructive actions explicit and scoped to the module prefix. Avoid namespace-wide `clear()` in renderer examples.

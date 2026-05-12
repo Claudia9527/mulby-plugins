@@ -42,7 +42,7 @@ const modules: ModuleItem[] = [
     { id: 'sharp', label: 'Sharp 图像', icon: Image },
     { id: 'ffmpeg', label: 'FFmpeg 音视频', icon: Film },
     { id: 'settings', icon: Settings, label: '设置' },
-    { id: 'security', icon: ShieldCheck, label: '安全' },
+    { id: 'security', icon: ShieldCheck, label: '存储与安全' },
     { id: 'attachments', icon: PackageOpen, label: '附件' },
 ]
 

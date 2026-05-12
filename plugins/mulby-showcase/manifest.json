@@ -283,7 +283,7 @@
     },
     {
       "code": "settings",
-      "explain": "高级设置",
+      "explain": "插件界面设置",
       "cmds": [
         {
           "type": "keyword",
@@ -292,6 +292,32 @@
         {
           "type": "keyword",
           "value": "设置"
+        }
+      ]
+    },
+    {
+      "code": "security",
+      "explain": "存储与安全",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "security"
+        },
+        {
+          "type": "keyword",
+          "value": "storage"
+        },
+        {
+          "type": "keyword",
+          "value": "安全"
+        },
+        {
+          "type": "keyword",
+          "value": "存储"
+        },
+        {
+          "type": "keyword",
+          "value": "存储与安全"
         }
       ]
     },

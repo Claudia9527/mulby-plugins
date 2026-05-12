@@ -1,5 +1,3 @@
-import React from 'react'
-
 interface CodeBlockProps {
     children: string
     language?: string
