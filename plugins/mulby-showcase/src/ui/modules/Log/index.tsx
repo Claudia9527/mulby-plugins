@@ -14,6 +14,7 @@ import {
 import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
 import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
+import { confirmDialog } from '../../utils/dialogs'
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 type LogEntryLevel = LogLevel | 'crash'
@@ -176,7 +177,7 @@ function logIcon(level: LogLevel) {
 }
 
 export function LogModule() {
-    const { log } = useMulby()
+    const { log, dialog } = useMulby()
     const notify = useNotification()
     const liveLogDisposerRef = useRef<Disposable | null>(null)
 
@@ -275,7 +276,12 @@ export function LogModule() {
     const clearLogs = useCallback(async () => {
         const pluginId = filterPluginId.trim()
         const target = pluginId || '全部插件'
-        if (!window.confirm(`确定清理 ${target} 的内存日志吗？`)) return
+        const confirmed = await confirmDialog(dialog, {
+            title: '清理日志',
+            message: `确定清理 ${target} 的内存日志吗？`,
+            confirmLabel: '清理',
+        })
+        if (!confirmed) return
 
         setLoadingAction('clear')
         try {
@@ -291,7 +297,7 @@ export function LogModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [filterPluginId, log, notify, pushOperation])
+    }, [dialog, filterPluginId, log, notify, pushOperation])
 
     const startSubscription = useCallback(async () => {
         if (liveLogDisposerRef.current) return

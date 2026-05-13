@@ -13,6 +13,7 @@ import {
 import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
 import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
+import { confirmDialog } from '../../utils/dialogs'
 
 type DynamicFeatureMode = 'ui' | 'silent' | 'detached'
 type DynamicFeatureCmd =
@@ -215,7 +216,7 @@ function normalizeFeatureForRawData(feature: DynamicFeatureRecord | null) {
 }
 
 export function DynamicFeaturesModule() {
-    const { host } = useMulby(SHOWCASE_PLUGIN_ID)
+    const { host, dialog } = useMulby(SHOWCASE_PLUGIN_ID)
     const showcaseHost = host as unknown as ShowcaseHost
     const notify = useNotification()
 
@@ -310,7 +311,12 @@ export function DynamicFeaturesModule() {
     }, [callShowcaseHost, code, explain, keyword, mainHide, mainPush, mode, notify, pushOperation, refreshFeatures, regex, route])
 
     const removeFeature = useCallback(async (targetCode: string) => {
-        if (!window.confirm(`确定删除动态指令 ${targetCode} 吗？`)) return
+        const confirmed = await confirmDialog(dialog, {
+            title: '删除动态指令',
+            message: `确定删除动态指令 ${targetCode} 吗？`,
+            confirmLabel: '删除',
+        })
+        if (!confirmed) return
         setLoadingAction('remove')
         try {
             const result = await callShowcaseHost<RemoveDynamicFeatureResult>('removeShowcaseDynamicFeature', { code: targetCode })
@@ -329,10 +335,15 @@ export function DynamicFeaturesModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [callShowcaseHost, notify, pushOperation, refreshFeatures])
+    }, [callShowcaseHost, dialog, notify, pushOperation, refreshFeatures])
 
     const resetFeatures = useCallback(async () => {
-        if (!window.confirm('确定重置 showcase 动态指令示例吗？')) return
+        const confirmed = await confirmDialog(dialog, {
+            title: '重置动态指令',
+            message: '确定重置 showcase 动态指令示例吗？',
+            confirmLabel: '重置',
+        })
+        if (!confirmed) return
         setLoadingAction('reset')
         try {
             const result = await callShowcaseHost<ResetDynamicFeatureResult>('resetShowcaseDynamicFeatures')
@@ -352,7 +363,7 @@ export function DynamicFeaturesModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [callShowcaseHost, notify, pushOperation])
+    }, [callShowcaseHost, dialog, notify, pushOperation])
 
     const loadSelectedIntoForm = useCallback(() => {
         if (!selectedFeature) return

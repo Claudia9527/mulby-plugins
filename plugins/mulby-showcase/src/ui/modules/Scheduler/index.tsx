@@ -19,6 +19,7 @@ import {
 import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
 import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
+import { confirmDialog } from '../../utils/dialogs'
 
 type SchedulerTaskType = 'once' | 'repeat' | 'delay'
 type SchedulerTaskStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
@@ -299,7 +300,7 @@ if (valid) {
 ]
 
 export function SchedulerModule() {
-    const { scheduler, host } = useMulby(SHOWCASE_PLUGIN_ID)
+    const { scheduler, host, dialog } = useMulby(SHOWCASE_PLUGIN_ID)
     const showcaseHost = host as unknown as ShowcaseHost
     const notify = useNotification()
 
@@ -651,8 +652,13 @@ export function SchedulerModule() {
             notify.warning('请先选择任务')
             return
         }
-        if (!isTerminalTask(selectedTask) && !window.confirm('该任务尚未进入终态，仍要删除这条任务记录吗？')) {
-            return
+        if (!isTerminalTask(selectedTask)) {
+            const confirmed = await confirmDialog(dialog, {
+                title: '删除未完成任务',
+                message: '该任务尚未进入终态，仍要删除这条任务记录吗？',
+                confirmLabel: '删除',
+            })
+            if (!confirmed) return
         }
 
         setLoadingAction('delete')
@@ -675,13 +681,16 @@ export function SchedulerModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, pushOperation, refreshTasks, scheduler, selectedTask])
+    }, [dialog, notify, pushOperation, refreshTasks, scheduler, selectedTask])
 
     const cleanupTerminalTasks = useCallback(async () => {
         const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-        if (!window.confirm('将调用 scheduler.cleanupTasks 清理 7 天前已完成、失败或已取消的任务记录，继续？')) {
-            return
-        }
+        const confirmed = await confirmDialog(dialog, {
+            title: '清理终态任务',
+            message: '将调用 scheduler.cleanupTasks 清理 7 天前已完成、失败或已取消的任务记录，继续？',
+            confirmLabel: '清理',
+        })
+        if (!confirmed) return
 
         setLoadingAction('cleanup')
         try {
@@ -700,7 +709,7 @@ export function SchedulerModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, pushOperation, refreshTasks, scheduler])
+    }, [dialog, notify, pushOperation, refreshTasks, scheduler])
 
     const canGoPrevious = offset > 0
     const canGoNext = offset + pageSize < taskCount

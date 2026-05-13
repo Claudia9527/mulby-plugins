@@ -25,6 +25,7 @@ import {
 import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
 import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
+import { confirmDialog } from '../../utils/dialogs'
 
 type OperationStatus = 'success' | 'error' | 'info' | 'warning'
 type LoadingAction =
@@ -284,6 +285,7 @@ export function PluginOrchestrationModule() {
         onPluginOut,
         onPluginLaunchStart,
         onPluginLaunchEnd,
+        dialog,
     } = useMulby()
     const notify = useNotification()
 
@@ -552,7 +554,11 @@ export function PluginOrchestrationModule() {
             } else if (action === 'unpin') {
                 result = await plugin.unpinFeature(selectedPluginId, selectedFeatureCode)
             } else if (action === 'hide') {
-                const confirmed = window.confirm('隐藏功能会影响搜索结果，确认隐藏当前功能？')
+                const confirmed = await confirmDialog(dialog, {
+                    title: '隐藏功能',
+                    message: '隐藏功能会影响搜索结果，确认隐藏当前功能？',
+                    confirmLabel: '隐藏',
+                })
                 if (!confirmed) return
                 result = await plugin.hideFeature(selectedPluginId, selectedFeatureCode)
             } else if (action === 'unhide') {
@@ -575,7 +581,7 @@ export function PluginOrchestrationModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [loadSearchPreferences, notify, plugin, pushOperation, selectedFeatureCode, selectedPluginId])
+    }, [dialog, loadSearchPreferences, notify, plugin, pushOperation, selectedFeatureCode, selectedPluginId])
 
     const validateShortcut = useCallback(async () => {
         setLoadingAction('shortcut')
@@ -606,7 +612,11 @@ export function PluginOrchestrationModule() {
             notify.warning('当前指令不可绑定快捷键')
             return
         }
-        const confirmed = window.confirm('绑定快捷键会写入插件命令快捷键配置，确认继续？')
+        const confirmed = await confirmDialog(dialog, {
+            title: '绑定快捷键',
+            message: '绑定快捷键会写入插件命令快捷键配置，确认继续？',
+            confirmLabel: '绑定',
+        })
         if (!confirmed) return
 
         setLoadingAction('shortcut')
@@ -633,14 +643,18 @@ export function PluginOrchestrationModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [accelerator, notify, plugin, pushOperation, refreshShortcuts, selectedCommand])
+    }, [accelerator, dialog, notify, plugin, pushOperation, refreshShortcuts, selectedCommand])
 
     const unbindShortcut = useCallback(async () => {
         if (!selectedBinding) {
             notify.warning('请选择一个快捷键绑定')
             return
         }
-        const confirmed = window.confirm(`确认解绑 ${selectedBinding.accelerator}？`)
+        const confirmed = await confirmDialog(dialog, {
+            title: '解绑快捷键',
+            message: `确认解绑 ${selectedBinding.accelerator}？`,
+            confirmLabel: '解绑',
+        })
         if (!confirmed) return
 
         setLoadingAction('shortcut')
@@ -660,7 +674,7 @@ export function PluginOrchestrationModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, plugin, pushOperation, refreshShortcuts, selectedBinding])
+    }, [dialog, notify, plugin, pushOperation, refreshShortcuts, selectedBinding])
 
     const toggleCommandDisabled = useCallback(async () => {
         if (!selectedCommand) {
@@ -668,7 +682,11 @@ export function PluginOrchestrationModule() {
             return
         }
         const nextDisabled = !selectedCommand.disabled
-        const confirmed = window.confirm(`${nextDisabled ? '禁用' : '启用'}当前指令会影响搜索和快捷键触发，确认继续？`)
+        const confirmed = await confirmDialog(dialog, {
+            title: `${nextDisabled ? '禁用' : '启用'}指令`,
+            message: `${nextDisabled ? '禁用' : '启用'}当前指令会影响搜索和快捷键触发，确认继续？`,
+            confirmLabel: nextDisabled ? '禁用' : '启用',
+        })
         if (!confirmed) return
 
         setLoadingAction('command-state')
@@ -695,7 +713,7 @@ export function PluginOrchestrationModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, plugin, pushOperation, selectedCommand])
+    }, [dialog, notify, plugin, pushOperation, selectedCommand])
 
     const readReadme = useCallback(async () => {
         if (!selectedPluginId) return
@@ -756,7 +774,11 @@ export function PluginOrchestrationModule() {
 
     const stopSelectedBackground = useCallback(async () => {
         if (!selectedPluginId) return
-        const confirmed = window.confirm('停止后台插件会中断该插件后台服务，确认继续？')
+        const confirmed = await confirmDialog(dialog, {
+            title: '停止后台插件',
+            message: '停止后台插件会中断该插件后台服务，确认继续？',
+            confirmLabel: '停止',
+        })
         if (!confirmed) return
 
         setLoadingAction('background')
@@ -776,7 +798,7 @@ export function PluginOrchestrationModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, plugin, pushOperation, refreshBackground, selectedPluginId])
+    }, [dialog, notify, plugin, pushOperation, refreshBackground, selectedPluginId])
 
     const loadBackgroundInfo = useCallback(async (pluginId = selectedPluginId) => {
         if (!pluginId) return
@@ -824,7 +846,11 @@ export function PluginOrchestrationModule() {
     }, [notify, plugin, pushOperation, searchQuery])
 
     const exitCurrentPlugin = useCallback(async () => {
-        const confirmed = window.confirm('这会退出当前 Showcase 插件窗口，确认继续？')
+        const confirmed = await confirmDialog(dialog, {
+            title: '退出 Showcase',
+            message: '这会退出当前 Showcase 插件窗口，确认继续？',
+            confirmLabel: '退出',
+        })
         if (!confirmed) return
 
         setLoadingAction('out')
@@ -842,7 +868,7 @@ export function PluginOrchestrationModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, plugin, pushOperation])
+    }, [dialog, notify, plugin, pushOperation])
 
     useEffect(() => {
         void refreshCatalog({ silent: true })

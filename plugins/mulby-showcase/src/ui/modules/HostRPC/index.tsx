@@ -18,6 +18,7 @@ import {
 import { PageHeader, Card, Button, StatusBadge, ApiReferencePanel } from '../../components'
 import type { ApiExample, ApiReferenceGroup } from '../../components'
 import { useMulby, useNotification } from '../../hooks'
+import { confirmDialog } from '../../utils/dialogs'
 
 type OperationStatus = 'success' | 'error' | 'info' | 'warning'
 type LoadingAction =
@@ -254,7 +255,7 @@ function summarizeClipboardText(text: string | null) {
 }
 
 export function HostRPCModule() {
-    const { host } = useMulby(SHOWCASE_PLUGIN_ID)
+    const { host, dialog } = useMulby(SHOWCASE_PLUGIN_ID)
     const showcaseHost = host as unknown as ShowcaseHost
     const notify = useNotification()
 
@@ -463,7 +464,11 @@ export function HostRPCModule() {
     }, [callShowcaseHost, notify, pushOperation, storageKey])
 
     const restartHost = useCallback(async () => {
-        const confirmed = window.confirm('重启当前插件 Host 进程会短暂中断后台 RPC，确认继续？')
+        const confirmed = await confirmDialog(dialog, {
+            title: '重启插件 Host',
+            message: '重启当前插件 Host 进程会短暂中断后台 RPC，确认继续？',
+            confirmLabel: '重启',
+        })
         if (!confirmed) return
 
         setLoadingAction('restart')
@@ -486,7 +491,7 @@ export function HostRPCModule() {
         } finally {
             setLoadingAction(null)
         }
-    }, [notify, pushOperation, refreshStatus, showcaseHost])
+    }, [dialog, notify, pushOperation, refreshStatus, showcaseHost])
 
     useEffect(() => {
         void refreshStatus({ silent: true })

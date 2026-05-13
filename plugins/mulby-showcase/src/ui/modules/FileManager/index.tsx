@@ -571,15 +571,25 @@ export function FileManagerModule() {
 
     const handleErrorBox = useCallback(async () => {
         try {
-            await dialog.showErrorBox('错误框测试', '这是 dialog.showErrorBox 的示例。')
+            const result = await dialog.showMessageBox({
+                type: 'error',
+                title: '错误框测试',
+                message: '这是通过内部消息框展示的错误提示。',
+                detail: 'showMessageBox 会使用宿主封装的插件内模态框，避免系统原生错误框被置顶插件窗口遮挡。',
+                buttons: ['知道了'],
+                defaultId: 0,
+                cancelId: 0,
+            })
+            setLastMessageResult(result)
             pushOperation({
-                action: 'dialog.showErrorBox',
+                action: 'dialog.showMessageBox(error)',
                 status: 'info',
-                message: '已显示错误框',
+                message: '已显示内部错误提示框',
+                details: result,
             })
         } catch (error) {
             const message = getErrorMessage(error)
-            pushOperation({ action: 'dialog.showErrorBox', status: 'error', message })
+            pushOperation({ action: 'dialog.showMessageBox(error)', status: 'error', message })
             notify.error('错误框调用失败')
         }
     }, [dialog, notify, pushOperation])
@@ -687,7 +697,7 @@ export function FileManagerModule() {
                 { name: 'dialog.showOpenDialog(options)', description: '选择文件或目录。' },
                 { name: 'dialog.showSaveDialog(options)', description: '选择写入、复制、移动或创建目录的目标路径。' },
                 { name: 'dialog.showMessageBox(options)', description: '展示确认框并读取按钮索引。' },
-                { name: 'dialog.showErrorBox(title, content)', description: '展示系统错误框。' },
+                { name: 'dialog.showMessageBox({ type: "error" })', description: '用插件内模态框展示错误提示，避免系统原生错误框被置顶窗口遮挡。' },
             ],
         },
         {
