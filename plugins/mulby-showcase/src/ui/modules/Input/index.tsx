@@ -464,7 +464,7 @@ export function InputModule() {
                     },
                     {
                         name: 'input.hideMainWindowPasteFile(filePaths)',
-                        description: '隐藏主窗口，将一个或多个文件路径粘贴到目标应用。Windows 当前可能返回 false。',
+                        description: '隐藏主窗口，将一个或多个文件路径写入系统文件剪贴板并粘贴到目标应用。',
                     },
                     {
                         name: 'input.hideMainWindowTypeString(text)',
