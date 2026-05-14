@@ -73,8 +73,17 @@ interface Position {
     latitude: number
     longitude: number
     accuracy: number
-    source: 'native' | 'ip'
+    source: 'native' | 'web' | 'ip'
+    provider: 'macos-corelocation' | 'windows-location-service' | 'linux-geoclue' | 'electron-web' | 'ip' | 'freegeoip.app' | 'ip-api.com' | 'ipwho.is'
     timestamp: number
+    fallbackUsed: boolean
+    attempts: Array<{
+        provider: string
+        source: 'native' | 'web' | 'ip'
+        status: 'success' | 'skipped' | 'error'
+        accuracy?: number
+        message?: string
+    }>
     altitude?: number | null
     altitudeAccuracy?: number | null
     heading?: number | null
@@ -85,6 +94,16 @@ type NativeLocationTestState = {
     status: 'idle' | 'testing' | 'success' | 'failed'
     message: string
     checkedAt: number | null
+}
+
+const formatLocationAttemptSummary = (position: Position) => {
+    return position.attempts
+        .map((attempt) => {
+            const accuracy = typeof attempt.accuracy === 'number' ? `, ${attempt.accuracy.toFixed(0)}m` : ''
+            const message = attempt.message ? `: ${attempt.message}` : ''
+            return `${attempt.provider}=${attempt.status}${accuracy}${message}`
+        })
+        .join(' / ')
 }
 
 export function SystemInfoModule() {
@@ -271,7 +290,7 @@ export function SystemInfoModule() {
                 const newStatus = await geolocation.requestAccess()
                 console.log('[SystemInfo] Permission request result:', newStatus)
                 setGeolocationAccessStatus(newStatus)
-                if (newStatus !== 'granted') {
+                if (newStatus === 'denied' || newStatus === 'restricted') {
                     notify.error('位置权限未授权')
                     return
                 }
@@ -286,11 +305,11 @@ export function SystemInfoModule() {
 
             // 获取位置
             console.log('[SystemInfo] Getting current position...')
-            const pos = await geolocation.getCurrentPosition()
+            const pos = await geolocation.getCurrentPosition({ desiredAccuracy: 'best', allowFallback: true, timeoutMs: 10000 })
             console.log('[SystemInfo] Got position:', pos)
             if (pos) {
                 setPosition(pos)
-                notify.success('位置获取成功')
+                notify.success(pos.fallbackUsed ? '位置获取成功，已使用后备定位' : '位置获取成功')
             }
         } catch (error) {
             console.error('[SystemInfo] Error getting location:', error)
@@ -302,7 +321,7 @@ export function SystemInfoModule() {
         console.log('[SystemInfo] handleTestNativeLocation called')
         setNativeLocationTest({
             status: 'testing',
-            message: '正在测试原生定位...',
+            message: '正在测试精确定位...',
             checkedAt: null
         })
 
@@ -316,7 +335,7 @@ export function SystemInfoModule() {
             if (status === 'denied' || status === 'restricted') {
                 setNativeLocationTest({
                     status: 'failed',
-                    message: '定位权限被拒绝或受限，无法验证原生定位',
+                    message: '定位权限被拒绝或受限，无法验证精确定位',
                     checkedAt: Date.now()
                 })
                 notify.error('定位权限不可用，请在系统设置中开启')
@@ -327,10 +346,10 @@ export function SystemInfoModule() {
             if (status === 'not-determined') {
                 const newStatus = await geolocation.requestAccess()
                 setGeolocationAccessStatus(newStatus)
-                if (newStatus !== 'granted') {
+                if (newStatus === 'denied' || newStatus === 'restricted') {
                     setNativeLocationTest({
                         status: 'failed',
-                        message: '定位权限未授权，原生定位测试失败',
+                        message: '定位权限未授权，精确定位测试失败',
                         checkedAt: Date.now()
                     })
                     notify.error('位置权限未授权')
@@ -350,7 +369,7 @@ export function SystemInfoModule() {
                 return
             }
 
-            const pos = await geolocation.getCurrentPosition()
+            const pos = await geolocation.getCurrentPosition({ desiredAccuracy: 'best', allowFallback: false, timeoutMs: 10000 })
             if (!pos) {
                 throw new Error('未返回定位结果')
             }
@@ -358,23 +377,23 @@ export function SystemInfoModule() {
 
             const accuracy = Number(pos.accuracy)
             const source = pos.source ?? (Number.isFinite(accuracy) && accuracy <= 100 ? 'native' : 'ip')
-            if (source === 'native') {
+            if (source === 'native' || source === 'web') {
                 setNativeLocationTest({
                     status: 'success',
-                    message: `原生定位可用（source=native，精度约 ${Number.isFinite(accuracy) ? accuracy.toFixed(0) : '未知'} 米）`,
+                    message: `精确定位可用（provider=${pos.provider}，source=${source}，精度约 ${Number.isFinite(accuracy) ? accuracy.toFixed(0) : '未知'} 米）`,
                     checkedAt: Date.now()
                 })
-                notify.success('原生定位测试成功')
+                notify.success('精确定位测试成功')
                 return
             }
 
             const accuracyText = Number.isFinite(accuracy) ? `${accuracy.toFixed(0)} 米` : '未知'
             setNativeLocationTest({
                 status: 'failed',
-                message: `原生定位不可用（source=${source}，当前精度 ${accuracyText}）`,
+                message: `精确定位不可用（source=${source}，provider=${pos.provider}，当前精度 ${accuracyText}）`,
                 checkedAt: Date.now()
             })
-            notify.error('原生定位测试失败')
+            notify.error('精确定位测试失败')
         } catch (error) {
             console.error('[SystemInfo] Error testing native geolocation:', error)
             setNativeLocationTest({
@@ -445,7 +464,7 @@ export function SystemInfoModule() {
                 { name: 'geolocation.getAccessStatus()', description: '获取定位权限状态。' },
                 { name: 'geolocation.requestAccess()', description: '请求定位权限，macOS 会尝试触发系统权限流程。' },
                 { name: 'geolocation.canGetPosition()', description: '检查定位流程是否可以继续。' },
-                { name: 'geolocation.getCurrentPosition()', description: '获取当前位置，优先原生定位，必要时使用 IP 后备。' },
+                { name: 'geolocation.getCurrentPosition(options)', description: '按系统定位、Electron Web 定位、IP 后备的顺序获取位置，并返回每次尝试的诊断信息。' },
             ],
         },
     ]
@@ -482,8 +501,12 @@ if (status === 'not-determined') {
 }
 
 if (await window.mulby.geolocation.canGetPosition()) {
-  const position = await window.mulby.geolocation.getCurrentPosition()
-  console.log(position.latitude, position.longitude, position.source)
+  const position = await window.mulby.geolocation.getCurrentPosition({
+    desiredAccuracy: 'best',
+    allowFallback: true,
+    timeoutMs: 10000
+  })
+  console.log(position.latitude, position.longitude, position.provider, position.fallbackUsed)
 }`,
         },
     ]
@@ -781,13 +804,13 @@ if (await window.mulby.geolocation.canGetPosition()) {
                             <div style={{ display: 'flex', gap: '8px' }}>
                                 <Button variant="secondary" onClick={handleGetLocation}>获取位置</Button>
                                 <Button onClick={handleTestNativeLocation} loading={nativeLocationTest.status === 'testing'}>
-                                    测试原生定位
+                                    测试精确定位
                                 </Button>
                             </div>
                         }
                     >
                         <div className="info-grid">
-                            <span className="info-label">原生定位测试</span>
+                            <span className="info-label">精确定位测试</span>
                             <span className="info-value">
                                 <StatusBadge status={nativeLocationStatusBadge}>
                                     {nativeLocationTest.status === 'success' && '成功'}
@@ -826,6 +849,23 @@ if (await window.mulby.geolocation.canGetPosition()) {
 
                             <span className="info-label">来源</span>
                             <span className="info-value">{position?.source ?? '-'}</span>
+
+                            <span className="info-label">Provider</span>
+                            <span className="info-value">{position?.provider ?? '-'}</span>
+
+                            <span className="info-label">使用后备</span>
+                            <span className="info-value">
+                                {position ? (
+                                    <StatusBadge status={position.fallbackUsed ? 'warning' : 'success'}>
+                                        {position.fallbackUsed ? '是' : '否'}
+                                    </StatusBadge>
+                                ) : '-'}
+                            </span>
+
+                            <span className="info-label">尝试链路</span>
+                            <span className="info-value" style={{ fontSize: '11px', wordBreak: 'break-word' }}>
+                                {position ? formatLocationAttemptSummary(position) : '-'}
+                            </span>
 
                             <span className="info-label">时间</span>
                             <span className="info-value">{position ? new Date(position.timestamp).toLocaleString() : '-'}</span>

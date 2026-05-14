@@ -1017,22 +1017,38 @@ interface MulbyInputMonitor {
   onEvent(callback: (event: GlobalInputEvent) => void): Disposable
 }
 
+type MulbyGeolocationSource = 'native' | 'web' | 'ip'
+type MulbyGeolocationProvider = 'macos-corelocation' | 'windows-location-service' | 'linux-geoclue' | 'electron-web' | 'ip' | 'freegeoip.app' | 'ip-api.com' | 'ipwho.is'
+
+interface MulbyGeolocationAttempt {
+  provider: MulbyGeolocationProvider
+  source: MulbyGeolocationSource
+  status: 'success' | 'skipped' | 'error'
+  accuracy?: number
+  message?: string
+}
+
+interface MulbyGeolocationPosition {
+  latitude: number
+  longitude: number
+  accuracy: number
+  source: MulbyGeolocationSource
+  provider: MulbyGeolocationProvider
+  altitude?: number | null
+  altitudeAccuracy?: number | null
+  heading?: number | null
+  speed?: number | null
+  timestamp: number
+  fallbackUsed: boolean
+  attempts: MulbyGeolocationAttempt[]
+}
+
 interface MulbyGeolocation {
   getAccessStatus(): Promise<'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'>
   requestAccess(): Promise<'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'>
   canGetPosition(): Promise<boolean>
   openSettings(): Promise<void>
-  getCurrentPosition(): Promise<{
-    latitude: number
-    longitude: number
-    accuracy: number
-    source: 'native' | 'ip'
-    altitude?: number | null
-    altitudeAccuracy?: number | null
-    heading?: number | null
-    speed?: number | null
-    timestamp: number
-  }>
+  getCurrentPosition(options?: { desiredAccuracy?: 'best' | 'balanced' | 'coarse'; allowFallback?: boolean; timeoutMs?: number }): Promise<MulbyGeolocationPosition>
 }
 
 interface MulbyTTS {
