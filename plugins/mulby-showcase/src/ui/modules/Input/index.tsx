@@ -32,6 +32,14 @@ export function InputModule() {
         message?: string
     } | null>(null)
 
+    const restoreInputWindowsAfterInput = useCallback(async () => {
+        try {
+            await input.restoreWindows()
+        } catch (error) {
+            console.error('Failed to restore input windows:', error)
+        }
+    }, [input])
+
     const runAction = useCallback(
         async (name: string, action: () => Promise<boolean>) => {
             setBusyAction(name)
@@ -57,10 +65,11 @@ export function InputModule() {
                 })
                 notify.error('执行失败，请确认权限与环境依赖')
             } finally {
+                await restoreInputWindowsAfterInput()
                 setBusyAction(null)
             }
         },
-        [notify],
+        [notify, restoreInputWindowsAfterInput],
     )
 
     const runSimulateAction = useCallback(
@@ -89,10 +98,11 @@ export function InputModule() {
                 notify.error('模拟操作失败，请确认权限与环境依赖')
                 console.error(error)
             } finally {
+                await restoreInputWindowsAfterInput()
                 setBusyAction(null)
             }
         },
-        [notify],
+        [notify, restoreInputWindowsAfterInput],
     )
 
     const loadAccessibilityStatus = useCallback(async () => {
@@ -328,6 +338,7 @@ export function InputModule() {
             notify.error('脚本执行失败')
             console.error(error)
         } finally {
+            await restoreInputWindowsAfterInput()
             setBusyAction(null)
         }
     }
@@ -395,6 +406,7 @@ export function InputModule() {
             notify.error('脚本执行失败')
             console.error(error)
         } finally {
+            await restoreInputWindowsAfterInput()
             setBusyAction(null)
         }
     }
@@ -432,6 +444,7 @@ export function InputModule() {
             log(`执行出错: ${error}`)
             notify.error('格式化失败')
         } finally {
+            await restoreInputWindowsAfterInput()
             setBusyAction(null)
         }
     }
@@ -528,7 +541,8 @@ export function InputModule() {
                 code: `await window.mulby.input.hideMainWindowPasteText('Hello Mulby')
 await window.mulby.input.hideMainWindowPasteImage('/path/to/image.png')
 await window.mulby.input.hideMainWindowPasteFile(['/path/a.txt', '/path/b.txt'])
-await window.mulby.input.hideMainWindowTypeString('Typing...')`,
+await window.mulby.input.hideMainWindowTypeString('Typing...')
+await window.mulby.input.restoreWindows()`,
             },
             {
                 title: '连续输入并恢复窗口',
@@ -544,7 +558,8 @@ await window.mulby.input.restoreWindows()`,
 
 const pos = await window.mulby.screen.getCursorScreenPoint()
 await window.mulby.input.simulateMouseMove(pos.x, pos.y)
-await window.mulby.input.simulateMouseClick(pos.x, pos.y)`,
+await window.mulby.input.simulateMouseClick(pos.x, pos.y)
+await window.mulby.input.restoreWindows()`,
             },
             {
                 title: '自动化脚本片段',
