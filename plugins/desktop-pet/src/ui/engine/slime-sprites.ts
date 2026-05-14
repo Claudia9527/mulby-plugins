@@ -39,9 +39,9 @@ const NEUTRAL: FaceParts = {
   mouth: '',
 }
 
-// Happy: upward arc eyes (^_^), same size as neutral
+// Happy: ^_^ 弯眼 — 尖在上方 y27、两脚在 y28（屏幕 y 向下，这才是朝上的 ^，不是 ∨）
 const HAPPY: FaceParts = {
-  eyes: `<path fill="#1A1916" d="M27 28h1v1H27zM29 28h1v1H29zM34 28h1v1H34zM36 28h1v1H36zM28 29h1v1H28zM35 29h1v1H35z"/>`,
+  eyes: `<path fill="#1A1916" d="M28 27h1v1H28zM27 28h1v1H27zM29 28h1v1H29zM35 27h1v1H35zM34 28h1v1H34zM36 28h1v1H36z"/>`,
   highlights: '',
   blush: `<path fill="#CF8E8C" d="M26 31h1v1H26zM37 31h1v1H37zM26 32h3v1H26zM35 32h3v1H35zM27 33h1v1H27zM36 33h1v1H36z"/>`,
   mouth: `<path fill="#1A1916" d="M31 31h2v1H31z"/>`,
@@ -119,12 +119,12 @@ const CONFUSED: FaceParts = {
   mouth: '',
 }
 
-// Proud: tilted brows, uneven eyes, and a confident crooked smirk
+// Proud: 与 Happy 同向的 ^ 弯眼 + 折线处眼白；嘴两端在 y30（较高）、中间 y31，呈向上弯的笑
 const PROUD: FaceParts = {
-  eyes: `<path fill="#1A1916" d="M27 27h1v1H27zM36 27h1v1H36zM28 28h3v1H28zM33 28h3v1H33zM27 29h2v1H27zM35 29h2v1H35zM29 30h1v1H29zM34 30h1v1H34z"/>`,
-  highlights: '',
+  eyes: `<path fill="#1A1916" d="M28 27h1v1H28zM27 28h1v1H27zM29 28h1v1H29zM35 27h1v1H35zM34 28h1v1H34zM36 28h1v1H36z"/>`,
+  highlights: `<path fill="#F7F7F7" d="M28 28h1v1H28zM35 28h1v1H35z"/>`,
   blush: '',
-  mouth: `<path fill="#1A1916" d="M30 31h1v1H30zM31 32h2v1H31zM33 31h1v1H33z"/>`,
+  mouth: `<path fill="#1A1916" d="M30 30h1v1H30zM34 30h1v1H34zM31 31h3v1H31z"/>`,
 }
 
 // Scared: wide eyes, tiny mouth, and a cold sweat pixel
