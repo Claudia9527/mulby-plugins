@@ -12,6 +12,9 @@ export interface BookEntry {
   addedAt: number
   lastReadAt: number
   progress: number
+  chapterCount: number
+  totalChars: number
+  indexing: boolean
 }
 
 export interface ReaderSettings {
@@ -21,15 +24,15 @@ export interface ReaderSettings {
 }
 
 export default function App() {
-  const { host, storage } = useMulby(PLUGIN_ID)
-  const call = (method: string, ...args: unknown[]) =>
-    host.call(method, ...args).then((r: any) => r.data)
+  const { host } = useMulby(PLUGIN_ID)
+  const call = async (method: string, ...args: unknown[]) => {
+    const result = await host.call(method, ...args)
+    return (result as any)?.data
+  }
   const [view, setView] = useState<'bookshelf' | 'reader'>('bookshelf')
   const [currentBook, setCurrentBook] = useState<BookEntry | null>(null)
-  const [content, setContent] = useState('')
   const [hydrated, setHydrated] = useState(false)
 
-  // Settings persistence
   const [settings, setSettings] = useState<ReaderSettings>({
     fontSize: 18,
     lineHeight: 1.8,
@@ -42,7 +45,7 @@ export default function App() {
         const saved = await call('getSettings')
         if (saved) setSettings(saved)
       } catch {
-        // Use defaults if backend not available
+        // Use defaults
       } finally {
         setHydrated(true)
       }
@@ -50,7 +53,6 @@ export default function App() {
     init()
   }, [])
 
-  // Apply theme class
   useEffect(() => {
     document.documentElement.classList.remove('dark', 'sepia')
     if (settings.theme !== 'light') {
@@ -58,39 +60,39 @@ export default function App() {
     }
   }, [settings.theme])
 
+  const importAndOpen = useCallback(async (filePath: string) => {
+    try {
+      const result = await call('importBook', filePath)
+      if (result?.book) {
+        setCurrentBook(result.book)
+        setView('reader')
+      }
+    } catch (err) {
+      console.error('[novel-reader] importAndOpen failed:', err)
+    }
+  }, [host])
+
+  const importOnly = useCallback(async (filePath: string) => {
+    await call('importBook', filePath)
+  }, [host])
+
   // Handle file trigger from Mulby
   useEffect(() => {
     window.mulby?.onPluginInit?.((data: PluginInitData) => {
       if (data.featureCode === 'open-file' && data.input) {
-        const filePath = data.input.trim()
-        openBookByPath(filePath)
+        importAndOpen(data.input.trim())
       }
     })
-  }, [])
+  }, [importAndOpen])
 
-  const openBookByPath = useCallback(async (filePath: string) => {
-    try {
-      const text = await call('openFile', filePath)
-      const book = await call('addBook', filePath)
-      setContent(text)
-      setCurrentBook(book)
-      setView('reader')
-    } catch (err) {
-      console.error('[novel-reader] openBookByPath failed:', err)
-    }
-  }, [host])
-
-  const handleOpenBook = useCallback(async (book: BookEntry) => {
-    const text = await call('openFile', book.filePath)
-    setContent(text)
+  const handleOpenBook = useCallback((book: BookEntry) => {
     setCurrentBook(book)
     setView('reader')
-  }, [host])
+  }, [])
 
   const handleBackToShelf = useCallback(() => {
     setView('bookshelf')
     setCurrentBook(null)
-    setContent('')
   }, [])
 
   const handleSettingsChange = useCallback(async (next: ReaderSettings) => {
@@ -110,7 +112,6 @@ export default function App() {
     return (
       <Reader
         book={currentBook}
-        content={content}
         settings={settings}
         onBack={handleBackToShelf}
         onSettingsChange={handleSettingsChange}
@@ -118,5 +119,5 @@ export default function App() {
     )
   }
 
-  return <Bookshelf onOpenBook={handleOpenBook} onOpenFile={openBookByPath} />
+  return <Bookshelf onOpenBook={handleOpenBook} onImportBook={importOnly} />
 }

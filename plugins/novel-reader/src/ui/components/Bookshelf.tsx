@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BookOpen, Plus, Trash2 } from 'lucide-react'
+import { BookOpen, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useMulby } from '../hooks/useMulby'
 import type { BookEntry } from '../App'
 
@@ -19,15 +19,24 @@ function coverChar(title: string): string {
   return title.charAt(0).toUpperCase()
 }
 
-export default function Bookshelf({ onOpenBook, onOpenFile }: {
+function formatChars(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
+  return String(n)
+}
+
+export default function Bookshelf({ onOpenBook, onImportBook }: {
   onOpenBook: (book: BookEntry) => void
-  onOpenFile: (filePath: string) => void
+  onImportBook: (filePath: string) => Promise<void>
 }) {
   const { host, dialog } = useMulby(PLUGIN_ID)
-  const call = (method: string, ...args: unknown[]) =>
-    host.call(method, ...args).then((r: any) => r.data)
+  const call = async (method: string, ...args: unknown[]) => {
+    const result = await host.call(method, ...args)
+    return (result as any)?.data
+  }
   const [books, setBooks] = useState<BookEntry[]>([])
   const [hydrated, setHydrated] = useState(false)
+  const [importing, setImporting] = useState(false)
 
   useEffect(() => {
     (async () => {
@@ -42,6 +51,11 @@ export default function Bookshelf({ onOpenBook, onOpenFile }: {
     })()
   }, [host])
 
+  const refreshBooks = useCallback(async () => {
+    const list = await call('getBookList')
+    setBooks(list ?? [])
+  }, [host])
+
   const handleAddBook = useCallback(async () => {
     const result = await dialog.showOpenDialog({
       title: '选择小说文件',
@@ -49,36 +63,40 @@ export default function Bookshelf({ onOpenBook, onOpenFile }: {
       properties: ['openFile'],
     })
     if (result?.length) {
-      const filePath = result[0]
-      onOpenFile(filePath)
-
-      // Refresh list
-      const list = await call('getBookList')
-      setBooks(list ?? [])
+      setImporting(true)
+      try {
+        await onImportBook(result[0])
+        await refreshBooks()
+      } catch (err) {
+        console.error('[novel-reader] import failed:', err)
+      } finally {
+        setImporting(false)
+      }
     }
-  }, [dialog, host, onOpenFile])
+  }, [dialog, onImportBook, refreshBooks])
 
   const handleRemoveBook = useCallback(async (bookId: string, e: React.MouseEvent) => {
     e.stopPropagation()
     await call('removeBook', bookId)
-    const list = await host.invoke('getBookList')
-    setBooks(list ?? [])
-  }, [host])
+    await refreshBooks()
+  }, [host, refreshBooks])
 
   if (!hydrated) return null
 
+  const displayBooks = books
+
   return (
-    <div className="flex flex-col h-full p-6 overflow-y-auto">
+    <div className="relative flex flex-col h-full p-6 overflow-y-auto">
       <h1 className="text-2xl font-bold mb-6 text-[var(--text-1)]">我的书架</h1>
 
-      {books.length === 0 ? (
+      {displayBooks.length === 0 && !importing ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-4 text-[var(--text-3)]">
           <BookOpen size={48} strokeWidth={1.5} />
           <p>书架空空如也，添加一本小说开始阅读吧</p>
         </div>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-4 mb-6">
-          {books.map((book) => (
+          {displayBooks.map((book) => (
             <div
               key={book.id}
               className="group cursor-pointer rounded-xl overflow-hidden border border-[var(--border)] bg-[var(--surface)] hover:shadow-lg transition-shadow"
@@ -106,6 +124,16 @@ export default function Bookshelf({ onOpenBook, onOpenFile }: {
                     {Math.round(book.progress * 100)}%
                   </span>
                 </div>
+                {book.indexing ? (
+                  <p className="text-xs text-[var(--accent)] mt-1 flex items-center gap-1">
+                    <Loader2 size={10} className="animate-spin" />
+                    正在建立目录
+                  </p>
+                ) : book.chapterCount > 0 ? (
+                  <p className="text-xs text-[var(--text-3)] mt-1">
+                    {book.chapterCount}章 · {formatChars(book.totalChars)}字
+                  </p>
+                ) : null}
               </div>
             </div>
           ))}
@@ -114,11 +142,22 @@ export default function Bookshelf({ onOpenBook, onOpenFile }: {
 
       <button
         onClick={handleAddBook}
-        className="flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-[var(--border)] text-[var(--text-3)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+        disabled={importing}
+        className="flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-[var(--border)] text-[var(--text-3)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
       >
         <Plus size={20} />
         <span>添加小说</span>
       </button>
+
+      {/* Import loading overlay */}
+      {importing && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-[var(--bg)]/80">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 size={32} className="animate-spin text-[var(--accent)]" />
+            <p className="text-sm text-[var(--text-2)]">正在导入...</p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, EyeOff, List, Settings } from 'lucide-react'
+import { ArrowLeft, EyeOff, List, Loader2, Settings } from 'lucide-react'
 import { useMulby } from '../hooks/useMulby'
 import SettingsPanel from './SettingsPanel'
 import ChapterPanel from './ChapterPanel'
@@ -8,71 +8,320 @@ import type { BookEntry, ReaderSettings } from '../App'
 
 const PLUGIN_ID = 'novel-reader'
 
-function parseChapters(text: string): Chapter[] {
+interface ChapterIndex {
+  title: string
+  startOffset: number
+  endOffset: number
+}
+
+const CHAPTER_PATTERNS = [
+  /^第[零一二三四五六七八九十百千\d]+[章节回卷].*/,
+  /^Chapter\s+\d+.*/i,
+  /^[1-9]\d*[、，.]\s*\S/,
+]
+
+const INDEX_CHUNK_SIZE = 800
+
+function waitForNextIndexChunk() {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 0)
+  })
+}
+
+async function buildChapterIndex(
+  text: string,
+  onProgress: (progress: number) => void,
+  isCancelled: () => boolean,
+): Promise<ChapterIndex[]> {
   const lines = text.split('\n')
-  const chapters: Chapter[] = []
-  let charPos = 0
+  const chapters: ChapterIndex[] = []
+  let offset = 0
 
-  const patterns = [
-    /^第[零一二三四五六七八九十百千\d]+[章节回卷].*/,
-    /^Chapter\s+\d+.*/i,
-    /^[1-9]\d*[、，.]\s*\S/,
-  ]
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const matched = patterns.some((re) => re.test(trimmed))
-    if (matched && trimmed.length <= 40) {
-      chapters.push({
-        index: chapters.length + 1,
-        title: trimmed,
-        charPosition: charPos,
-      })
-    }
-    charPos += line.length + 1 // +1 for the newline
+  if (lines.length === 0) {
+    onProgress(1)
+    return chapters
   }
 
+  for (let i = 0; i < lines.length; i++) {
+    if (isCancelled()) return chapters
+
+    const line = lines[i]
+    const trimmed = line.trim()
+    const matched = CHAPTER_PATTERNS.some((re) => re.test(trimmed))
+
+    if (matched && trimmed.length <= 40) {
+      if (chapters.length > 0) {
+        chapters[chapters.length - 1].endOffset = Math.max(chapters[chapters.length - 1].startOffset, offset - 1)
+      }
+      chapters.push({ title: trimmed, startOffset: offset, endOffset: text.length })
+    }
+
+    offset += line.length + 1
+
+    if (i % INDEX_CHUNK_SIZE === INDEX_CHUNK_SIZE - 1) {
+      onProgress(Math.min(0.99, (i + 1) / lines.length))
+      await waitForNextIndexChunk()
+    }
+  }
+
+  if (chapters.length > 0) {
+    chapters[chapters.length - 1].endOffset = text.length
+  }
+
+  onProgress(1)
   return chapters
 }
 
-export default function Reader({ book, content, settings, onBack, onSettingsChange }: {
+function toPanelChapters(chapters: ChapterIndex[]): Chapter[] {
+  return chapters.map((ch, i) => ({
+    index: i + 1,
+    title: ch.title,
+    charPosition: ch.startOffset,
+  }))
+}
+
+export default function Reader({ book, settings, onBack, onSettingsChange }: {
   book: BookEntry
-  content: string
   settings: ReaderSettings
   onBack: () => void
   onSettingsChange: (s: ReaderSettings) => void
 }) {
   const { host, window: mulbyWindow } = useMulby(PLUGIN_ID)
-  const call = (method: string, ...args: unknown[]) =>
-    host.call(method, ...args).then((r: any) => r.data)
+  const call = async (method: string, ...args: unknown[]) => {
+    const result = await host.call(method, ...args)
+    return (result as any)?.data
+  }
   const containerRef = useRef<HTMLDivElement>(null)
-  const [scrollProgress, setScrollProgress] = useState(book.progress)
+  const preloadCache = useRef<Map<number, string>>(new Map())
+
+  // View toggles
   const [showSettings, setShowSettings] = useState(false)
   const [showChapters, setShowChapters] = useState(false)
+
+  // Data
+  const [chapterIndex, setChapterIndex] = useState<ChapterIndex[] | null>(null)
+  const [currentChapterIdx, setCurrentChapterIdx] = useState(0)
+  const [chapterContent, setChapterContent] = useState('')
+  const [fullText, setFullText] = useState('')
+  const [isLoadingText, setIsLoadingText] = useState(true)
+  const [isIndexing, setIsIndexing] = useState(false)
+  const [indexingProgress, setIndexingProgress] = useState(0)
+  const [indexingDone, setIndexingDone] = useState(false)
+  const [hasChapters, setHasChapters] = useState(book.chapterCount > 0)
+  const [readingMode, setReadingMode] = useState<'full' | 'chapter'>('full')
+
+  // Scroll
+  const [scrollProgress, setScrollProgress] = useState(book.progress)
   const [activeChapter, setActiveChapter] = useState(0)
-  const chapters = parseChapters(content)
   const restoringRef = useRef(false)
+
+  const chapters = chapterIndex ? toPanelChapters(chapterIndex) : []
   const showChaptersRef = useRef(false)
   const showSettingsRef = useRef(false)
+  const readingModeRef = useRef<'full' | 'chapter'>('full')
   showChaptersRef.current = showChapters
   showSettingsRef.current = showSettings
+  readingModeRef.current = readingMode
 
-  // Restore scroll position
-  useEffect(() => {
-    async function restore() {
-      restoringRef.current = true
-      const savedProgress = await call('getProgress', book.id)
-      if (containerRef.current && savedProgress > 0) {
-        const el = containerRef.current
+  // Determine display content
+  const content = readingMode === 'chapter' && chapterContent ? chapterContent : fullText
+
+  const getCurrentScrollProgress = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return scrollProgress
+    const maxScroll = el.scrollHeight - el.clientHeight
+    return maxScroll > 0 ? el.scrollTop / maxScroll : 0
+  }, [scrollProgress])
+
+  const restoreScrollProgress = useCallback((progress: number) => {
+    restoringRef.current = true
+    requestAnimationFrame(() => {
+      const el = containerRef.current
+      if (el) {
         const maxScroll = el.scrollHeight - el.clientHeight
-        el.scrollTop = maxScroll * savedProgress
+        el.scrollTop = Math.max(0, maxScroll * progress)
       }
-      requestAnimationFrame(() => { restoringRef.current = false })
-    }
-    restore()
-  }, [book.id, content])
+      requestAnimationFrame(() => {
+        restoringRef.current = false
+      })
+    })
+  }, [])
 
-  // Track scroll progress and active chapter
+  // ── Init: load text first → then index ──
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function init() {
+      setIsLoadingText(true)
+      setIsIndexing(false)
+      setIndexingProgress(0)
+      setIndexingDone(false)
+      setChapterIndex(null)
+      setChapterContent('')
+      setCurrentChapterIdx(0)
+      setActiveChapter(0)
+      setReadingMode('full')
+      preloadCache.current.clear()
+
+      // Step 1: Load a preview first so the reader can render immediately
+      let previewText = ''
+      let previewLoaded = false
+      try {
+        const preview = await call('openBookPreview', book.filePath, book.id)
+        if (cancelled) return
+
+        previewText = preview?.text ?? ''
+        previewLoaded = true
+
+        setFullText(previewText)
+
+        if (preview?.chapters?.length > 0) {
+          setChapterIndex(preview.chapters)
+          setHasChapters(true)
+        } else {
+          setHasChapters(false)
+        }
+      } catch (err) {
+        console.error('[novel-reader] openBookPreview failed:', err)
+      }
+
+      setIsLoadingText(false)
+      if (cancelled) return
+      if (!previewLoaded) {
+        setIndexingDone(true)
+        return
+      }
+
+      // Step 2: Load the full text in the background, then continue indexing if needed
+      try {
+        const data = await call('openBookData', book.filePath, book.id)
+        if (cancelled) return
+
+        const fullTextData = data?.text ?? previewText
+        const storedChapters: ChapterIndex[] = data?.chapters ?? []
+        const alreadyIndexed = Boolean(data?.indexed)
+        const currentProgress = readingModeRef.current === 'full' ? getCurrentScrollProgress() : 0
+
+        setFullText(fullTextData)
+        if (readingModeRef.current === 'full') {
+          restoreScrollProgress(currentProgress)
+        }
+
+        if (storedChapters.length > 0) {
+          setChapterIndex(storedChapters)
+          setHasChapters(true)
+          setIndexingDone(true)
+          return
+        }
+
+        setChapterIndex(null)
+        setHasChapters(false)
+
+        if (alreadyIndexed) {
+          setIndexingDone(true)
+          return
+        }
+
+        setIsIndexing(true)
+        setIndexingProgress(0)
+
+        const parsed = await buildChapterIndex(
+          fullTextData,
+          setIndexingProgress,
+          () => cancelled,
+        )
+        if (cancelled) return
+
+        const result = await call('saveChapterIndex', book.id, parsed, fullTextData.length)
+        if (cancelled) return
+
+        const nextChapters: ChapterIndex[] = result?.chapters ?? parsed
+
+        if (nextChapters.length > 0) {
+          setChapterIndex(nextChapters)
+          setHasChapters(true)
+        } else {
+          setHasChapters(false)
+        }
+      } catch (err) {
+        console.error('[novel-reader] background load failed:', err)
+      } finally {
+        if (!cancelled) {
+          setIsIndexing(false)
+          setIndexingDone(true)
+        }
+      }
+    }
+
+    init()
+    return () => { cancelled = true }
+  }, [book.id])
+
+  // ── Restore full-text reading progress after the first paint ──
+
+  useEffect(() => {
+    if (isLoadingText || readingMode !== 'full' || !fullText || book.progress <= 0) return
+
+    restoringRef.current = true
+    const firstFrame = requestAnimationFrame(() => {
+      const el = containerRef.current
+      if (el) {
+        const maxScroll = el.scrollHeight - el.clientHeight
+        el.scrollTop = Math.max(0, maxScroll * book.progress)
+      }
+      requestAnimationFrame(() => {
+        restoringRef.current = false
+      })
+    })
+
+    return () => cancelAnimationFrame(firstFrame)
+  }, [book.id, book.progress, fullText, isLoadingText, readingMode, restoreScrollProgress])
+
+  // ── Load chapter content ──
+
+  const loadChapterContent = useCallback(async (idx: number) => {
+    if (!chapterIndex || idx < 0 || idx >= chapterIndex.length) return
+    if (preloadCache.current.has(idx)) {
+      setChapterContent(preloadCache.current.get(idx)!)
+      setCurrentChapterIdx(idx)
+      setReadingMode('chapter')
+      setScrollProgress(0)
+      return
+    }
+    const ch = chapterIndex[idx]
+    try {
+      const text = await call('readChapter', book.filePath, ch.startOffset, ch.endOffset)
+      setChapterContent(text)
+      setCurrentChapterIdx(idx)
+      setReadingMode('chapter')
+      setScrollProgress(0)
+    } catch (err) {
+      console.error('[novel-reader] loadChapter failed:', err)
+    }
+  }, [chapterIndex, book.filePath, host])
+
+  // ── Preload ──
+
+  const preloadChapter = useCallback(async (idx: number) => {
+    if (!chapterIndex || idx < 0 || idx >= chapterIndex.length) return
+    if (preloadCache.current.has(idx)) return
+    try {
+      const ch = chapterIndex[idx]
+      const text = await call('readChapter', book.filePath, ch.startOffset, ch.endOffset)
+      preloadCache.current.set(idx, text)
+    } catch { /* ignore */ }
+  }, [chapterIndex, book.filePath, host])
+
+  useEffect(() => {
+    if (chapterIndex) {
+      preloadChapter(currentChapterIdx + 1)
+      preloadChapter(currentChapterIdx - 1)
+    }
+  }, [currentChapterIdx, chapterIndex, preloadChapter])
+
+  // ── Scroll tracking ──
+
   const handleScroll = useCallback(() => {
     if (restoringRef.current) return
     const el = containerRef.current
@@ -81,70 +330,80 @@ export default function Reader({ book, content, settings, onBack, onSettingsChan
     const progress = maxScroll > 0 ? el.scrollTop / maxScroll : 0
     setScrollProgress(progress)
 
-    // Find active chapter based on approximate scroll-to-char mapping
-    if (chapters.length > 0 && el.scrollHeight > el.clientHeight) {
-      const totalChars = content.length
-      const approxChar = maxScroll > 0 ? (el.scrollTop / maxScroll) * totalChars : 0
-      let activeIdx = 0
-      for (let i = chapters.length - 1; i >= 0; i--) {
-        if (chapters[i].charPosition <= approxChar) {
-          activeIdx = i
+    if (readingMode === 'full' && chapterIndex && chapterIndex.length > 0 && fullText.length > 0) {
+      const approxChar = progress * fullText.length
+      let nextActive = 0
+      for (let i = chapterIndex.length - 1; i >= 0; i--) {
+        if (chapterIndex[i].startOffset <= approxChar) {
+          nextActive = i
           break
         }
       }
-      setActiveChapter(activeIdx)
+      setActiveChapter(nextActive)
     }
-  }, [chapters, content.length])
+  }, [chapterIndex, fullText.length, readingMode])
 
-  // Debounced save progress
+  // ── Overall progress ──
+
+  const overallProgress = readingMode === 'chapter' && chapterIndex
+    ? (currentChapterIdx + (scrollProgress > 0.95 ? 1 : scrollProgress)) / Math.max(chapterIndex.length, 1)
+    : scrollProgress
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      call('saveProgress', book.id, scrollProgress)
+      call('saveProgress', book.id, overallProgress)
     }, 500)
     return () => clearTimeout(timer)
-  }, [scrollProgress, book.id, host])
+  }, [overallProgress, book.id, host])
 
-  // Jump to chapter by scrolling to its charPosition
+  // ── Chapter navigation ──
+
   const handleChapterSelect = useCallback((ch: Chapter) => {
-    const el = containerRef.current
-    if (!el) return
-    const maxScroll = el.scrollHeight - el.clientHeight
-    const totalChars = content.length || 1
-    const targetScroll = (ch.charPosition / totalChars) * maxScroll
-    el.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' })
+    const idx = ch.index - 1
+    if (chapterIndex && idx >= 0 && idx < chapterIndex.length) {
+      loadChapterContent(idx)
+      setActiveChapter(idx)
+      if (containerRef.current) containerRef.current.scrollTop = 0
+    }
     setShowChapters(false)
-  }, [content.length])
+  }, [chapterIndex, loadChapterContent])
 
-  // Boss key
+  // ── Boss key ──
+
   const handleBossKey = useCallback(() => {
     mulbyWindow.hide(true)
   }, [mulbyWindow])
 
-  // Keyboard: PageUp/PageDown, ArrowUp/Down
+  // ── Keyboard ──
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (showChaptersRef.current) { if (e.key === 'Escape') setShowChapters(false); return }
+      if (showSettingsRef.current) { if (e.key === 'Escape') setShowSettings(false); return }
+
       const el = containerRef.current
       if (!el) return
       const step = el.clientHeight * 0.8
-      if (e.key === 'ArrowDown' || e.key === 'PageDown') {
-        e.preventDefault()
-        el.scrollBy({ top: step, behavior: 'smooth' })
+
+      if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); el.scrollBy({ top: step, behavior: 'smooth' }) }
+      if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); el.scrollBy({ top: -step, behavior: 'smooth' }) }
+      if (readingMode === 'chapter' && chapterIndex) {
+        if (e.key === 'ArrowRight' && currentChapterIdx < chapterIndex.length - 1) {
+          e.preventDefault()
+          handleChapterSelect({ index: currentChapterIdx + 2, title: '', charPosition: 0 })
+        }
+        if (e.key === 'ArrowLeft' && currentChapterIdx > 0) {
+          e.preventDefault()
+          handleChapterSelect({ index: currentChapterIdx, title: '', charPosition: 0 })
+        }
       }
-      if (e.key === 'ArrowUp' || e.key === 'PageUp') {
-        e.preventDefault()
-        el.scrollBy({ top: -step, behavior: 'smooth' })
-      }
-      if (e.key === 'Escape') {
-        if (showChaptersRef.current) setShowChapters(false)
-        else if (showSettingsRef.current) setShowSettings(false)
-        else handleBossKey()
-      }
+      if (e.key === 'Escape') handleBossKey()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleBossKey])
+  }, [handleBossKey, handleChapterSelect, chapterIndex, currentChapterIdx, readingMode])
 
-  const percent = Math.round(scrollProgress * 100)
+  const percent = Math.round(overallProgress * 100)
 
   return (
     <div className="flex flex-col h-full">
@@ -161,7 +420,7 @@ export default function Reader({ book, content, settings, onBack, onSettingsChan
           <ArrowLeft size={18} />
         </button>
         <h2 className="flex-1 text-sm font-medium text-[var(--text-1)] truncate">{book.title}</h2>
-        {chapters.length > 0 && (
+        {hasChapters && chapters.length > 0 && (
           <button
             className="p-1.5 rounded-lg hover:bg-[var(--border)] transition-colors"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -174,79 +433,97 @@ export default function Reader({ book, content, settings, onBack, onSettingsChan
         <span className="text-xs text-[var(--text-3)]">{percent}%</span>
       </div>
 
+      {/* Indexing banner */}
+      {isIndexing && (
+        <div className="shrink-0 px-4 py-2 border-b border-[var(--border)] bg-[var(--accent)]/5">
+          <div className="flex items-center gap-2">
+            <Loader2 size={12} className="animate-spin text-[var(--accent)]" />
+            <span className="text-xs text-[var(--accent)]">
+              正在建立目录 {Math.round(indexingProgress * 100)}%
+            </span>
+          </div>
+          <p className="text-xs text-[var(--text-3)] mt-1">
+            你可以先开始阅读，目录生成完成后会自动显示。
+          </p>
+        </div>
+      )}
+
+      {/* No chapters after indexing */}
+      {indexingDone && !isIndexing && !hasChapters && (
+        <div className="shrink-0 px-4 py-2 border-b border-[var(--border)] bg-[var(--accent)]/5">
+          <p className="text-xs text-[var(--text-2)]">
+            未识别到章节，将以全文模式阅读。
+          </p>
+        </div>
+      )}
+
       {/* Reading area */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto px-8 py-6 select-text"
+        className="flex-1 overflow-y-auto px-8 py-6 select-text relative"
         onScroll={handleScroll}
         style={{ userSelect: 'text' }}
       >
-        <div
-          className="max-w-2xl mx-auto whitespace-pre-wrap break-words leading-relaxed"
-          style={{
-            fontSize: `${settings.fontSize}px`,
-            lineHeight: settings.lineHeight,
-            color: 'var(--text-1)',
-          }}
-        >
-          {content || <span className="text-[var(--text-3)]">文件内容为空</span>}
-        </div>
+        {isLoadingText ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-2">
+              <Loader2 size={24} className="animate-spin text-[var(--accent)]" />
+              <p className="text-xs text-[var(--text-3)]">加载中...</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div
+              className="max-w-2xl mx-auto whitespace-pre-wrap break-words leading-relaxed"
+              style={{
+                fontSize: `${settings.fontSize}px`,
+                lineHeight: settings.lineHeight,
+                color: 'var(--text-1)',
+              }}
+            >
+              {content || <span className="text-[var(--text-3)]">文件内容为空</span>}
+            </div>
 
-        {/* End marker with progress */}
-        <div className="max-w-2xl mx-auto mt-12 pb-8 text-center">
-          <p className="text-xs text-[var(--text-3)]">
-            {percent === 100 ? '已读完' : `已阅读 ${percent}%`}
-          </p>
-        </div>
+            <div className="max-w-2xl mx-auto mt-12 pb-8 text-center">
+              {readingMode === 'chapter' && chapterIndex && currentChapterIdx < chapterIndex.length && (
+                <p className="text-xs text-[var(--text-3)] mb-1">
+                  {chapterIndex[currentChapterIdx].title}
+                </p>
+              )}
+              <p className="text-xs text-[var(--text-3)]">
+                {percent >= 99 ? '已读完' : `已阅读 ${percent}%`}
+              </p>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Bottom bar */}
       <div className="shrink-0 flex items-center justify-between px-4 py-2 border-t border-[var(--border)] bg-[var(--surface)]">
         <span className="text-xs text-[var(--text-3)]">
-          进度 {percent}%
+          {readingMode === 'chapter' && chapterIndex
+            ? `${currentChapterIdx + 1}/${chapterIndex.length}章`
+            : `进度 ${percent}%`}
         </span>
         <div className="flex items-center gap-2">
-          <button
-            className="p-2 rounded-lg hover:bg-[var(--border)] transition-colors text-[var(--text-2)]"
-            title="返回书架"
-            onClick={onBack}
-          >
+          <button className="p-2 rounded-lg hover:bg-[var(--border)] transition-colors text-[var(--text-2)]" title="返回书架" onClick={onBack}>
             <ArrowLeft size={16} />
           </button>
-          <button
-            className="p-2 rounded-lg hover:bg-[var(--border)] transition-colors text-[var(--text-2)]"
-            title="设置"
-            onClick={() => setShowSettings(true)}
-          >
+          <button className="p-2 rounded-lg hover:bg-[var(--border)] transition-colors text-[var(--text-2)]" title="设置" onClick={() => setShowSettings(true)}>
             <Settings size={16} />
           </button>
-          <button
-            className="p-2 rounded-lg hover:bg-[var(--border)] transition-colors text-[var(--text-2)]"
-            title="老板键 (Esc)"
-            onClick={handleBossKey}
-          >
+          <button className="p-2 rounded-lg hover:bg-[var(--border)] transition-colors text-[var(--text-2)]" title="老板键 (Esc)" onClick={handleBossKey}>
             <EyeOff size={16} />
           </button>
         </div>
       </div>
 
-      {/* Settings modal */}
       {showSettings && (
-        <SettingsPanel
-          settings={settings}
-          onChange={onSettingsChange}
-          onClose={() => setShowSettings(false)}
-        />
+        <SettingsPanel settings={settings} onChange={onSettingsChange} onClose={() => setShowSettings(false)} />
       )}
 
-      {/* Chapter panel */}
       {showChapters && (
-        <ChapterPanel
-          chapters={chapters}
-          activeIndex={activeChapter}
-          onSelect={handleChapterSelect}
-          onClose={() => setShowChapters(false)}
-        />
+        <ChapterPanel chapters={chapters} activeIndex={activeChapter} onSelect={handleChapterSelect} onClose={() => setShowChapters(false)} />
       )}
     </div>
   )
