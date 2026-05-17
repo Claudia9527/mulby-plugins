@@ -14,6 +14,8 @@ interface BookEntry {
   addedAt: number
   lastReadAt: number
   progress: number
+  currentChapterIdx?: number
+  chapterProgress?: number
   chapterCount: number
   totalChars: number
   indexing: boolean
@@ -279,6 +281,8 @@ export const host = {
       addedAt: existing?.addedAt ?? Date.now(),
       lastReadAt: existing?.lastReadAt ?? 0,
       progress: existing?.progress ?? 0,
+      currentChapterIdx: existing?.currentChapterIdx,
+      chapterProgress: existing?.chapterProgress,
       chapterCount: hasCompletedIndex ? storedIndex!.chapters.length : 0,
       totalChars: storedIndex?.totalChars ?? estimatedChars,
       indexing: !hasCompletedIndex,
@@ -388,12 +392,14 @@ export const host = {
     return true
   },
 
-  async saveProgress(ctx: PluginContext, bookId: string, progress: number): Promise<void> {
-    await ctx.api.storage.set(`${PROGRESS_PREFIX}${bookId}`, { progress, updatedAt: Date.now() })
+  async saveProgress(ctx: PluginContext, bookId: string, progress: number, chapterIndex?: number, chapterProgress?: number): Promise<void> {
+    await ctx.api.storage.set(`${PROGRESS_PREFIX}${bookId}`, { progress, chapterIndex, chapterProgress, updatedAt: Date.now() })
     const books = normalizeBooks(await ctx.api.storage.get(BOOKSHELF_KEY))
     const idx = books.findIndex((b) => b.id === bookId)
     if (idx !== -1) {
       books[idx].progress = progress
+      if (chapterIndex !== undefined) books[idx].currentChapterIdx = chapterIndex
+      if (chapterProgress !== undefined) books[idx].chapterProgress = chapterProgress
       books[idx].lastReadAt = Date.now()
       await ctx.api.storage.set(BOOKSHELF_KEY, books)
     }

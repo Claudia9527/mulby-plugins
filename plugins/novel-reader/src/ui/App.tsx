@@ -12,6 +12,8 @@ export interface BookEntry {
   addedAt: number
   lastReadAt: number
   progress: number
+  currentChapterIdx?: number
+  chapterProgress?: number
   chapterCount: number
   totalChars: number
   indexing: boolean

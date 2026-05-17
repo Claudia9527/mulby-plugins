@@ -255,9 +255,16 @@ export default function Reader({ book, settings, onBack, onSettingsChange }: {
         if (nextChapters.length > 0) {
           setChapterIndex(nextChapters)
           setHasChapters(true)
-          const exactProgress = initialProgress * nextChapters.length
-          const initialIdx = Math.max(0, Math.min(nextChapters.length - 1, Math.floor(exactProgress + 0.000001)))
-          const targetScroll = Math.max(0, Math.min(0.999, exactProgress - Math.floor(exactProgress + 0.000001)))
+          let initialIdx = 0
+          let targetScroll = 0
+          if (book.currentChapterIdx !== undefined && book.currentChapterIdx >= 0) {
+            initialIdx = book.currentChapterIdx
+            targetScroll = book.chapterProgress ?? 0
+          } else {
+            const exactProgress = initialProgress * nextChapters.length
+            initialIdx = Math.max(0, Math.min(nextChapters.length - 1, Math.floor(exactProgress + 0.000001)))
+            targetScroll = Math.max(0, Math.min(0.999, exactProgress - Math.floor(exactProgress + 0.000001)))
+          }
           await loadChapterByIndex(nextChapters, initialIdx, targetScroll)
         } else {
           setHasChapters(false)
@@ -358,10 +365,10 @@ export default function Reader({ book, settings, onBack, onSettingsChange }: {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      call('saveProgress', book.id, overallProgress)
+      call('saveProgress', book.id, overallProgress, readingMode === 'chapter' ? currentChapterIdx : -1, scrollProgress)
     }, 500)
     return () => clearTimeout(timer)
-  }, [overallProgress, book.id, host])
+  }, [overallProgress, currentChapterIdx, scrollProgress, readingMode, book.id, host])
 
   // ── Chapter navigation ──
 
