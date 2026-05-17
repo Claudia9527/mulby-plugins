@@ -1,7 +1,7 @@
 {
   "id": "screenshot-annotator",
   "name": "screenshot-annotator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "mulby",
   "type": "productivity",
   "displayName": "截图标注",
@@ -23,13 +23,14 @@
     "type": "borderless",
     "titleBar": false,
     "transparent": true,
+    "resizable": true,
     "alwaysOnTop": true,
     "position": "capture-region",
     "fit": "capture-region-with-toolbar",
     "captureToolbarHeight": 96,
-    "width": 960,
+    "width": 1080,
     "height": 636,
-    "minWidth": 760,
+    "minWidth": 1080,
     "minHeight": 120,
     "maxWidth": 4096,
     "maxHeight": 4096
@@ -52,6 +53,26 @@
         {
           "type": "keyword",
           "value": "annotate"
+        }
+      ]
+    },
+    {
+      "code": "history",
+      "explain": "截图历史",
+      "mode": "detached",
+      "route": "/index.html?mode=history",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "截图历史"
+        },
+        {
+          "type": "keyword",
+          "value": "screenshot history"
+        },
+        {
+          "type": "keyword",
+          "value": "history"
         }
       ]
     }

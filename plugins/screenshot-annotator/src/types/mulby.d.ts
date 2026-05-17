@@ -1450,6 +1450,11 @@ interface MulbyFilesystem {
   stat(path: string): Promise<FileStat | null>
   copy(src: string, dest: string): Promise<void>
   move(src: string, dest: string): Promise<void>
+  extname?(path: string): string
+  join?(...paths: string[]): string
+  dirname?(path: string): string
+  basename?(path: string, ext?: string): string
+  getDataPath?(...subPaths: string[]): string
 }
 
 interface MulbyHost {
