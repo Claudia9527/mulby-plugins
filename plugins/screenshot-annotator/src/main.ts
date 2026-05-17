@@ -20,11 +20,15 @@ export function onDisable() {
 
 // run 是插件入口，context 由宿主注入（包含 featureCode / input / attachments / api）
 export async function run(context: BackendPluginContext) {
-  if (context.featureCode !== 'annotate') {
+  if (context.featureCode === 'history') {
+    await mulby.window.setAlwaysOnTop?.(false)
+    await mulby.window.setBounds?.({ width: 960, height: 680 })
     return
   }
 
-  await mulby.window.setAlwaysOnTop?.(true)
+  if (context.featureCode === 'annotate') {
+    await mulby.window.setAlwaysOnTop?.(true)
+  }
 }
 
 export const rpc = {}

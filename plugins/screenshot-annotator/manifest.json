@@ -1,7 +1,7 @@
 {
   "id": "screenshot-annotator",
   "name": "screenshot-annotator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "mulby",
   "type": "productivity",
   "displayName": "截图标注",
@@ -53,6 +53,26 @@
         {
           "type": "keyword",
           "value": "annotate"
+        }
+      ]
+    },
+    {
+      "code": "history",
+      "explain": "截图历史",
+      "mode": "detached",
+      "route": "/index.html?mode=history",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "截图历史"
+        },
+        {
+          "type": "keyword",
+          "value": "screenshot history"
+        },
+        {
+          "type": "keyword",
+          "value": "history"
         }
       ]
     }

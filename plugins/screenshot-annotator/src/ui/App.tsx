@@ -8,6 +8,7 @@ import {
   FlipVertical,
   Grid3x3,
   Hash,
+  History as HistoryIcon,
   Highlighter,
   LucideIcon,
   Minus,
@@ -34,6 +35,13 @@ import {
   useRef,
   useState
 } from 'react'
+import HistoryView from './HistoryView'
+import {
+  createHistoryItem,
+  loadHistoryItem,
+  updateHistoryItem,
+  type ScreenshotHistoryItem
+} from './history'
 import { useMulby } from './hooks/useMulby'
 
 type Tool =
@@ -146,8 +154,12 @@ type PluginAttachment = {
 
 type PluginInitData = {
   featureCode: string
+  input?: string
+  route?: string
   attachments?: PluginAttachment[]
 }
+
+type AppMode = 'annotate' | 'history'
 
 type LoadedImage = {
   dataUrl: string
@@ -155,6 +167,8 @@ type LoadedImage = {
   width: number
   height: number
   region?: CaptureRegion
+  capture?: PluginAttachment['capture']
+  displaySize?: DisplaySize
   scaleFactor: number
 }
 
@@ -294,6 +308,67 @@ const defaultFileName = () => {
   return `screenshot-${stamp}.png`
 }
 
+function appendSearchParams(params: URLSearchParams, search: string) {
+  const query = search.startsWith('?') ? search.slice(1) : search
+  if (!query) {
+    return
+  }
+
+  new URLSearchParams(query).forEach((value, key) => {
+    params.set(key, value)
+  })
+}
+
+function collectLaunchParams(route?: string) {
+  const params = new URLSearchParams()
+  appendSearchParams(params, window.location.search)
+
+  const hashQueryIndex = window.location.hash.indexOf('?')
+  if (hashQueryIndex >= 0) {
+    appendSearchParams(params, window.location.hash.slice(hashQueryIndex + 1))
+  }
+
+  if (route) {
+    const routeQueryIndex = route.indexOf('?')
+    if (routeQueryIndex >= 0) {
+      appendSearchParams(params, route.slice(routeQueryIndex + 1))
+    } else if (route.startsWith('?')) {
+      appendSearchParams(params, route.slice(1))
+    }
+  }
+
+  return params
+}
+
+function parseLaunchMode(data?: Pick<PluginInitData, 'featureCode' | 'route'>): {
+  mode: AppMode
+  historyItemId?: string
+} {
+  const params = collectLaunchParams(data?.route)
+  const route = data?.route ?? ''
+  const modeParam = params.get('mode')
+  const historyItemId = params.get('historyItemId') ?? undefined
+
+  if (historyItemId) {
+    return { mode: 'annotate', historyItemId }
+  }
+
+  if (
+    data?.featureCode === 'history' ||
+    modeParam === 'history' ||
+    route === 'history' ||
+    route.endsWith('/history')
+  ) {
+    return { mode: 'history' }
+  }
+
+  return { mode: 'annotate' }
+}
+
+function getInitialMode(): AppMode {
+  return parseLaunchMode().mode
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
 }
@@ -308,6 +383,10 @@ function normalizeRect(start: Point, end: Point): Rect {
 }
 
 function getDisplaySize(image: LoadedImage) {
+  if (image.displaySize?.width && image.displaySize.height) {
+    return image.displaySize
+  }
+
   const regionWidth = image.region?.width
   const regionHeight = image.region?.height
 
@@ -1499,11 +1578,182 @@ function exportPng(image: LoadedImage, annotations: Annotation[]) {
   return canvas.toDataURL('image/png')
 }
 
+function asFiniteNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function asPoint(value: unknown): Point | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const point = value as { x?: unknown; y?: unknown }
+  const x = asFiniteNumber(point.x)
+  const y = asFiniteNumber(point.y)
+
+  return x === null || y === null ? null : { x, y }
+}
+
+function asColor(value: unknown) {
+  return typeof value === 'string' && value ? value : COLORS[0]
+}
+
+function asSize(value: unknown, fallback: number) {
+  const size = asFiniteNumber(value)
+  return size === null ? fallback : Math.max(1, size)
+}
+
+function normalizeAnnotations(value: unknown): Annotation[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.flatMap((raw): Annotation[] => {
+    if (!raw || typeof raw !== 'object') {
+      return []
+    }
+
+    const annotation = raw as Record<string, unknown>
+    const id = typeof annotation.id === 'string' && annotation.id ? annotation.id : createId('history')
+    const type = annotation.type
+    const color = asColor(annotation.color)
+
+    if (type === 'pen' || type === 'highlighter') {
+      const points = Array.isArray(annotation.points)
+        ? annotation.points.map(asPoint).filter((point): point is Point => Boolean(point))
+        : []
+
+      return [{
+        id,
+        type,
+        points,
+        color,
+        size: asSize(annotation.size, type === 'highlighter' ? 12 : 5)
+      }]
+    }
+
+    if (type === 'line' || type === 'rect' || type === 'ellipse' || type === 'arrow') {
+      const start = asPoint(annotation.start)
+      const end = asPoint(annotation.end)
+      if (!start || !end) {
+        return []
+      }
+
+      return [{
+        id,
+        type,
+        start,
+        end,
+        color,
+        size: asSize(annotation.size, 5)
+      }]
+    }
+
+    if (type === 'mosaic' || type === 'blur') {
+      const start = asPoint(annotation.start)
+      const end = asPoint(annotation.end)
+      if (!start || !end) {
+        return []
+      }
+
+      return [{
+        id,
+        type,
+        start,
+        end,
+        color,
+        size: asSize(annotation.size, type === 'mosaic' ? 18 : 14)
+      }]
+    }
+
+    if (type === 'text') {
+      const point = asPoint(annotation.point)
+      if (!point) {
+        return []
+      }
+
+      const boxWidth = asFiniteNumber(annotation.boxWidth)
+
+      return [{
+        id,
+        type,
+        point,
+        text: typeof annotation.text === 'string' ? annotation.text : '',
+        color,
+        size: asSize(annotation.size, 28),
+        boxWidth: boxWidth === null ? undefined : boxWidth
+      }]
+    }
+
+    if (type === 'step') {
+      const point = asPoint(annotation.point)
+      if (!point) {
+        return []
+      }
+
+      return [{
+        id,
+        type,
+        point,
+        value: typeof annotation.value === 'string' ? annotation.value : '1',
+        color,
+        size: asSize(annotation.size, 28)
+      }]
+    }
+
+    return []
+  })
+}
+
+function getHistoryCaptureRegion(item: ScreenshotHistoryItem): CaptureRegion | undefined {
+  const capture = item.capture as { region?: unknown } | undefined
+  const region = capture?.region
+
+  if (!region || typeof region !== 'object') {
+    return undefined
+  }
+
+  const source = region as Record<string, unknown>
+  const x = asFiniteNumber(source.x)
+  const y = asFiniteNumber(source.y)
+  const width = asFiniteNumber(source.width)
+  const height = asFiniteNumber(source.height)
+
+  if (x === null || y === null || width === null || height === null) {
+    return undefined
+  }
+
+  return {
+    x,
+    y,
+    width,
+    height,
+    scaleFactor: asFiniteNumber(source.scaleFactor) ?? undefined
+  }
+}
+
+function getHistoryScaleFactor(item: ScreenshotHistoryItem) {
+  const capture = item.capture as {
+    region?: { scaleFactor?: unknown }
+    display?: { scaleFactor?: unknown }
+  } | undefined
+
+  return (
+    item.imageMeta.scaleFactor ??
+    asFiniteNumber(capture?.region?.scaleFactor) ??
+    asFiniteNumber(capture?.display?.scaleFactor) ??
+    window.devicePixelRatio ??
+    1
+  )
+}
+
 export default function App() {
   const mulby = useMulby(PLUGIN_ID)
   const canvasShellRef = useRef<HTMLElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const annotationsRef = useRef<Annotation[]>([])
+  const imageRef = useRef<LoadedImage | null>(null)
+  const activeHistoryItemIdRef = useRef<string | null>(null)
   const activeDraftRef = useRef<Annotation | null>(null)
   const editDragRef = useRef<EditDragState | null>(null)
   const dragStartRef = useRef<Point | null>(null)
@@ -1535,6 +1785,7 @@ export default function App() {
     rafId: number
   } | null>(null)
 
+  const [mode, setMode] = useState<AppMode>(getInitialMode)
   const [image, setImage] = useState<LoadedImage | null>(null)
   const [pendingPreview, setPendingPreview] = useState<PendingPreview | null>(null)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
@@ -1702,13 +1953,171 @@ export default function App() {
       resetEditingState()
       setStatus(nextStatus)
       void applyWindowBoundsForImage(getDisplaySize(nextImage), undefined, true)
+      return nextImage
     },
     [applyWindowBoundsForImage, replaceAnnotations, resetEditingState]
   )
 
+  const flushInlineEditorsForPersistence = useCallback(() => {
+    const currentTextEdit = inlineTextEditRef.current
+    if (currentTextEdit) {
+      const text = currentTextEdit.text.trim()
+      const textAnnotation: TextAnnotation | null = text
+        ? {
+            id: currentTextEdit.id,
+            type: 'text',
+            point: currentTextEdit.point,
+            text,
+            color: currentTextEdit.color,
+            size: currentTextEdit.size,
+            boxWidth: currentTextEdit.boxWidth
+          }
+        : null
+      const nextAnnotations = textAnnotation
+        ? [
+            ...annotationsRef.current.slice(0, currentTextEdit.insertIndex),
+            textAnnotation,
+            ...annotationsRef.current.slice(currentTextEdit.insertIndex)
+          ]
+        : annotationsRef.current
+
+      annotationsRef.current = nextAnnotations
+      setAnnotations(nextAnnotations)
+      inlineTextEditRef.current = null
+      textEditSnapshotRef.current = null
+      setInlineTextEdit(null)
+    }
+
+    const currentStepEdit = inlineStepEditRef.current
+    if (currentStepEdit) {
+      const value = currentStepEdit.value.trim().replace(/\s+/g, ' ').slice(0, STEP_LABEL_MAX_LENGTH)
+
+      if (value) {
+        const nextAnnotations = annotationsRef.current.map((annotation) => (
+          annotation.id === currentStepEdit.id && annotation.type === 'step'
+            ? { ...annotation, value }
+            : annotation
+        ))
+        annotationsRef.current = nextAnnotations
+        setAnnotations(nextAnnotations)
+      }
+
+      inlineStepEditRef.current = null
+      setInlineStepEdit(null)
+    }
+  }, [])
+
+  const persistCurrentHistory = useCallback(
+    async (options?: {
+      finalDataUrl?: string
+      baseDataUrl?: string
+      annotations?: Annotation[]
+      imageOverride?: LoadedImage | null
+    }) => {
+      const historyItemId = activeHistoryItemIdRef.current
+      const currentImage = options?.imageOverride ?? imageRef.current
+
+      if (!historyItemId || !currentImage) {
+        return null
+      }
+
+      flushInlineEditorsForPersistence()
+
+      const currentAnnotations = options?.annotations ?? annotationsRef.current
+      const finalDataUrl = options?.finalDataUrl ?? exportPng(currentImage, currentAnnotations)
+
+      return updateHistoryItem(mulby, historyItemId, {
+        finalDataUrl,
+        baseDataUrl: options?.baseDataUrl,
+        annotations: currentAnnotations,
+        width: currentImage.width,
+        height: currentImage.height,
+        displaySize: getDisplaySize(currentImage),
+        capture: currentImage.capture,
+        imageMeta: {
+          mime: 'image/png',
+          scaleFactor: currentImage.scaleFactor
+        }
+      })
+    },
+    [flushInlineEditorsForPersistence, mulby]
+  )
+
+  const persistCurrentHistoryQuietly = useCallback(
+    async (options?: Parameters<typeof persistCurrentHistory>[0]) => {
+      try {
+        await persistCurrentHistory(options)
+      } catch (error) {
+        console.warn('[screenshot-annotator] 保存截图历史失败:', error)
+      }
+    },
+    [persistCurrentHistory]
+  )
+
+  const loadImageFromHistory = useCallback(
+    async (historyItemId: string) => {
+      const token = imageLoadTokenRef.current + 1
+      imageLoadTokenRef.current = token
+
+      try {
+        setImage(null)
+        setPendingPreview(null)
+        replaceAnnotations([], { keepRedo: false })
+        setUndoStack([])
+        setRedoStack([])
+        resetEditingState()
+        setStatus('正在载入历史截图')
+
+        const { item, editableDataUrl } = await loadHistoryItem(mulby, historyItemId)
+        const element = await loadImage(editableDataUrl)
+        if (imageLoadTokenRef.current !== token) {
+          return
+        }
+
+        const region = getHistoryCaptureRegion(item)
+        const nextImage: LoadedImage = {
+          dataUrl: editableDataUrl,
+          element,
+          width: element.naturalWidth,
+          height: element.naturalHeight,
+          region,
+          capture: item.capture as PluginAttachment['capture'],
+          displaySize: item.displaySize,
+          scaleFactor: getHistoryScaleFactor(item)
+        }
+
+        activeHistoryItemIdRef.current = item.id
+        setImage(nextImage)
+        replaceAnnotations(normalizeAnnotations(item.annotations), { keepRedo: false })
+        setUndoStack([])
+        setRedoStack([])
+        setPendingPreview(null)
+        setStatus(`${element.naturalWidth} x ${element.naturalHeight}`)
+        void applyWindowBoundsForImage(getDisplaySize(nextImage), region, !region)
+      } catch (error) {
+        if (imageLoadTokenRef.current !== token) {
+          return
+        }
+        const message = error instanceof Error ? error.message : '历史截图打开失败'
+        setStatus(message)
+        mulby.notification.show(message, 'error')
+      }
+    },
+    [applyWindowBoundsForImage, mulby, replaceAnnotations, resetEditingState]
+  )
+
+  const closeAnnotatorWindow = useCallback(async () => {
+    await persistCurrentHistoryQuietly()
+    mulby.window.close()
+  }, [mulby.window, persistCurrentHistoryQuietly])
+
   useEffect(() => {
     annotationsRef.current = annotations
   }, [annotations])
+
+  useEffect(() => {
+    imageRef.current = image
+  }, [image])
 
   useEffect(() => {
     const shell = canvasShellRef.current
@@ -1756,6 +2165,16 @@ export default function App() {
   }, [annotations, cropRect, draft, draftCropRect, image, imageToCssScale, selectedAnnotationId])
 
   useEffect(() => {
+    if (mode !== 'annotate') {
+      document.documentElement.classList.remove('transparent')
+      document.documentElement.classList.add('history-window')
+      window.mulby?.window?.setAlwaysOnTop?.(false)
+      return () => {
+        document.documentElement.classList.remove('history-window')
+      }
+    }
+
+    document.documentElement.classList.remove('history-window')
     document.documentElement.classList.add('transparent')
     window.mulby?.window?.setAlwaysOnTop?.(true)
 
@@ -1817,7 +2236,7 @@ export default function App() {
           return
         }
 
-        window.mulby?.window?.close()
+        void closeAnnotatorWindow()
       }
     }
 
@@ -1835,17 +2254,46 @@ export default function App() {
       }
     }
   }, [
+    closeAnnotatorWindow,
     cropRect,
     draft,
     draftCropRect,
     activeEditMode,
+    mode,
     replaceAnnotations,
     resetEditingState,
     selectedAnnotationId
   ])
 
   useEffect(() => {
-    window.mulby?.onPluginInit?.((data: PluginInitData) => {
+    if (mode !== 'annotate') {
+      return
+    }
+
+    const onBeforeUnload = () => {
+      void persistCurrentHistoryQuietly()
+    }
+
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [mode, persistCurrentHistoryQuietly])
+
+  useEffect(() => {
+    const dispose = window.mulby?.onPluginInit?.((data: PluginInitData) => {
+      const launch = parseLaunchMode(data)
+      setMode(launch.mode)
+
+      if (launch.mode === 'history') {
+        return
+      }
+
+      if (launch.historyItemId) {
+        void loadImageFromHistory(launch.historyItemId)
+        return
+      }
+
       const attachment = data.attachments?.find((item) => item.kind === 'image')
       if (!attachment?.dataUrl) {
         setStatus('没有收到截图')
@@ -1875,6 +2323,7 @@ export default function App() {
           setUndoStack([])
           setRedoStack([])
           resetEditingState()
+          activeHistoryItemIdRef.current = null
           setStatus('正在载入截图')
 
           void applyWindowBoundsForImage(previewSize, region, !region)
@@ -1890,12 +2339,32 @@ export default function App() {
             width: element.naturalWidth,
             height: element.naturalHeight,
             region,
+            capture: attachment.capture,
+            displaySize: region ? previewSize : undefined,
             scaleFactor
           }
 
           setImage(nextImage)
           setPendingPreview(null)
           setStatus(`${element.naturalWidth} x ${element.naturalHeight}`)
+
+          try {
+            const historyItem = await createHistoryItem(mulby, {
+              rawDataUrl: dataUrl,
+              annotations: [],
+              width: nextImage.width,
+              height: nextImage.height,
+              displaySize: getDisplaySize(nextImage),
+              capture: attachment.capture,
+              imageMeta: {
+                mime: attachment.mime ?? 'image/png',
+                scaleFactor
+              }
+            })
+            activeHistoryItemIdRef.current = historyItem.id
+          } catch (historyError) {
+            console.warn('[screenshot-annotator] 创建截图历史失败:', historyError)
+          }
 
           if (!region) {
             const displaySize = getDisplaySize(nextImage)
@@ -1912,7 +2381,11 @@ export default function App() {
         }
       })()
     })
-  }, [applyWindowBoundsForImage, replaceAnnotations, resetEditingState])
+
+    return () => {
+      dispose?.()
+    }
+  }, [applyWindowBoundsForImage, loadImageFromHistory, mulby, replaceAnnotations, resetEditingState])
 
   useEffect(() => {
     if (inlineTextEdit && inlineTextRef.current) {
@@ -2741,6 +3214,22 @@ export default function App() {
     setStatus('已清空')
   }, [inlineStepEdit, inlineTextEdit, replaceAnnotations])
 
+  const handleOpenHistory = useCallback(async () => {
+    await persistCurrentHistoryQuietly()
+    await mulby.window.create('/index.html?mode=history', {
+      width: 960,
+      height: 680,
+      minWidth: 760,
+      minHeight: 520,
+      title: '截图历史',
+      resizable: true,
+      alwaysOnTop: false,
+      transparent: false,
+      type: 'default',
+      titleBar: true
+    })
+  }, [mulby.window, persistCurrentHistoryQuietly])
+
   const handleCopy = useCallback(async () => {
     if (!image) {
       return
@@ -2755,7 +3244,9 @@ export default function App() {
     }
 
     try {
-      await mulby.clipboard.writeImage(exportPng(image, annotationsRef.current))
+      const finalDataUrl = exportPng(image, annotationsRef.current)
+      await mulby.clipboard.writeImage(finalDataUrl)
+      await persistCurrentHistoryQuietly({ finalDataUrl })
       setStatus('已复制')
       mulby.notification.show('已复制到剪贴板', 'success')
     } catch (error) {
@@ -2770,7 +3261,8 @@ export default function App() {
     inlineStepEdit,
     inlineTextEdit,
     mulby.clipboard,
-    mulby.notification
+    mulby.notification,
+    persistCurrentHistoryQuietly
   ])
 
   const handleSave = useCallback(async () => {
@@ -2799,11 +3291,13 @@ export default function App() {
       }
 
       const finalPath = ensurePngPath(pickedPath)
+      const finalDataUrl = exportPng(image, annotationsRef.current)
       await mulby.filesystem.writeFile(
         finalPath,
-        dataUrlToBase64(exportPng(image, annotationsRef.current)),
+        dataUrlToBase64(finalDataUrl),
         'base64'
       )
+      await persistCurrentHistoryQuietly({ finalDataUrl })
       setStatus('已保存')
       mulby.notification.show('已保存截图', 'success')
     } catch (error) {
@@ -2819,7 +3313,8 @@ export default function App() {
     inlineTextEdit,
     mulby.dialog,
     mulby.filesystem,
-    mulby.notification
+    mulby.notification,
+    persistCurrentHistoryQuietly
   ])
 
   const runSharpTransform = useCallback(
@@ -2851,8 +3346,16 @@ export default function App() {
 
       try {
         const currentDataUrl = exportPng(image, annotationsRef.current)
+        await persistCurrentHistoryQuietly({ finalDataUrl: currentDataUrl })
         const output = await transform(sharpApi(dataUrlToArrayBuffer(currentDataUrl)))
-        await loadTransformedImage(arrayBufferToDataUrl(output), image, successLabel)
+        const transformedDataUrl = arrayBufferToDataUrl(output)
+        const nextImage = await loadTransformedImage(transformedDataUrl, image, successLabel)
+        await persistCurrentHistoryQuietly({
+          finalDataUrl: transformedDataUrl,
+          baseDataUrl: transformedDataUrl,
+          annotations: [],
+          imageOverride: nextImage
+        })
         mulby.notification.show(successLabel, 'success')
       } catch (error) {
         const message = error instanceof Error ? error.message : `${busyLabel}失败`
@@ -2869,7 +3372,8 @@ export default function App() {
       inlineStepEdit,
       inlineTextEdit,
       loadTransformedImage,
-      mulby.notification
+      mulby.notification,
+      persistCurrentHistoryQuietly
     ]
   )
 
@@ -3084,6 +3588,10 @@ export default function App() {
         }
       })()
     : null
+
+  if (mode === 'history') {
+    return <HistoryView mulby={mulby} />
+  }
 
   return (
     <div className={`annotator-root ${hasVisualContent ? '' : 'is-empty'}`}>
@@ -3300,6 +3808,9 @@ export default function App() {
             </label>
 
             <div className="tool-group history-group">
+              <button className="icon-button" title="截图历史" type="button" onClick={() => void handleOpenHistory()}>
+                <HistoryIcon size={18} />
+              </button>
               <button className="icon-button" title="撤销" type="button" onClick={handleUndo} disabled={!undoStack.length}>
                 <Undo2 size={18} />
               </button>
@@ -3369,7 +3880,7 @@ export default function App() {
                 <Save size={17} />
                 保存
               </button>
-              <button className="icon-button close-button" title="关闭" type="button" onClick={() => mulby.window.close()}>
+              <button className="icon-button close-button" title="关闭" type="button" onClick={() => void closeAnnotatorWindow()}>
                 <X size={18} />
               </button>
             </div>
