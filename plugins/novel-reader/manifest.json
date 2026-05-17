@@ -1,0 +1,47 @@
+{
+  "id": "novel-reader",
+  "name": "novel-reader",
+  "version": "1.0.0",
+  "author": "mulby",
+  "type": "entertainment",
+  "displayName": "小说阅读",
+  "description": "本地小说阅读器，支持 .txt 文件，书架管理和阅读进度追踪",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "permissions": {
+    "filesystem": true
+  },
+  "pluginSetting": {
+    "single": true,
+    "height": 800,
+    "background": true,
+    "persistent": true
+  },
+  "window": {
+    "width": 900,
+    "height": 700,
+    "minWidth": 600,
+    "minHeight": 480
+  },
+  "features": [
+    {
+      "code": "open-bookshelf",
+      "explain": "打开小说书架",
+      "mode": "ui",
+      "cmds": [
+        { "type": "keyword", "value": "小说阅读" },
+        { "type": "keyword", "value": "阅读" },
+        { "type": "keyword", "value": "novel" }
+      ]
+    },
+    {
+      "code": "open-file",
+      "explain": "打开小说文件",
+      "mode": "ui",
+      "cmds": [
+        { "type": "files", "exts": [".txt"], "fileType": "file" }
+      ]
+    }
+  ]
+}
