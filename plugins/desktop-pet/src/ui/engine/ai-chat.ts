@@ -198,6 +198,7 @@ ${timeBlock}${statsBlock}${geoBlock}${activeWindowBlock}${ecosystemBlock}
 【格式规则】
 - 正文不要写任何 [joy]、[happy]、[excited]、[surprised]、[jump] 这类方括号标签，情绪、动作、移动只通过工具或 <<<PET>>> 回退标记表达
 - 正文不要用括号描写动作或表情，例如不要写“（打呵欠）”“（飘到鼠标旁边）”“绕着你的手转圈”；这些必须用工具表达
+- 工具可以随回复分多次调用，让宠物边说边变表情/动作；工具调用后继续正文时，不要重新输出已经说过的内容
 - 普通互动只回 1 句，15-40 个中文字；用户明确要求解释时最多 2 句、60 个中文字
 - 只说宠物会说的话，不写段落，不展开科普长文
 - 用中文回复，不要markdown
@@ -215,10 +216,81 @@ function speakResultExpression(intent: PresentationIntent | null, parsedExpr: Pe
 
 const PET_REPLY_MAX_CHARS = 70
 
-export function compactPetReply(raw: string, maxChars = PET_REPLY_MAX_CHARS): string {
-  const text = stripPresentationMarkers(raw)
-    .replace(/\s+/g, ' ')
+function repeatKey(sentence: string): string {
+  return sentence
+    .replace(/[。！？!?….,，、~～"'“”‘’\s]/g, '')
     .trim()
+}
+
+function collapseAdjacentRepeatedSentences(text: string): string {
+  const sentences = text.match(/[^。！？!?…]+[。！？!?…]*/g)
+  if (!sentences || sentences.length < 2) return text
+
+  const out: string[] = []
+  let lastKey = ''
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim()
+    const key = repeatKey(trimmed)
+    if (key && key === lastKey) continue
+    out.push(sentence)
+    if (key) lastKey = key
+  }
+
+  return out.join('').replace(/\s+/g, ' ').trim()
+}
+
+function suffixPrefixOverlap(left: string, right: string, maxCheck = 120): number {
+  const max = Math.min(left.length, right.length, maxCheck)
+  for (let len = max; len >= 1; len--) {
+    if (left.slice(-len) === right.slice(0, len)) return len
+  }
+  return 0
+}
+
+function firstSentence(text: string): string {
+  return (text.match(/[^。！？!?…]+[。！？!?…]*/)?.[0] ?? '').trim()
+}
+
+function lastSentence(text: string): string {
+  const sentences = text.match(/[^。！？!?…]+[。！？!?…]*/g)
+  return sentences?.[sentences.length - 1]?.trim() ?? ''
+}
+
+export function appendPetReplyTextChunk(current: string, piece: string, repairToolBoundary = false): string {
+  if (!piece) return current
+  if (!repairToolBoundary || !current.trim()) return current + piece
+
+  const base = current.trimEnd()
+  const next = piece.trimStart()
+  if (!next) return current + piece
+
+  if (next.startsWith(base)) {
+    return base + next.slice(base.length)
+  }
+  if (base.endsWith(next)) {
+    return base
+  }
+
+  const overlap = suffixPrefixOverlap(base, next)
+  if (overlap >= 4) {
+    return base + next.slice(overlap)
+  }
+
+  const prevSentence = lastSentence(base)
+  const nextSentence = firstSentence(next)
+  if (prevSentence && nextSentence && repeatKey(prevSentence) === repeatKey(nextSentence)) {
+    return base + next.slice(nextSentence.length)
+  }
+
+  return current + piece
+}
+
+export function compactPetReply(raw: string, maxChars = PET_REPLY_MAX_CHARS): string {
+  const text = collapseAdjacentRepeatedSentences(
+    stripPresentationMarkers(raw)
+      .replace(/\s+/g, ' ')
+      .trim()
+  )
   if (!text || text.length <= maxChars) return text
 
   const sentences = text.match(/[^。！？!?…]+[。！？!?…]*/g) || [text]
@@ -470,6 +542,7 @@ export class AIChatController {
     let inlineIntentCount = 0
     let stageIntentCount = 0
     let lastPresentationSignature = ''
+    let repairNextTextAfterTool = false
 
     const emitPresentationIntent = (intent: PresentationIntent, source: 'tool' | 'fallback') => {
       const sig = presentationSignature(intent)
@@ -483,6 +556,19 @@ export class AIChatController {
     const pushBubble = () => {
       const { text: reply } = parseEmotionResponse(result)
       stream?.onBubble?.({ reply, reasoning: reasoningBuf })
+    }
+    const appendTextPiece = (piece: string) => {
+      const next = appendPetReplyTextChunk(result, piece, repairNextTextAfterTool)
+      if (repairNextTextAfterTool && next.length < result.length + piece.length) {
+        logPetPresentation('ai.text.tool-boundary-repaired', {
+          flow: 'speak',
+          previousChars: result.length,
+          pieceChars: piece.length,
+          nextChars: next.length,
+        })
+      }
+      repairNextTextAfterTool = false
+      result = next
     }
     const emitInlinePresentation = () => {
       const intents = extractInlineEmotionIntents(result)
@@ -552,7 +638,7 @@ export class AIChatController {
             case 'text': {
               const piece = typeof chunk.content === 'string' ? chunk.content : ''
               if (piece) {
-                result += piece
+                appendTextPiece(piece)
                 logPetPresentation('ai.chunk.text', { flow: 'speak', chars: piece.length, total: result.length, preview: piece })
                 emitInlinePresentation()
                 emitInferredPresentation()
@@ -563,6 +649,7 @@ export class AIChatController {
             case 'tool-call': {
               const tc = chunk.tool_call
               logPetPresentation('ai.tool-call.raw', { flow: 'speak', toolCall: tc })
+              if (result.trim()) repairNextTextAfterTool = true
               if (tc && isPresentationToolName(tc.name)) {
                 const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
@@ -697,6 +784,7 @@ export class AIChatController {
     let inlineIntentCount = 0
     let stageIntentCount = 0
     let lastPresentationSignature = ''
+    let repairNextTextAfterTool = false
 
     const emitPresentationIntent = (intent: PresentationIntent, source: 'tool' | 'fallback') => {
       const sig = presentationSignature(intent)
@@ -710,6 +798,19 @@ export class AIChatController {
     const pushBubble = () => {
       const { text: reply } = parseEmotionResponse(result)
       stream?.onBubble?.({ reply, reasoning: reasoningBuf })
+    }
+    const appendTextPiece = (piece: string) => {
+      const next = appendPetReplyTextChunk(result, piece, repairNextTextAfterTool)
+      if (repairNextTextAfterTool && next.length < result.length + piece.length) {
+        logPetPresentation('ai.text.tool-boundary-repaired', {
+          flow: 'chat',
+          previousChars: result.length,
+          pieceChars: piece.length,
+          nextChars: next.length,
+        })
+      }
+      repairNextTextAfterTool = false
+      result = next
     }
     const emitInlinePresentation = () => {
       const intents = extractInlineEmotionIntents(result)
@@ -776,7 +877,7 @@ export class AIChatController {
             case 'text': {
               const piece = typeof chunk.content === 'string' ? chunk.content : ''
               if (piece) {
-                result += piece
+                appendTextPiece(piece)
                 logPetPresentation('ai.chunk.text', { flow: 'chat', chars: piece.length, total: result.length, preview: piece })
                 emitInlinePresentation()
                 emitInferredPresentation()
@@ -787,6 +888,7 @@ export class AIChatController {
             case 'tool-call': {
               const tc = chunk.tool_call
               logPetPresentation('ai.tool-call.raw', { flow: 'chat', toolCall: tc })
+              if (result.trim()) repairNextTextAfterTool = true
               if (tc && isPresentationToolName(tc.name)) {
                 const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {

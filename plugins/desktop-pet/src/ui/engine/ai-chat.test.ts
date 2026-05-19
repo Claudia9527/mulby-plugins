@@ -1,4 +1,4 @@
-import { buildCurrentTimeContext, compactPetReply } from './ai-chat'
+import { appendPetReplyTextChunk, buildCurrentTimeContext, compactPetReply } from './ai-chat'
 
 function assert(condition: unknown, message: string) {
   if (!condition) throw new Error(message)
@@ -22,6 +22,38 @@ function testCompactPetReplyHidesStageDirections() {
   assert(actual.startsWith('我说'), `dialogue should remain: ${actual}`)
 }
 
+function testCompactPetReplyCollapsesAdjacentDuplicateSentences() {
+  const input = '嘿嘿~主人敲键盘好起劲呀，我在旁边看着都跟着飘起来了！嘿嘿~主人敲键盘好起劲呀，我在旁边看着都跟着飘起来了！'
+  const actual = compactPetReply(input)
+
+  assert(
+    actual === '嘿嘿~主人敲键盘好起劲呀，我在旁边看着都跟着飘起来了！',
+    `duplicate adjacent sentence should be collapsed: ${actual}`
+  )
+}
+
+function testToolBoundaryRepairKeepsInterleavedText() {
+  const beforeTool = '嘿嘿~主人敲键盘好起劲呀！'
+  const afterTool = '我在旁边看着都跟着飘起来了！'
+  const actual = appendPetReplyTextChunk(beforeTool, afterTool, true)
+
+  assert(
+    actual === '嘿嘿~主人敲键盘好起劲呀！我在旁边看着都跟着飘起来了！',
+    `distinct text across tool boundary should be kept: ${actual}`
+  )
+}
+
+function testToolBoundaryRepairRemovesRestartedText() {
+  const beforeTool = '嘿嘿~主人敲键盘好起劲呀！'
+  const afterTool = '嘿嘿~主人敲键盘好起劲呀！我在旁边看着都跟着飘起来了！'
+  const actual = appendPetReplyTextChunk(beforeTool, afterTool, true)
+
+  assert(
+    actual === '嘿嘿~主人敲键盘好起劲呀！我在旁边看着都跟着飘起来了！',
+    `restarted text after tool boundary should be repaired: ${actual}`
+  )
+}
+
 function testCurrentTimeContextIncludesConcreteLocalDateAndTime() {
   const actual = buildCurrentTimeContext(new Date(2026, 4, 11, 10, 4))
 
@@ -32,4 +64,7 @@ function testCurrentTimeContextIncludesConcreteLocalDateAndTime() {
 
 testCompactPetReplyRemovesPresentationNoiseAndKeepsBubbleShort()
 testCompactPetReplyHidesStageDirections()
+testCompactPetReplyCollapsesAdjacentDuplicateSentences()
+testToolBoundaryRepairKeepsInterleavedText()
+testToolBoundaryRepairRemovesRestartedText()
 testCurrentTimeContextIncludesConcreteLocalDateAndTime()
