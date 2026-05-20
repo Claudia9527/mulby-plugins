@@ -111,6 +111,14 @@ export function decideBehavior(state: PetState, event: InputEvent | null): Behav
   return behavior
 }
 
+export function stopMouseFollow(state: PetState): void {
+  if (state.behavior === 'chase' || state.behavior === 'look') {
+    state.behavior = 'idle'
+    state.animTimer = 0
+  }
+  state.velocity = { x: 0, y: 0 }
+}
+
 const CHASE_STOP_DIST = 100
 
 export function getVelocity(state: PetState, bounds: DisplayBounds): Point {
@@ -159,4 +167,3 @@ export function updatePosition(state: PetState, bounds: DisplayBounds): void {
   if (state.velocity.x > 0.1) state.facing = 'right'
   if (state.velocity.x < -0.1) state.facing = 'left'
 }
-

@@ -4,6 +4,7 @@ import {
   createInitialState,
   decideBehavior,
   getVelocity,
+  stopMouseFollow,
   updatePosition,
 } from './engine/behavior'
 import type { PetState, DisplayBounds, BehaviorType } from './engine/types'
@@ -998,6 +999,10 @@ export default function PetView() {
   const showContextMenu = useCallback(async () => {
     if (contextMenuOpenRef.current) return
     contextMenuOpenRef.current = true
+    const menuState = stateRef.current
+    if (menuState) stopMouseFollow(menuState)
+    mouseMoveSumRef.current = 0
+    clickBurstRef.current = []
 
     const stats = statsRef.current.getStats()
     const quests = questsRef.current.getState()
@@ -1290,6 +1295,19 @@ export default function PetView() {
       window.mulby.inputMonitor.onEvent((event: any) => {
         const s = stateRef.current
         if (!s) return
+
+        if (
+          contextMenuOpenRef.current
+          && (
+            event.type === 'mouseMove'
+            || event.type === 'mouseDown'
+            || event.type === 'mouseUp'
+            || event.type === 'mouseScroll'
+          )
+        ) {
+          stopMouseFollow(s)
+          return
+        }
 
         if (event.type === 'mouseMove') {
           syncMousePassthroughFromPoint({ x: event.x, y: event.y })
@@ -1742,23 +1760,27 @@ export default function PetView() {
       state.behavior = 'wander'
       if (move.targetX < move.startX) state.facing = 'left'
       if (move.targetX > move.startX) state.facing = 'right'
-          if (progress >= 1) {
-            state.position.x = move.targetX
-            state.position.y = move.targetY
-            presentationMoveRef.current = null
-            logPetPresentation('pet.move.done', {
-              position: { x: state.position.x, y: state.position.y },
-            })
-          }
-    } else {
-      const timeBehavior = decideBehavior(state, null)
-      if (timeBehavior !== state.behavior) {
-        state.behavior = timeBehavior
-        state.animTimer = 0
+      if (progress >= 1) {
+        state.position.x = move.targetX
+        state.position.y = move.targetY
+        presentationMoveRef.current = null
+        logPetPresentation('pet.move.done', {
+          position: { x: state.position.x, y: state.position.y },
+        })
       }
+    } else {
+      if (contextMenuOpenRef.current) {
+        stopMouseFollow(state)
+      } else {
+        const timeBehavior = decideBehavior(state, null)
+        if (timeBehavior !== state.behavior) {
+          state.behavior = timeBehavior
+          state.animTimer = 0
+        }
 
-      state.velocity = getVelocity(state, bounds)
-      updatePosition(state, bounds)
+        state.velocity = getVelocity(state, bounds)
+        updatePosition(state, bounds)
+      }
     }
 
     if (svgRendererRef.current) {
