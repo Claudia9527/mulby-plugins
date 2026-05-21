@@ -1,13 +1,17 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, startTransition } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { useCallback, useEffect, useRef, useState, startTransition } from 'react'
+import Editor, { type EditorType } from '@toast-ui/editor'
+import '@toast-ui/editor/dist/toastui-editor.css'
+import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
 import {
   Bold,
-  ClipboardPaste,
+  ChevronDown,
+  ChevronUp,
   CheckSquare,
+  ClipboardPaste,
   Code2,
   Copy,
   Eraser,
+  FileCode2,
   FileDown,
   FileInput,
   Heading1,
@@ -17,20 +21,16 @@ import {
   List,
   Quote,
   Save,
+  ScanText,
   SeparatorHorizontal
 } from 'lucide-react'
 import { useMulby } from './hooks/useMulby'
 
 const PLUGIN_ID = 'markdown-editor'
 const STORAGE_DRAFT_KEY = 'draft:markdown-editor:v1'
+const STORAGE_CHROME_KEY = 'ui:markdown-editor:chrome-collapsed:v1'
 const DEFAULT_EXPORT_NAME = 'markdown-note.md'
-const EDITOR_PLACEHOLDER = [
-  '# 在这里开始写 Markdown',
-  '',
-  '- 左侧编辑',
-  '- 右侧实时预览',
-  '- `Cmd/Ctrl + S` 可立即保存草稿'
-].join('\n')
+const EDITOR_PLACEHOLDER = '在这里开始写 Markdown'
 
 interface PluginInitData {
   pluginName: string
@@ -45,11 +45,7 @@ interface DraftPayload {
   updatedAt: number
 }
 
-interface EditorChangeResult {
-  nextContent: string
-  selectionStart: number
-  selectionEnd: number
-}
+type SpellcheckSurface = HTMLElement & { spellcheck?: boolean }
 
 function normalizeDraft(value: unknown): DraftPayload | null {
   if (!value || typeof value !== 'object') {
@@ -111,40 +107,43 @@ function formatTimestamp(value: number | null) {
   }).format(value)
 }
 
-function wrapText(value: string, start: number, end: number, prefix: string, suffix: string, placeholder: string): EditorChangeResult {
-  const selection = value.slice(start, end)
-  const inner = selection || placeholder
-  const replacement = `${prefix}${inner}${suffix}`
-  return {
-    nextContent: `${value.slice(0, start)}${replacement}${value.slice(end)}`,
-    selectionStart: start + prefix.length,
-    selectionEnd: start + prefix.length + inner.length
+function applyTextInputPreferences(root: ParentNode | null) {
+  if (!root || !('querySelectorAll' in root)) {
+    return
   }
+
+  root.querySelectorAll<SpellcheckSurface>('[contenteditable="true"], textarea, input').forEach((element) => {
+    element.setAttribute('spellcheck', 'false')
+    element.setAttribute('autocorrect', 'off')
+    element.setAttribute('autocapitalize', 'off')
+    element.setAttribute('data-gramm', 'false')
+    element.setAttribute('data-gramm_editor', 'false')
+    element.setAttribute('data-enable-grammarly', 'false')
+    element.setAttribute('translate', 'no')
+    element.spellcheck = false
+  })
 }
 
-function prefixSelectedLines(value: string, start: number, end: number, prefix: string): EditorChangeResult {
-  const blockStart = value.lastIndexOf('\n', Math.max(0, start - 1)) + 1
-  const nextBreak = value.indexOf('\n', end)
-  const blockEnd = nextBreak === -1 ? value.length : nextBreak
-  const block = value.slice(blockStart, blockEnd)
-  const replacement = block
-    .split('\n')
-    .map((line) => `${prefix}${line}`)
-    .join('\n')
-
-  return {
-    nextContent: `${value.slice(0, blockStart)}${replacement}${value.slice(blockEnd)}`,
-    selectionStart: blockStart,
-    selectionEnd: blockStart + replacement.length
+function alignCodeBlockLanguageInput(host: HTMLElement | null, codeBlock: HTMLElement | null) {
+  if (!host || !codeBlock) {
+    return
   }
-}
 
-function insertBlock(value: string, start: number, end: number, snippet: string, cursorOffset = 0): EditorChangeResult {
-  return {
-    nextContent: `${value.slice(0, start)}${snippet}${value.slice(end)}`,
-    selectionStart: start + cursorOffset,
-    selectionEnd: start + cursorOffset
+  const floatingInput = host.querySelector<HTMLElement>('.toastui-editor-ww-code-block-language')
+  const container = floatingInput?.parentElement
+  if (!floatingInput || !container) {
+    return
   }
+
+  const blockRect = codeBlock.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+  const top = Math.max(12, blockRect.top - containerRect.top + 10)
+  const left = Math.max(12, blockRect.right - containerRect.left - floatingInput.offsetWidth - 10)
+
+  floatingInput.style.position = 'absolute'
+  floatingInput.style.top = `${top}px`
+  floatingInput.style.left = `${left}px`
+  floatingInput.style.right = 'auto'
 }
 
 export default function App() {
@@ -155,11 +154,18 @@ export default function App() {
   const [sourceLabel, setSourceLabel] = useState('新草稿')
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const editorRef = useRef<HTMLTextAreaElement>(null)
+  const [chromeCollapsed, setChromeCollapsed] = useState(false)
+  const [editorMode, setEditorMode] = useState<EditorType>('wysiwyg')
+  const hostRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<Editor | null>(null)
+  const contentRef = useRef(content)
+  const modeRef = useRef<EditorType>('wysiwyg')
   const lastPersistedRef = useRef('')
   const hasInitPayloadRef = useRef(false)
   const { clipboard, dialog, filesystem, notification, storage } = useMulby(PLUGIN_ID)
-  const deferredContent = useDeferredValue(content)
+
+  contentRef.current = content
+  modeRef.current = editorMode
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -173,16 +179,22 @@ export default function App() {
     })
 
     window.mulby?.onPluginInit?.((data: PluginInitData) => {
+      if (data.featureCode !== 'edit-selection') {
+        return
+      }
+
       const incoming = data.input ?? ''
       if (!incoming.trim()) {
         return
       }
 
       hasInitPayloadRef.current = true
-      setSourceLabel(data.featureCode === 'edit-selection' ? '来自划词内容' : '带参启动')
+      setSourceLabel('来自划词内容')
       setActiveFilePath(null)
       setSavedAt(null)
       lastPersistedRef.current = ''
+      setEditorMode('wysiwyg')
+      editorRef.current?.changeMode('wysiwyg', false)
       startTransition(() => {
         setContent(incoming)
       })
@@ -192,7 +204,16 @@ export default function App() {
 
     async function loadDraft() {
       try {
-        const draft = normalizeDraft(await storage.get(STORAGE_DRAFT_KEY))
+        const [draftValue, collapsedValue] = await Promise.all([
+          storage.get(STORAGE_DRAFT_KEY),
+          storage.get(STORAGE_CHROME_KEY)
+        ])
+
+        if (!cancelled) {
+          setChromeCollapsed(collapsedValue === true)
+        }
+
+        const draft = normalizeDraft(draftValue)
         if (!cancelled && !hasInitPayloadRef.current && draft) {
           lastPersistedRef.current = draft.content
           setContent(draft.content)
@@ -213,30 +234,148 @@ export default function App() {
     }
   }, [storage])
 
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    const editor = new Editor({
+      el: host,
+      height: '100%',
+      minHeight: '100%',
+      initialValue: contentRef.current,
+      initialEditType: modeRef.current,
+      previewStyle: 'vertical',
+      hideModeSwitch: true,
+      toolbarItems: [],
+      autofocus: true,
+      usageStatistics: false,
+      placeholder: EDITOR_PLACEHOLDER,
+      theme: theme === 'dark' ? 'dark' : 'light',
+      events: {
+        change: () => {
+          const next = editor.getMarkdown()
+          setContent(next)
+        }
+      }
+    })
+
+    editorRef.current = editor
+
+    const syncEditorSurfaces = () => {
+      const { mdEditor, wwEditor } = editor.getEditorElements()
+      applyTextInputPreferences(mdEditor)
+      applyTextInputPreferences(wwEditor)
+    }
+
+    syncEditorSurfaces()
+    editor.on('changeMode', () => {
+      setEditorMode(editor.isWysiwygMode() ? 'wysiwyg' : 'markdown')
+      window.requestAnimationFrame(syncEditorSurfaces)
+    })
+
+    const handleEditorClick = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof HTMLElement)) {
+        return
+      }
+
+      const codeBlock = target.closest('.toastui-editor-ww-code-block')
+      if (!codeBlock) {
+        return
+      }
+
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          alignCodeBlockLanguageInput(host, codeBlock as HTMLElement)
+          syncEditorSurfaces()
+        })
+      })
+    }
+
+    host.addEventListener('click', handleEditorClick, true)
+
+    return () => {
+      host.removeEventListener('click', handleEditorClick, true)
+      editor.destroy()
+      editorRef.current = null
+    }
+  }, [theme])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+
+    const current = editor.getMarkdown()
+    if (current === content) {
+      return
+    }
+
+    editor.setMarkdown(content, false)
+  }, [content])
+
+  const focusEditor = useCallback(() => {
+    editorRef.current?.focus()
+  }, [])
+
+  const switchMode = useCallback((mode: EditorType) => {
+    const editor = editorRef.current
+    if (!editor || modeRef.current === mode) {
+      return
+    }
+
+    editor.changeMode(mode, false)
+    setEditorMode(mode)
+    editor.focus()
+  }, [])
+
+  const execCommand = useCallback((name: string, payload?: Record<string, unknown>) => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+
+    editor.exec(name, payload)
+    editor.focus()
+  }, [])
+
+  const toggleChrome = useCallback(() => {
+    setChromeCollapsed((current) => {
+      const next = !current
+      void storage.set(STORAGE_CHROME_KEY, next)
+      return next
+    })
+  }, [storage])
+
   const isDirty = hydrated && content !== lastPersistedRef.current
-  const previewIsUpdating = deferredContent !== content
 
   const persistDraft = useCallback(async (showToast: boolean) => {
     setSaving(true)
     try {
       const now = Date.now()
-      if (content.trim()) {
-        await storage.set(STORAGE_DRAFT_KEY, { content, updatedAt: now })
+      const current = editorRef.current?.getMarkdown() ?? contentRef.current
+      if (current.trim()) {
+        await storage.set(STORAGE_DRAFT_KEY, { content: current, updatedAt: now })
       } else {
         await storage.remove(STORAGE_DRAFT_KEY)
       }
-      lastPersistedRef.current = content
+      lastPersistedRef.current = current
       setSavedAt(now)
+      setContent(current)
       if (showToast) {
-        notification.show(content.trim() ? '草稿已保存' : '空草稿已清除', 'success')
+        notification.show(current.trim() ? '草稿已保存' : '空草稿已清除', 'success')
       }
     } catch (error) {
       console.error('[markdown-editor] persistDraft', error)
       notification.show('保存草稿失败', 'error')
     } finally {
       setSaving(false)
+      focusEditor()
     }
-  }, [content, notification, storage])
+  }, [focusEditor, notification, storage])
 
   useEffect(() => {
     if (!hydrated || !isDirty) {
@@ -266,23 +405,6 @@ export default function App() {
     }
   }, [persistDraft])
 
-  const applyEditorChange = useCallback((transform: (value: string, start: number, end: number) => EditorChangeResult) => {
-    const textarea = editorRef.current
-    if (!textarea) {
-      return
-    }
-
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    const next = transform(content, start, end)
-    setContent(next.nextContent)
-
-    window.requestAnimationFrame(() => {
-      textarea.focus()
-      textarea.setSelectionRange(next.selectionStart, next.selectionEnd)
-    })
-  }, [content])
-
   const handleOpenFile = useCallback(async () => {
     try {
       const result = await dialog.showOpenDialog({
@@ -305,12 +427,14 @@ export default function App() {
       startTransition(() => {
         setContent(fileContent)
       })
+      switchMode('wysiwyg')
       notification.show('文件已载入', 'success')
+      focusEditor()
     } catch (error) {
       console.error('[markdown-editor] handleOpenFile', error)
       notification.show('读取文件失败', 'error')
     }
-  }, [dialog, filesystem, notification])
+  }, [dialog, filesystem, focusEditor, notification, switchMode])
 
   const handleExportFile = useCallback(async () => {
     try {
@@ -328,14 +452,16 @@ export default function App() {
         return
       }
 
-      await filesystem.writeFile(target, content, 'utf-8')
+      const current = editorRef.current?.getMarkdown() ?? contentRef.current
+      await filesystem.writeFile(target, current, 'utf-8')
       setActiveFilePath(target)
       notification.show(`已导出到 ${basename(target)}`, 'success')
+      focusEditor()
     } catch (error) {
       console.error('[markdown-editor] handleExportFile', error)
       notification.show('导出文件失败', 'error')
     }
-  }, [activeFilePath, content, dialog, filesystem, notification])
+  }, [activeFilePath, dialog, filesystem, focusEditor, notification])
 
   const handlePasteClipboard = useCallback(async () => {
     try {
@@ -345,225 +471,234 @@ export default function App() {
         return
       }
 
-      const textarea = editorRef.current
-      if (!textarea) {
+      const editor = editorRef.current
+      if (!editor) {
         setContent(text)
-      } else {
-        const start = textarea.selectionStart
-        const end = textarea.selectionEnd
-        const nextContent = `${content.slice(0, start)}${text}${content.slice(end)}`
-        setContent(nextContent)
-        window.requestAnimationFrame(() => {
-          textarea.focus()
-          const cursor = start + text.length
-          textarea.setSelectionRange(cursor, cursor)
-        })
+        return
       }
 
+      editor.insertText(text)
       setSourceLabel('来自剪贴板')
       notification.show('已插入剪贴板文本', 'success')
+      editor.focus()
     } catch (error) {
       console.error('[markdown-editor] handlePasteClipboard', error)
       notification.show('读取剪贴板失败', 'error')
     }
-  }, [clipboard, content, notification])
+  }, [clipboard, notification])
 
   const handleCopyMarkdown = useCallback(async () => {
     try {
-      await clipboard.writeText(content)
+      const current = editorRef.current?.getMarkdown() ?? contentRef.current
+      await clipboard.writeText(current)
       notification.show('Markdown 已复制到剪贴板', 'success')
+      focusEditor()
     } catch (error) {
       console.error('[markdown-editor] handleCopyMarkdown', error)
       notification.show('复制失败', 'error')
     }
-  }, [clipboard, content, notification])
+  }, [clipboard, focusEditor, notification])
 
   const handleClear = useCallback(() => {
     setContent('')
     setSourceLabel('新草稿')
     setActiveFilePath(null)
+    switchMode('wysiwyg')
+    focusEditor()
     notification.show('内容已清空', 'info')
-    window.requestAnimationFrame(() => editorRef.current?.focus())
-  }, [notification])
+  }, [focusEditor, notification, switchMode])
 
-  const toolbarActions = useMemo(() => ([
+  const handleInsertLink = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+
+    const selectedText = editor.getSelectedText() || '链接文字'
+    const linkUrl = window.prompt('输入链接地址', 'https://example.com')
+    if (!linkUrl) {
+      focusEditor()
+      return
+    }
+
+    execCommand('addLink', { linkUrl, linkText: selectedText })
+  }, [execCommand, focusEditor])
+
+  const toolbarActions = [
     {
       label: 'H1',
       title: '一级标题',
       icon: Heading1,
-      onClick: () => applyEditorChange((value, start, end) => prefixSelectedLines(value, start, end, '# '))
+      onClick: () => execCommand('heading', { level: 1 })
     },
     {
       label: 'H2',
       title: '二级标题',
       icon: Heading2,
-      onClick: () => applyEditorChange((value, start, end) => prefixSelectedLines(value, start, end, '## '))
+      onClick: () => execCommand('heading', { level: 2 })
     },
     {
       label: '粗体',
       title: '加粗',
       icon: Bold,
-      onClick: () => applyEditorChange((value, start, end) => wrapText(value, start, end, '**', '**', '加粗文本'))
+      onClick: () => execCommand('bold')
     },
     {
       label: '斜体',
       title: '斜体',
       icon: Italic,
-      onClick: () => applyEditorChange((value, start, end) => wrapText(value, start, end, '*', '*', '斜体文本'))
+      onClick: () => execCommand('italic')
     },
     {
       label: '链接',
       title: '插入链接',
       icon: Link2,
-      onClick: () => applyEditorChange((value, start, end) => {
-        const selected = value.slice(start, end) || '链接文字'
-        const snippet = `[${selected}](https://example.com)`
-        return {
-          nextContent: `${value.slice(0, start)}${snippet}${value.slice(end)}`,
-          selectionStart: start + 1,
-          selectionEnd: start + 1 + selected.length
-        }
-      })
+      onClick: handleInsertLink
     },
     {
       label: '引用',
       title: '引用块',
       icon: Quote,
-      onClick: () => applyEditorChange((value, start, end) => prefixSelectedLines(value, start, end, '> '))
+      onClick: () => execCommand('blockQuote')
     },
     {
       label: '代码',
-      title: '代码',
+      title: '行内代码',
       icon: Code2,
-      onClick: () => applyEditorChange((value, start, end) => {
-        const selection = value.slice(start, end)
-        if (selection.includes('\n')) {
-          return wrapText(value, start, end, '```\n', '\n```', 'code block')
-        }
-        return wrapText(value, start, end, '`', '`', 'inline code')
-      })
+      onClick: () => execCommand('code')
     },
     {
       label: '列表',
       title: '无序列表',
       icon: List,
-      onClick: () => applyEditorChange((value, start, end) => prefixSelectedLines(value, start, end, '- '))
+      onClick: () => execCommand('bulletList')
     },
     {
       label: '任务',
       title: '任务列表',
       icon: CheckSquare,
-      onClick: () => applyEditorChange((value, start, end) => prefixSelectedLines(value, start, end, '- [ ] '))
+      onClick: () => execCommand('taskList')
     },
     {
       label: '分割线',
       title: '插入分割线',
       icon: SeparatorHorizontal,
-      onClick: () => applyEditorChange((value, start, end) => insertBlock(value, start, end, '\n---\n'))
+      onClick: () => execCommand('hr')
     }
-  ]), [applyEditorChange])
+  ]
 
   const lineCount = content.length === 0 ? 0 : content.split('\n').length
   const charCount = Array.from(content).length
 
   return (
     <div className={`app theme-${theme}`}>
-      <header className="toolbar">
-        <div className="toolbar-actions">
-          <button type="button" className="action-btn" onClick={handleOpenFile}>
-            <FileInput size={15} />
-            打开
-          </button>
-          <button type="button" className="action-btn" onClick={handlePasteClipboard}>
-            <ClipboardPaste size={15} />
-            粘贴
-          </button>
-          <button type="button" className="action-btn action-btn-primary" onClick={() => void persistDraft(true)} disabled={saving}>
-            <Save size={15} />
-            {saving ? '保存中' : '保存草稿'}
-          </button>
-          <button type="button" className="action-btn" onClick={handleExportFile}>
-            <FileDown size={15} />
-            导出 .md
-          </button>
-          <button type="button" className="action-btn" onClick={() => void handleCopyMarkdown()}>
-            <Copy size={15} />
-            复制
-          </button>
-          <button type="button" className="action-btn action-btn-danger" onClick={handleClear}>
-            <Eraser size={15} />
-            清空
-          </button>
-        </div>
+      {!chromeCollapsed && (
+        <header className="toolbar">
+          <div className="toolbar-actions">
+            <button type="button" className="action-btn" onMouseDown={(event) => event.preventDefault()} onClick={handleOpenFile}>
+              <FileInput size={15} />
+              打开
+            </button>
+            <button type="button" className="action-btn" onMouseDown={(event) => event.preventDefault()} onClick={handlePasteClipboard}>
+              <ClipboardPaste size={15} />
+              粘贴
+            </button>
+            <button
+              type="button"
+              className="action-btn action-btn-primary"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => void persistDraft(true)}
+              disabled={saving}
+            >
+              <Save size={15} />
+              {saving ? '保存中' : '保存草稿'}
+            </button>
+            <button type="button" className="action-btn" onMouseDown={(event) => event.preventDefault()} onClick={handleExportFile}>
+              <FileDown size={15} />
+              导出 .md
+            </button>
+            <button type="button" className="action-btn" onMouseDown={(event) => event.preventDefault()} onClick={() => void handleCopyMarkdown()}>
+              <Copy size={15} />
+              复制
+            </button>
+            <button type="button" className="action-btn action-btn-danger" onMouseDown={(event) => event.preventDefault()} onClick={handleClear}>
+              <Eraser size={15} />
+              清空
+            </button>
+          </div>
 
-        <div className="toolbar-formatters">
-          {toolbarActions.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.label}
-                type="button"
-                className="formatter-btn"
-                onClick={item.onClick}
-                title={item.title}
-              >
-                <Icon size={15} />
-                {item.label}
-              </button>
-            )
-          })}
-        </div>
-      </header>
+          <div className="toolbar-formatters">
+            {toolbarActions.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  className="formatter-btn"
+                  title={item.title}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={item.onClick}
+                >
+                  <Icon size={15} />
+                  {item.label}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="toolbar-footer">
+            <button
+              type="button"
+              className={`mode-btn ${editorMode === 'markdown' ? 'active' : ''}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => switchMode(editorMode === 'wysiwyg' ? 'markdown' : 'wysiwyg')}
+            >
+              {editorMode === 'wysiwyg' ? <FileCode2 size={15} /> : <ScanText size={15} />}
+              {editorMode === 'wysiwyg' ? '进入源代码模式' : '返回普通模式'}
+            </button>
+            <button
+              type="button"
+              className="mode-btn chrome-toggle-btn"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={toggleChrome}
+            >
+              <ChevronUp size={15} />
+              隐藏顶部栏
+            </button>
+          </div>
+        </header>
+      )}
 
       <section className="status-bar">
         <div className="status-group">
           <span className="status-pill">{sourceLabel}</span>
+          <span className="status-pill">{editorMode === 'wysiwyg' ? '普通模式' : '源代码模式'}</span>
           <span className={`status-pill ${isDirty ? 'is-dirty' : 'is-saved'}`}>
             {isDirty ? '有未持久化修改' : `已保存 ${formatTimestamp(savedAt)}`}
           </span>
-          {previewIsUpdating && <span className="status-pill">预览更新中</span>}
         </div>
         <div className="status-group status-group-metrics">
           <span>{lineCount} 行</span>
           <span>{charCount} 字符</span>
-          <span>自动保存已开启</span>
+          <span>{editorMode === 'wysiwyg' ? '默认直接可视化编辑' : '当前为纯 Markdown 源码编辑'}</span>
+          {chromeCollapsed && (
+            <button
+              type="button"
+              className="status-toggle-btn"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={toggleChrome}
+            >
+              <ChevronDown size={14} />
+              显示功能区
+            </button>
+          )}
         </div>
       </section>
 
       <main className="workspace">
-        <section className="panel editor-panel">
-          <div className="panel-head">
-            <span>编辑区</span>
-            <span className="panel-note">支持 `Cmd/Ctrl + S` 立即保存草稿</span>
-          </div>
-          <textarea
-            ref={editorRef}
-            className="editor"
-            value={content}
-            placeholder={EDITOR_PLACEHOLDER}
-            spellCheck={false}
-            onChange={(event) => setContent(event.target.value)}
-          />
-        </section>
-
-        <section className="panel preview-panel">
-          <div className="panel-head">
-            <span>实时预览</span>
-            <span className="panel-note">GFM 表格、任务列表与删除线已启用</span>
-          </div>
-          <div className="preview-shell">
-            {deferredContent.trim() ? (
-              <article className="preview-body markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {deferredContent}
-                </ReactMarkdown>
-              </article>
-            ) : (
-              <div className="preview-empty">
-                <h3>预览区域已就绪</h3>
-                <p>开始在左侧输入 Markdown，右侧会实时渲染。</p>
-              </div>
-            )}
+        <section className={`panel editor-panel ${editorMode === 'markdown' ? 'mode-source' : 'mode-wysiwyg'}`}>
+          <div className="editor-shell">
+            <div ref={hostRef} className="editor-host" />
           </div>
         </section>
       </main>

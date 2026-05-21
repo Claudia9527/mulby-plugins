@@ -5,7 +5,7 @@
   "author": "Mulby",
   "homepage": "https://github.com/Unicellular-SU/mulby_plugins",
   "displayName": "Markdown 编辑器",
-  "description": "轻量 Markdown 编辑插件，提供双栏实时预览、基础工具栏、草稿保存与导出 .md 文件",
+  "description": "轻量 Markdown 编辑插件，默认普通模式直接编辑排版结果，并提供源代码模式入口、基础工具栏与导出能力",
   "type": "productivity",
   "main": "dist/main.js",
   "ui": "ui/index.html",
