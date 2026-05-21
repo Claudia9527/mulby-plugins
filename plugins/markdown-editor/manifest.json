@@ -1,0 +1,63 @@
+{
+  "id": "markdown-editor",
+  "name": "markdown-editor",
+  "version": "1.0.0",
+  "author": "Mulby",
+  "homepage": "https://github.com/Unicellular-SU/mulby_plugins",
+  "displayName": "Markdown 编辑器",
+  "description": "轻量 Markdown 编辑插件，提供双栏实时预览、基础工具栏、草稿保存与导出 .md 文件",
+  "type": "productivity",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "permissions": {
+    "clipboard": true,
+    "notification": true,
+    "filesystem": true
+  },
+  "pluginSetting": {
+    "single": true,
+    "persistent": true,
+    "height": 720
+  },
+  "window": {
+    "width": 1240,
+    "height": 780,
+    "minWidth": 820,
+    "minHeight": 560
+  },
+  "features": [
+    {
+      "code": "open-editor",
+      "explain": "打开 Markdown 编辑器",
+      "mode": "ui",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "markdown"
+        },
+        {
+          "type": "keyword",
+          "value": "markdown 编辑"
+        },
+        {
+          "type": "keyword",
+          "value": "Markdown 编辑器"
+        }
+      ]
+    },
+    {
+      "code": "edit-selection",
+      "explain": "把当前选中文本带入 Markdown 编辑器",
+      "mode": "ui",
+      "mainPush": true,
+      "cmds": [
+        {
+          "type": "over",
+          "label": "用 Markdown 编辑",
+          "minLength": 1
+        }
+      ]
+    }
+  ]
+}

@@ -469,6 +469,46 @@ importers:
         specifier: ^5.0.0
         version: 5.4.21(@types/node@25.6.0)
 
+  plugins/markdown-editor:
+    dependencies:
+      lucide-react:
+        specifier: ^0.562.0
+        version: 0.562.0(react@18.3.1)
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@18.3.28)(react@18.3.1)
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.3
+        version: 18.3.28
+      '@types/react-dom':
+        specifier: ^18.3.0
+        version: 18.3.7(@types/react@18.3.28)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.1
+        version: 4.7.0(vite@5.4.21(@types/node@25.6.0))
+      esbuild:
+        specifier: ^0.21.5
+        version: 0.21.5
+      mulby-cli:
+        specifier: ^1.2.5
+        version: 1.2.5(@types/node@25.6.0)(@types/react@18.3.28)(rollup@4.60.1)(ws@8.20.0)
+      typescript:
+        specifier: ^5.2.2
+        version: 5.9.3
+      vite:
+        specifier: ^5.3.1
+        version: 5.4.21(@types/node@25.6.0)
+
   plugins/messaging-tester:
     dependencies:
       lucide-react:
@@ -7868,7 +7908,7 @@ snapshots:
 
   inherits@2.0.4: {}
 
-  ink-select-input@4.2.2(ink@3.2.0(@types/react@18.3.28)(react@18.3.1))(react@17.0.2):
+  ink-select-input@4.2.2(ink@3.2.0(@types/react@18.3.28)(react@17.0.2))(react@17.0.2):
     dependencies:
       arr-rotate: 1.0.0
       figures: 3.2.0
@@ -7876,7 +7916,7 @@ snapshots:
       lodash.isequal: 4.5.0
       react: 17.0.2
 
-  ink-text-input@4.0.3(ink@3.2.0(@types/react@18.3.28)(react@18.3.1))(react@17.0.2):
+  ink-text-input@4.0.3(ink@3.2.0(@types/react@18.3.28)(react@17.0.2))(react@17.0.2):
     dependencies:
       chalk: 4.1.2
       ink: 3.2.0(@types/react@18.3.28)(react@17.0.2)
@@ -8569,8 +8609,8 @@ snapshots:
       esbuild: 0.20.2
       fs-extra: 11.3.5
       ink: 3.2.0(@types/react@18.3.28)(react@17.0.2)
-      ink-select-input: 4.2.2(ink@3.2.0(@types/react@18.3.28)(react@18.3.1))(react@17.0.2)
-      ink-text-input: 4.0.3(ink@3.2.0(@types/react@18.3.28)(react@18.3.1))(react@17.0.2)
+      ink-select-input: 4.2.2(ink@3.2.0(@types/react@18.3.28)(react@17.0.2))(react@17.0.2)
+      ink-text-input: 4.0.3(ink@3.2.0(@types/react@18.3.28)(react@17.0.2))(react@17.0.2)
       inquirer: 13.4.3(@types/node@25.6.0)
       js-tiktoken: 1.0.21
       openai: 6.38.0(ws@8.20.0)
