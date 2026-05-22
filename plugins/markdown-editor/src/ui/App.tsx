@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, startTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from 'react'
 import Editor, { type EditorType } from '@toast-ui/editor'
 import '@toast-ui/editor/dist/toastui-editor.css'
 import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
@@ -44,6 +44,15 @@ interface DraftPayload {
   content: string
   updatedAt: number
 }
+
+interface OutlineEntry {
+  id: string
+  text: string
+  level: number
+  line: number
+}
+
+const WYSIWYG_SCROLL_SELECTOR = '.toastui-editor-ww-container'
 
 type SpellcheckSurface = HTMLElement & { spellcheck?: boolean }
 
@@ -107,6 +116,71 @@ function formatTimestamp(value: number | null) {
   }).format(value)
 }
 
+function stripInlineMarkdown(value: string) {
+  return value
+    .replace(/!\[[^\]]*]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)]\([^)]*\)/g, '$1')
+    .replace(/[`*_~]/g, '')
+    .replace(/<[^>]+>/g, '')
+    .trim()
+}
+
+function parseOutline(markdown: string): OutlineEntry[] {
+  const lines = markdown.split('\n')
+  const entries: OutlineEntry[] = []
+  let fenceChar = ''
+  let fenceLength = 0
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/)
+
+    if (fenceMatch) {
+      const fence = fenceMatch[1]
+      if (!fenceChar) {
+        fenceChar = fence[0]
+        fenceLength = fence.length
+      } else if (fence[0] === fenceChar && fence.length >= fenceLength) {
+        fenceChar = ''
+        fenceLength = 0
+      }
+      continue
+    }
+
+    if (fenceChar) {
+      continue
+    }
+
+    const atxMatch = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/)
+    if (atxMatch) {
+      const text = stripInlineMarkdown(atxMatch[2])
+      if (text) {
+        entries.push({
+          id: `outline-${entries.length}`,
+          text,
+          level: atxMatch[1].length,
+          line: index + 1
+        })
+      }
+      continue
+    }
+
+    const nextLine = lines[index + 1]
+    const setextMatch = nextLine?.match(/^\s{0,3}(=+|-+)\s*$/)
+    if (setextMatch && line.trim()) {
+      entries.push({
+        id: `outline-${entries.length}`,
+        text: stripInlineMarkdown(line),
+        level: setextMatch[1][0] === '=' ? 1 : 2,
+        line: index + 1
+      })
+      index += 1
+    }
+  }
+
+  return entries
+}
+
 function applyTextInputPreferences(root: ParentNode | null) {
   if (!root || !('querySelectorAll' in root)) {
     return
@@ -156,6 +230,7 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [chromeCollapsed, setChromeCollapsed] = useState(false)
   const [editorMode, setEditorMode] = useState<EditorType>('wysiwyg')
+  const [activeOutlineId, setActiveOutlineId] = useState<string | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const contentRef = useRef(content)
@@ -166,6 +241,7 @@ export default function App() {
 
   contentRef.current = content
   modeRef.current = editorMode
+  const outlineEntries = useMemo(() => parseOutline(content), [content])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -317,6 +393,86 @@ export default function App() {
     editor.setMarkdown(content, false)
   }, [content])
 
+  useEffect(() => {
+    if (outlineEntries.length === 0) {
+      setActiveOutlineId(null)
+      return
+    }
+
+    if (!outlineEntries.some((entry) => entry.id === activeOutlineId)) {
+      setActiveOutlineId(outlineEntries[0].id)
+    }
+  }, [activeOutlineId, outlineEntries])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host || outlineEntries.length === 0) {
+      return
+    }
+
+    const headingSelector = '.toastui-editor-ww-container .toastui-editor-contents h1, .toastui-editor-ww-container .toastui-editor-contents h2, .toastui-editor-ww-container .toastui-editor-contents h3, .toastui-editor-ww-container .toastui-editor-contents h4, .toastui-editor-ww-container .toastui-editor-contents h5, .toastui-editor-ww-container .toastui-editor-contents h6'
+    const scrollContainer = host.querySelector<HTMLElement>(WYSIWYG_SCROLL_SELECTOR)
+    let frameId = 0
+
+    const syncHeadingTargets = () => {
+      const headings = Array.from(host.querySelectorAll<HTMLElement>(headingSelector))
+      headings.forEach((heading, index) => {
+        const entry = outlineEntries[index]
+        if (entry) {
+          heading.dataset.outlineId = entry.id
+        } else {
+          delete heading.dataset.outlineId
+        }
+      })
+    }
+
+    const syncActiveOutline = () => {
+      if (editorMode !== 'wysiwyg' || !scrollContainer) {
+        return
+      }
+
+      const headings = Array.from(host.querySelectorAll<HTMLElement>(`${headingSelector}[data-outline-id]`))
+      if (headings.length === 0) {
+        return
+      }
+
+      const containerTop = scrollContainer.getBoundingClientRect().top
+      let candidateId = headings[0].dataset.outlineId ?? null
+
+      headings.forEach((heading) => {
+        const headingTop = heading.getBoundingClientRect().top - containerTop
+        if (headingTop <= 72) {
+          candidateId = heading.dataset.outlineId ?? candidateId
+        }
+      })
+
+      if (candidateId) {
+        setActiveOutlineId((current) => current === candidateId ? current : candidateId)
+      }
+    }
+
+    const scheduleSync = () => {
+      window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        syncHeadingTargets()
+        syncActiveOutline()
+      })
+    }
+
+    scheduleSync()
+
+    if (scrollContainer) {
+      scrollContainer.addEventListener('scroll', syncActiveOutline, { passive: true })
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      if (scrollContainer) {
+        scrollContainer.removeEventListener('scroll', syncActiveOutline)
+      }
+    }
+  }, [chromeCollapsed, editorMode, outlineEntries, content])
+
   const focusEditor = useCallback(() => {
     editorRef.current?.focus()
   }, [])
@@ -349,6 +505,30 @@ export default function App() {
       return next
     })
   }, [storage])
+
+  const handleOutlineSelect = useCallback((entry: OutlineEntry) => {
+    const editor = editorRef.current
+    const host = hostRef.current
+    if (!editor || !host) {
+      return
+    }
+
+    setActiveOutlineId(entry.id)
+
+    if (editorMode === 'markdown') {
+      editor.setSelection([entry.line, 1], [entry.line, 1])
+      editor.focus()
+      return
+    }
+
+    const target = host.querySelector<HTMLElement>(`[data-outline-id="${entry.id}"]`)
+    const scrollContainer = host.querySelector<HTMLElement>(WYSIWYG_SCROLL_SELECTOR)
+    if (target && scrollContainer) {
+      const nextTop = scrollContainer.scrollTop + target.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top - 24
+      scrollContainer.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' })
+      editor.focus()
+    }
+  }, [editorMode])
 
   const isDirty = hydrated && content !== lastPersistedRef.current
 
@@ -699,7 +879,29 @@ export default function App() {
         <section className={`panel editor-panel ${editorMode === 'markdown' ? 'mode-source' : 'mode-wysiwyg'}`}>
           <div className="editor-shell">
             <div className="editor-layout">
-              <aside className="editor-outline-slot" aria-hidden="true" />
+              <aside className="editor-outline-slot">
+                <div className="outline-panel">
+                  <div className="outline-title">大纲</div>
+                  {outlineEntries.length === 0 ? (
+                    <div className="outline-empty">当前文档还没有标题</div>
+                  ) : (
+                    <nav className="outline-nav" aria-label="文档大纲">
+                      {outlineEntries.map((entry) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          className={`outline-item outline-level-${Math.min(entry.level, 6)} ${activeOutlineId === entry.id ? 'active' : ''}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleOutlineSelect(entry)}
+                          title={entry.text}
+                        >
+                          {entry.text}
+                        </button>
+                      ))}
+                    </nav>
+                  )}
+                </div>
+              </aside>
               <div className="editor-canvas">
                 <div ref={hostRef} className="editor-host" />
               </div>
