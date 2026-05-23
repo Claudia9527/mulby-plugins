@@ -75,14 +75,12 @@ button {
 }
 
 .toolbar,
-.status-bar,
 .panel {
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
 }
 
-.toolbar,
-.status-bar {
+.toolbar {
   background: var(--panel-bg);
 }
 
@@ -143,7 +141,6 @@ button {
 .action-btn,
 .formatter-btn,
 .mode-btn,
-.status-toggle-btn,
 .outline-item {
   display: inline-flex;
   align-items: center;
@@ -164,8 +161,7 @@ button {
 
 .action-btn:hover,
 .formatter-btn:hover,
-.mode-btn:hover,
-.status-toggle-btn:hover {
+.mode-btn:hover {
   border-color: var(--border-strong);
   background: var(--panel-muted);
   transform: translateY(-1px);
@@ -177,15 +173,13 @@ button {
   color: var(--accent);
 }
 
-.chrome-toggle-btn,
-.status-toggle-btn {
+.chrome-toggle-btn {
   background: var(--accent-soft);
   border-color: rgba(92, 126, 168, 0.2);
   color: var(--accent);
 }
 
 .chrome-toggle-btn:hover,
-.status-toggle-btn:hover,
 .mode-btn.active:hover {
   border-color: var(--accent);
   color: var(--accent-hover);
@@ -244,58 +238,6 @@ button {
 .mode-btn-icon:focus-visible::after {
   opacity: 1;
   transform: translate(-50%, 0);
-}
-
-.status-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 14px;
-  border-radius: var(--radius-lg);
-}
-
-.status-group {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-}
-
-.status-group-metrics {
-  margin-left: auto;
-  justify-content: flex-end;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: var(--panel-strong);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.status-pill.is-dirty {
-  color: var(--accent);
-  border-color: rgba(92, 126, 168, 0.22);
-  background: var(--accent-soft);
-}
-
-.status-pill.is-saved {
-  color: var(--text-primary);
-}
-
-.status-toggle-btn {
-  min-height: 32px;
-  padding: 0 12px;
 }
 
 .workspace {
@@ -426,13 +368,13 @@ button {
 }
 
 .editor-pane-header {
+  position: relative;
   height: var(--pane-header-height);
   min-height: var(--pane-header-height);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0 16px;
-  /* border-bottom: 1px solid var(--border); */
   background: var(--panel-strong);
 }
 
@@ -452,6 +394,86 @@ button {
 
 .editor-canvas-header .pane-header-label {
   max-width: 100%;
+}
+
+.canvas-header-meta {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(6px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.editor-canvas-header:hover .canvas-header-meta,
+.editor-canvas-header:focus-within .canvas-header-meta {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(0);
+}
+
+.header-meta-text.is-dirty {
+  color: var(--accent);
+}
+
+.header-meta-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--accent);
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.header-meta-btn:hover {
+  background: var(--panel-muted);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.header-meta-btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(36, 36, 34, 0.92);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+  z-index: 30;
+}
+
+.header-meta-btn:hover::after,
+.header-meta-btn:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .editor-panel .toastui-editor-defaultUI {
@@ -728,9 +750,9 @@ button {
     min-width: 40px;
   }
 
-  .status-group-metrics {
-    margin-left: 0;
-    justify-content: flex-start;
+  .canvas-header-meta {
+    right: 10px;
+    gap: 8px;
   }
 
   .editor-panel.mode-wysiwyg

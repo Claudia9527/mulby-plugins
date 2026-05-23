@@ -896,29 +896,6 @@ export default function App() {
         </header>
       )}
 
-      <section className="status-bar">
-        <div className="status-group">
-          <span className={`status-pill ${isDirty ? 'is-dirty' : 'is-saved'}`}>
-            保存时间 {formatTimestamp(savedAt)}
-          </span>
-        </div>
-        <div className="status-group status-group-metrics">
-          <span>{lineCount} 行</span>
-          <span>{charCount} 字符</span>
-          {chromeCollapsed && (
-            <button
-              type="button"
-              className="status-toggle-btn"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={toggleChrome}
-            >
-              <ChevronDown size={14} />
-              显示功能区
-            </button>
-          )}
-        </div>
-      </section>
-
       <main className="workspace">
         <section className={`panel editor-panel ${editorMode === 'markdown' ? 'mode-source' : 'mode-wysiwyg'}`}>
           <div className="editor-shell">
@@ -951,6 +928,24 @@ export default function App() {
               <div className="editor-canvas">
                 <div className="editor-pane-header editor-canvas-header">
                   <span className="pane-header-label">{documentName}</span>
+                  <div className="canvas-header-meta">
+                    <span className={`header-meta-text ${isDirty ? 'is-dirty' : ''}`}>保存时间 {formatTimestamp(savedAt)}</span>
+                    <span className="header-meta-text">{lineCount} 行</span>
+                    <span className="header-meta-text">{charCount} 字符</span>
+                    {chromeCollapsed && (
+                      <button
+                        type="button"
+                        className="header-meta-btn"
+                        aria-label="显示功能区"
+                        data-tooltip="显示功能区"
+                        title="显示功能区"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={toggleChrome}
+                      >
+                        <ChevronDown size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div ref={hostRef} className="editor-host" />
               </div>
