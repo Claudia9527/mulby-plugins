@@ -225,7 +225,7 @@ export default function App() {
   const [content, setContent] = useState('')
   const [hydrated, setHydrated] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
-  const [sourceLabel, setSourceLabel] = useState('新草稿')
+  const [, setSourceLabel] = useState('新草稿')
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [chromeCollapsed, setChromeCollapsed] = useState(false)
@@ -767,6 +767,75 @@ export default function App() {
     }
   ]
 
+  const toolbarGroups = [
+    [
+      {
+        key: 'open',
+        title: '打开文件',
+        icon: FileInput,
+        onClick: handleOpenFile
+      },
+      {
+        key: 'save',
+        title: saving ? '保存中' : '保存草稿',
+        icon: Save,
+        onClick: () => void persistDraft(true),
+        disabled: saving
+      },
+      {
+        key: 'export',
+        title: '导出 .md',
+        icon: FileDown,
+        onClick: handleExportFile
+      }
+    ],
+    [
+      {
+        key: 'copy',
+        title: '复制',
+        icon: Copy,
+        onClick: () => void handleCopyMarkdown()
+      },
+      {
+        key: 'paste',
+        title: '粘贴',
+        icon: ClipboardPaste,
+        onClick: handlePasteClipboard
+      },
+      {
+        key: 'clear',
+        title: '清空',
+        icon: Eraser,
+        onClick: handleClear,
+        danger: true
+      }
+    ],
+    toolbarActions.slice(0, 2).map((item) => ({
+      key: item.label,
+      title: item.title,
+      icon: item.icon,
+      onClick: item.onClick
+    })),
+    toolbarActions.slice(2, 5).map((item) => ({
+      key: item.label,
+      title: item.title,
+      icon: item.icon,
+      onClick: item.onClick
+    })),
+    toolbarActions.slice(5, 7).map((item) => ({
+      key: item.label,
+      title: item.title,
+      icon: item.icon,
+      onClick: item.onClick
+    })),
+    toolbarActions.slice(7).map((item) => ({
+      key: item.label,
+      title: item.title,
+      icon: item.icon,
+      onClick: item.onClick
+    }))
+  ]
+
   const lineCount = content.length === 0 ? 0 : content.split('\n').length
   const charCount = Array.from(content).length
   const documentName = activeFilePath ? basename(activeFilePath) : '未命名.md'
@@ -775,94 +844,29 @@ export default function App() {
     <div className={`app theme-${theme}`}>
       {!chromeCollapsed && (
         <header className="toolbar">
-          <div className="toolbar-actions">
-            <button
-              type="button"
-              className="action-btn action-btn-icon"
-              aria-label="打开文件"
-              data-tooltip="打开文件"
-              title="打开文件"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={handleOpenFile}
-            >
-              <FileInput size={15} />
-            </button>
-            <button
-              type="button"
-              className="action-btn action-btn-icon"
-              aria-label="粘贴"
-              data-tooltip="粘贴"
-              title="粘贴"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={handlePasteClipboard}
-            >
-              <ClipboardPaste size={15} />
-            </button>
-            <button
-              type="button"
-              className="action-btn action-btn-primary action-btn-icon"
-              aria-label={saving ? '保存中' : '保存草稿'}
-              data-tooltip={saving ? '保存中' : '保存草稿'}
-              title={saving ? '保存中' : '保存草稿'}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => void persistDraft(true)}
-              disabled={saving}
-            >
-              <Save size={15} />
-            </button>
-            <button
-              type="button"
-              className="action-btn action-btn-icon"
-              aria-label="导出 .md"
-              data-tooltip="导出 .md"
-              title="导出 .md"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={handleExportFile}
-            >
-              <FileDown size={15} />
-            </button>
-            <button
-              type="button"
-              className="action-btn action-btn-icon"
-              aria-label="复制"
-              data-tooltip="复制"
-              title="复制"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => void handleCopyMarkdown()}
-            >
-              <Copy size={15} />
-            </button>
-            <button
-              type="button"
-              className="action-btn action-btn-danger action-btn-icon"
-              aria-label="清空"
-              data-tooltip="清空"
-              title="清空"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={handleClear}
-            >
-              <Eraser size={15} />
-            </button>
-          </div>
-
-          <div className="toolbar-formatters">
-            {toolbarActions.map((item) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.label}
-                  type="button"
-                  className="formatter-btn formatter-btn-icon"
-                  aria-label={item.title}
-                  data-tooltip={item.title}
-                  title={item.title}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={item.onClick}
-                >
-                  <Icon size={15} />
-                </button>
-              )
-            })}
+          <div className="toolbar-main">
+            {toolbarGroups.map((group, groupIndex) => (
+              <div key={`toolbar-group-${groupIndex}`} className="toolbar-cluster">
+                {group.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      className={`action-btn action-btn-icon ${item.danger ? 'action-btn-danger' : ''}`}
+                      aria-label={item.title}
+                      data-tooltip={item.title}
+                      title={item.title}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={item.onClick}
+                      disabled={item.disabled}
+                    >
+                      <Icon size={15} />
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </div>
 
           <div className="toolbar-footer">
@@ -894,16 +898,13 @@ export default function App() {
 
       <section className="status-bar">
         <div className="status-group">
-          <span className="status-pill">{sourceLabel}</span>
-          <span className="status-pill">{editorMode === 'wysiwyg' ? '普通模式' : '源代码模式'}</span>
           <span className={`status-pill ${isDirty ? 'is-dirty' : 'is-saved'}`}>
-            {isDirty ? '有未持久化修改' : `已保存 ${formatTimestamp(savedAt)}`}
+            保存时间 {formatTimestamp(savedAt)}
           </span>
         </div>
         <div className="status-group status-group-metrics">
           <span>{lineCount} 行</span>
           <span>{charCount} 字符</span>
-          <span>{editorMode === 'wysiwyg' ? '默认直接可视化编辑' : '当前为纯 Markdown 源码编辑'}</span>
           {chromeCollapsed && (
             <button
               type="button"

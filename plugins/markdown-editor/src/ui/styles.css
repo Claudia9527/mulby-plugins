@@ -94,19 +94,43 @@ button {
   border-radius: var(--radius-xl);
 }
 
-.toolbar-actions,
-.toolbar-formatters {
+.toolbar-main {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   align-items: center;
+  width: 100%;
+  gap: 8px 0;
 }
 
-.toolbar-formatters,
 .toolbar-footer {
   width: 100%;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+
+.toolbar-cluster {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toolbar-cluster + .toolbar-cluster {
+  margin-left: 14px;
+  padding-left: 18px;
+  position: relative;
+}
+
+.toolbar-cluster + .toolbar-cluster::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 22px;
+  background: var(--border-strong);
+  transform: translateY(-50%);
 }
 
 .toolbar-footer {
@@ -145,18 +169,6 @@ button {
   border-color: var(--border-strong);
   background: var(--panel-muted);
   transform: translateY(-1px);
-}
-
-.action-btn-primary {
-  background: #d36c3a;
-  border-color: #d36c3a;
-  color: #fff;
-}
-
-.action-btn-primary:hover {
-  background: #c45f2f;
-  border-color: #c45f2f;
-  color: #fff;
 }
 
 .mode-btn.active {
@@ -700,9 +712,13 @@ button {
     padding: 12px;
   }
 
-  .toolbar-formatters,
   .toolbar-footer {
     padding-top: 12px;
+  }
+
+  .toolbar-cluster + .toolbar-cluster {
+    margin-left: 10px;
+    padding-left: 14px;
   }
 
   .action-btn-icon,
