@@ -66,6 +66,113 @@ button {
   cursor: pointer;
 }
 
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(18, 18, 16, 0.32);
+  backdrop-filter: blur(8px);
+}
+
+.confirm-dialog {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-strong);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
+}
+
+.confirm-dialog-header {
+  margin-bottom: 10px;
+}
+
+.confirm-dialog-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.confirm-dialog-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.export-dialog {
+  width: min(520px, 100%);
+}
+
+.export-dialog-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.export-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.export-menu-item {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel-strong);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.export-menu-item:hover {
+  border-color: var(--accent);
+  background: var(--panel-muted);
+  transform: translateY(-1px);
+}
+
+.export-menu-item-title {
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.export-menu-item-desc {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.confirm-danger-btn {
+  border-color: rgba(192, 91, 91, 0.24);
+  color: var(--danger);
+}
+
+.confirm-danger-btn:hover {
+  border-color: rgba(192, 91, 91, 0.36);
+  background: rgba(192, 91, 91, 0.08);
+}
+
 .app {
   height: 100%;
   padding: 14px;
