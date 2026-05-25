@@ -1,0 +1,47 @@
+{
+  "id": "local-search",
+  "name": "local-search",
+  "version": "1.0.0",
+  "author": "Mulby",
+  "homepage": "https://github.com/Unicellular-SU/mulby_plugins",
+  "displayName": "本地搜索",
+  "description": "全平台系统文件快速搜索和预览，支持图片、文档、表格、视频、音频、压缩文件等多种格式",
+  "type": "utility",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "permissions": {
+    "clipboard": true,
+    "notification": true
+  },
+  "window": {
+    "width": 1100,
+    "height": 680,
+    "minWidth": 800,
+    "minHeight": 500
+  },
+  "pluginSetting": {
+    "height": 680
+  },
+  "features": [
+    {
+      "code": "search",
+      "explain": "搜索本地文件",
+      "mode": "ui",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "文件搜索"
+        },
+        {
+          "type": "regex",
+          "match": "^.{2,5}$",
+          "label": "本地搜索",
+          "explain": "输入 2-5 个字符搜索本地文件",
+          "minLength": 2,
+          "maxLength": 5
+        }
+      ]
+    }
+  ]
+}
