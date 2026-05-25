@@ -1,7 +1,7 @@
 {
   "id": "mulby-ai-chat",
   "name": "mulby-ai-chat",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "mulby",
   "displayName": "AI 助手",
   "type": "ai",
@@ -10,7 +10,14 @@
   "ui": "ui/index.html",
   "icon": "icon.png",
   "permissions": {
-    "clipboard": true
+    "clipboard": true,
+    "commandExecution": {
+      "ai": {
+        "enabled": true,
+        "defaultProfile": "sandbox",
+        "maxProfile": "workspace"
+      }
+    }
   },
   "pluginSetting": {
     "single": true
