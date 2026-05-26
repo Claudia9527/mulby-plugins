@@ -1,4 +1,4 @@
-name: Build Plugins
+name: Build & Release Plugins
 
 on:
   push:
@@ -9,12 +9,46 @@ permissions:
   contents: write
 
 jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      plugin_list: ${{ steps.changed.outputs.plugin_list }}
+      plugin_count: ${{ steps.changed.outputs.plugin_count }}
+      build_mode: ${{ steps.changed.outputs.build_mode }}
+      skip_build: ${{ steps.changed.outputs.skip_build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed plugins
+        id: changed
+        run: |
+          RESULT=$(node scripts/detect-changed-plugins.js --no-all-on-infra)
+          echo "Detection result:"
+          echo "$RESULT"
+
+          MODE=$(echo "$RESULT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.mode)")
+          PLUGINS_JSON=$(echo "$RESULT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(JSON.stringify(d.plugins))")
+          COUNT=$(echo "$RESULT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.plugins.length)")
+          PLUGIN_CSV=$(echo "$RESULT" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.plugins.join(','))")
+
+          echo "build_mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "plugin_count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "plugin_list=$PLUGIN_CSV" >> "$GITHUB_OUTPUT"
+          echo "skip_build=$([ "$COUNT" = "0" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: detect
+    if: needs.detect.outputs.skip_build != 'true'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -49,80 +83,109 @@ jobs:
       - name: Create releases directory
         run: mkdir -p releases
 
-      - name: Build and pack all plugins
+      - name: Build and pack plugins
         run: |
-          PLUGINS_JSON='{"version":"1.0.0","plugins":[]}'
+          PLUGIN_LIST="${{ needs.detect.outputs.plugin_list }}"
+          BUILD_MODE="${{ needs.detect.outputs.build_mode }}"
           RELEASE_TAG="${{ steps.release_meta.outputs.tag }}"
-          
-          for plugin_dir in plugins/*/; do
-            if [ -f "$plugin_dir/package.json" ]; then
-              plugin_name=$(basename "$plugin_dir")
-              echo "Processing plugin: $plugin_name"
-              
-              # Use subshell to isolate directory changes
-              (
-                cd "$plugin_dir" || exit 1
-                
-                pnpm run build || exit 1
+          BASE_RAW="https://raw.githubusercontent.com/${{ github.repository }}/main"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}"
 
-                # 如果 screenshots 目录不存在或为空，则自动生成截图
-                if [ ! -d "screenshots" ] || [ -z "$(ls -A screenshots 2>/dev/null)" ]; then
-                  echo "No screenshots found for $plugin_name, generating..."
-                  cd ../..
-                  node scripts/screenshot-plugin-ui.js "$plugin_name" || echo "Warning: screenshot generation failed for $plugin_name, continuing..."
-                  cd "$plugin_dir" || exit 1
-                fi
+          echo "Build mode: $BUILD_MODE"
+          echo "Plugins to build: $PLUGIN_LIST"
 
-                pnpm run pack || exit 1
-                
-                # Find and move the inplugin file
-                inplugin_file=$(ls -1 *.inplugin 2>/dev/null | head -n1)
-                if [ -z "$inplugin_file" ]; then
-                  echo "Error: No .inplugin file generated for $plugin_name"
-                  exit 1
-                fi
-                
-                echo "Found inplugin file: $inplugin_file"
-                mv "$inplugin_file" ../../releases/
-                
-                # Build Plugin Store Index v2 (Rich Metadata) entry
-                if [ -f "manifest.json" ]; then
-                  cd ../..
-                  BASE_RAW="https://raw.githubusercontent.com/${{ github.repository }}/main"
-                  REPO_URL="${{ github.server_url }}/${{ github.repository }}"
-                  node scripts/build-plugin-index-entry.js "$plugin_name" "$inplugin_file" "$BASE_RAW" "$REPO_URL" "$RELEASE_TAG" >> plugins_temp.jsonl
-                  cd - > /dev/null
-                fi
-              ) || {
-                echo "Failed to process plugin: $plugin_name"
-                exit 1
-              }
+          # Convert CSV to array
+          IFS=',' read -ra PLUGINS <<< "$PLUGIN_LIST"
+
+          for plugin_name in "${PLUGINS[@]}"; do
+            [ -z "$plugin_name" ] && continue
+            plugin_dir="plugins/$plugin_name"
+
+            if [ ! -f "$plugin_dir/package.json" ]; then
+              echo "::warning::Skipping $plugin_name: no package.json"
+              continue
             fi
+
+            echo "::group::Processing plugin: $plugin_name"
+
+            (
+              cd "$plugin_dir" || exit 1
+
+              pnpm run build || exit 1
+
+              # Auto-generate screenshot if missing
+              if [ ! -d "screenshots" ] || [ -z "$(ls -A screenshots 2>/dev/null)" ]; then
+                echo "No screenshots found for $plugin_name, generating..."
+                cd ../..
+                node scripts/screenshot-plugin-ui.js "$plugin_name" || echo "Warning: screenshot generation failed for $plugin_name, continuing..."
+                cd "$plugin_dir" || exit 1
+              fi
+
+              pnpm run pack || exit 1
+
+              inplugin_file=$(ls -1 *.inplugin 2>/dev/null | head -n1)
+              if [ -z "$inplugin_file" ]; then
+                echo "Error: No .inplugin file generated for $plugin_name"
+                exit 1
+              fi
+
+              echo "Found inplugin file: $inplugin_file"
+              mv "$inplugin_file" ../../releases/
+
+              if [ -f "manifest.json" ]; then
+                cd ../..
+                node scripts/build-plugin-index-entry.js "$plugin_name" "$inplugin_file" "$BASE_RAW" "$REPO_URL" "$RELEASE_TAG" >> plugins_temp.jsonl
+                cd - > /dev/null
+              fi
+            ) || {
+              echo "::error::Failed to process plugin: $plugin_name"
+              exit 1
+            }
+
+            echo "::endgroup::"
           done
-          
-          # Combine all plugin info into plugins.json
+
+      - name: Update plugins.json (incremental merge)
+        run: |
           if [ -f "plugins_temp.jsonl" ]; then
-            node -e "
-              const fs = require('fs');
-              const lines = fs.readFileSync('plugins_temp.jsonl', 'utf-8').trim().split('\n');
-              const plugins = lines.map(line => JSON.parse(line));
-              const output = {
-                version: '1.0.0',
-                plugins: plugins
-              };
-              console.log(JSON.stringify(output, null, 2));
-            " > plugins.json
+            node scripts/merge-plugins-json.js plugins_temp.jsonl
             rm plugins_temp.jsonl
           else
-            echo "$PLUGINS_JSON" > plugins.json
+            echo "No new plugin entries to merge"
           fi
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          PLUGIN_LIST="${{ needs.detect.outputs.plugin_list }}"
+          BUILD_MODE="${{ needs.detect.outputs.build_mode }}"
+          IFS=',' read -ra PLUGINS <<< "$PLUGIN_LIST"
+
+          NOTES="## 本次发布\n\n"
+          if [ "$BUILD_MODE" = "full" ]; then
+            NOTES="${NOTES}> 全量构建\n\n"
+          else
+            NOTES="${NOTES}> 增量发布（仅更新变更的插件）\n\n"
+          fi
+
+          NOTES="${NOTES}### 更新的插件\n\n"
+          for plugin_name in "${PLUGINS[@]}"; do
+            [ -z "$plugin_name" ] && continue
+            VER=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('plugins/$plugin_name/manifest.json','utf8')).version)}catch{console.log('?')}")
+            DISPLAY=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('plugins/$plugin_name/manifest.json','utf8')).displayName||'$plugin_name')}catch{console.log('$plugin_name')}")
+            NOTES="${NOTES}- **${DISPLAY}** v${VER}\n"
+          done
+
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           name: ${{ steps.release_meta.outputs.tag }}
-          generate_release_notes: true
+          body: ${{ steps.release_notes.outputs.notes }}
           files: releases/*.inplugin
 
       - name: Commit and push plugins index updates
