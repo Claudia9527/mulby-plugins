@@ -19,6 +19,30 @@ export function getDefaultTitle(messages: ChatMessage[]) {
 // mulby API 访问（渲染进程）
 export const ai = () => (window as any).mulby?.ai;
 export const storage = () => (window as any).mulby?.storage;
+export const directoryAccess = () => (window as any).mulby?.directoryAccess;
+
+export function buildSystemPrompt(): string {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const dateStr = now.toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: tz,
+  });
+  const timeStr = now.toLocaleTimeString('en-US', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz,
+  });
+
+  return [
+    'You are Mulby AI, a versatile and knowledgeable assistant. Respond with accuracy, depth, and clarity.',
+    '',
+    `Current time: ${dateStr}, ${timeStr} (${tz}).`,
+    '',
+    'Rules:',
+    '- Always reply in the same language the user uses. If they write in Chinese, respond in Chinese; if in English, respond in English.',
+    '- Be honest about uncertainty. Never fabricate facts or sources.',
+    '- Use Markdown formatting: headings, lists, bold, code blocks (with language tags), LaTeX math ($inline$ and $$block$$), and tables where appropriate.',
+    '- Match formatting complexity to the question — short answers don\'t need elaborate structure.',
+  ].join('\n');
+}
 
 export const STORAGE_NS = 'mulby-ai-chat';
 export const STORAGE_KEY_SESSIONS = 'sessions';

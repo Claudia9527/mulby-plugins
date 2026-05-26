@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { AiModel, AiSkillRecord, WebSearchProvider } from '../types';
+import { AiModel, AiSkillRecord, WebSearchProvider, DirectoryGrant } from '../types';
 import { Icons } from '../Icons';
 import { ModelPicker } from './ModelPicker';
 
@@ -24,6 +24,8 @@ interface ChatInputProps {
   models: AiModel[];
   currentModel: string;
   showModelPicker: boolean;
+  directoryGrants: DirectoryGrant[];
+  showDirectoryPanel: boolean;
   onInputChange: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
@@ -39,6 +41,9 @@ interface ChatInputProps {
   onToggleWebSearch: () => void;
   onToggleWebSearchEnabled: (enabled: boolean) => void;
   onSetWebSearchProvider: (providerId: string) => void;
+  onToggleDirectoryPanel: () => void;
+  onRequestDirectory: () => void;
+  onRevokeDirectory: (grantId: string) => void;
   onClosePopovers: () => void;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
 }
@@ -59,6 +64,8 @@ export function ChatInput({
   models,
   currentModel,
   showModelPicker,
+  directoryGrants,
+  showDirectoryPanel,
   onInputChange,
   onKeyDown,
   onPaste,
@@ -74,6 +81,9 @@ export function ChatInput({
   onToggleWebSearch,
   onToggleWebSearchEnabled,
   onSetWebSearchProvider,
+  onToggleDirectoryPanel,
+  onRequestDirectory,
+  onRevokeDirectory,
   onClosePopovers,
   textareaRef,
 }: ChatInputProps) {
@@ -81,7 +91,7 @@ export function ChatInput({
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!showSkills && !showWebSearch) return;
+    if (!showSkills && !showWebSearch && !showDirectoryPanel) return;
     const handler = (e: MouseEvent) => {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         onClosePopovers();
@@ -89,7 +99,7 @@ export function ChatInput({
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showSkills, showWebSearch, onClosePopovers]);
+  }, [showSkills, showWebSearch, showDirectoryPanel, onClosePopovers]);
 
   return (
     <div className="input-area" ref={wrapperRef}>
@@ -190,6 +200,45 @@ export function ChatInput({
           </div>
         )}
 
+        {/* 目录授权面板 */}
+        {showDirectoryPanel && (
+          <div className="directory-panel">
+            <h4>工作目录</h4>
+            <p className="directory-panel-desc">授权 AI 在指定目录中读写文件和执行命令</p>
+            {directoryGrants.length === 0 ? (
+              <div className="no-skills">暂无已授权目录</div>
+            ) : (
+              directoryGrants.map((grant) => (
+                <div key={grant.id} className="directory-grant-item">
+                  <div className="directory-grant-main">
+                    <span className="directory-grant-path" title={grant.path}>
+                      {grant.path.length > 40
+                        ? '…' + grant.path.slice(-38)
+                        : grant.path}
+                    </span>
+                    <span className={`directory-grant-mode ${grant.mode}`}>
+                      {grant.mode === 'readwrite' ? '读写' : '只读'}
+                    </span>
+                  </div>
+                  <button
+                    className="directory-grant-revoke"
+                    onClick={() => onRevokeDirectory(grant.id)}
+                    title="撤销授权"
+                  >
+                    <Icons.close />
+                  </button>
+                </div>
+              ))
+            )}
+            <button
+              className="directory-add-btn"
+              onClick={onRequestDirectory}
+            >
+              <Icons.plus /> 选择目录
+            </button>
+          </div>
+        )}
+
         <div className="input-row">
           <textarea
             ref={textareaRef}
@@ -202,8 +251,10 @@ export function ChatInput({
             disabled={isStreaming}
             rows={1}
           />
+        </div>
 
-          <div className="input-actions">
+        <div className="input-toolbar">
+          <div className="input-tools">
             {/* 模型切换 */}
             <ModelPicker
               models={models}
@@ -244,22 +295,32 @@ export function ChatInput({
               <Icons.globe />
             </button>
 
-            {/* 发送 / 停止 */}
-            {isStreaming ? (
-              <button className="stop-btn" onClick={onStop} title="停止生成">
-                <Icons.stop />
-              </button>
-            ) : (
-              <button
-                className="send-btn"
-                onClick={onSend}
-                disabled={!canSend}
-                title="发送 (Enter)"
-              >
-                <Icons.send />
-              </button>
-            )}
+            {/* 工作目录 */}
+            <button
+              className="icon-btn"
+              title="工作目录"
+              onClick={onToggleDirectoryPanel}
+              style={{ color: directoryGrants.length > 0 ? 'var(--text-accent)' : undefined }}
+            >
+              <Icons.folder />
+            </button>
           </div>
+
+          {/* 发送 / 停止 */}
+          {isStreaming ? (
+            <button className="stop-btn" onClick={onStop} title="停止生成">
+              <Icons.stop />
+            </button>
+          ) : (
+            <button
+              className="send-btn"
+              onClick={onSend}
+              disabled={!canSend}
+              title="发送 (Enter)"
+            >
+              <Icons.send />
+            </button>
+          )}
         </div>
       </div>
 

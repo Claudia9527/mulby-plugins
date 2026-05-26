@@ -1,7 +1,7 @@
 {
   "id": "mulby-ai-chat",
   "name": "mulby-ai-chat",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "mulby",
   "displayName": "AI 助手",
   "type": "ai",

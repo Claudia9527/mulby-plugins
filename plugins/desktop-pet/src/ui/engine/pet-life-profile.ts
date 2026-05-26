@@ -463,10 +463,6 @@ export class LifeProfileController {
           { role: 'user', content: JSON.stringify({ existing, conversation }) },
         ],
         params: { maxOutputTokens: 1000, temperature: 0.2 },
-        capabilities: [],
-        toolingPolicy: { enableInternalTools: false },
-        mcp: { mode: 'off' },
-        skills: { mode: 'off' },
       })
 
       const text = typeof resp?.content === 'string' ? resp.content.trim() : ''

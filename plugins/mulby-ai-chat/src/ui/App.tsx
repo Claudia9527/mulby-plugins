@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './styles.css';
 
-import { Theme, AiModel, AiSkillRecord, ChatMessage, Session, AiAttachmentRef, WebSearchProvider } from './types';
+import { Theme, AiModel, AiSkillRecord, ChatMessage, Session, AiAttachmentRef, WebSearchProvider, DirectoryGrant } from './types';
 import {
   genId, getDefaultTitle,
-  ai, storage,
-  STORAGE_NS, STORAGE_KEY_MODEL, STORAGE_KEY_WEB_SEARCH_REQUEST,
+  ai, storage, directoryAccess,
+  buildSystemPrompt, STORAGE_NS, STORAGE_KEY_MODEL, STORAGE_KEY_WEB_SEARCH_REQUEST,
   fileToBase64,
 } from './utils';
 import {
@@ -204,6 +204,10 @@ export default function App() {
   const [webCapabilityDenied, setWebCapabilityDenied] = useState(false);
   const [webCapabilityReason, setWebCapabilityReason] = useState('');
 
+  // 目录授权
+  const [directoryGrants, setDirectoryGrants] = useState<DirectoryGrant[]>([]);
+  const [showDirectoryPanel, setShowDirectoryPanel] = useState(false);
+
   const refreshWebSearchSettings = useCallback(() => {
     const ws = ai()?.tooling?.webSearch;
     if (!ws) return;
@@ -220,6 +224,14 @@ export default function App() {
   }, []);
 
   useEffect(() => { refreshWebSearchSettings(); }, [refreshWebSearchSettings]);
+
+  const refreshDirectoryGrants = useCallback(() => {
+    directoryAccess()?.list?.().then((grants: DirectoryGrant[]) => {
+      setDirectoryGrants(grants || []);
+    }).catch(() => { });
+  }, []);
+
+  useEffect(() => { refreshDirectoryGrants(); }, [refreshDirectoryGrants]);
 
   useEffect(() => {
     storage()?.get(STORAGE_KEY_WEB_SEARCH_REQUEST, STORAGE_NS).then((saved: unknown) => {
@@ -491,6 +503,8 @@ export default function App() {
     } else {
       aiMessages.push({ role: 'user', content: text });
     }
+
+    aiMessages.unshift({ role: 'system', content: buildSystemPrompt() });
 
     const skillsOption = selectedSkillIds.length > 0
       ? { mode: 'manual' as const, skillIds: selectedSkillIds }
@@ -823,6 +837,29 @@ export default function App() {
     storage()?.set(STORAGE_KEY_WEB_SEARCH_REQUEST, enabled, STORAGE_NS).catch(() => { });
   }, []);
 
+  const handleRequestDirectory = useCallback(async () => {
+    try {
+      const grant = await directoryAccess()?.request?.({
+        mode: 'readwrite',
+        reason: '在用户选择的项目目录中读写文件和执行命令',
+      });
+      if (grant) {
+        refreshDirectoryGrants();
+      }
+    } catch (err) {
+      console.error('目录授权失败:', err);
+    }
+  }, [refreshDirectoryGrants]);
+
+  const handleRevokeDirectory = useCallback(async (grantId: string) => {
+    try {
+      await directoryAccess()?.revoke?.(grantId);
+      refreshDirectoryGrants();
+    } catch (err) {
+      console.error('撤销授权失败:', err);
+    }
+  }, [refreshDirectoryGrants]);
+
   // ── 消息操作 ──────────────────────────────────────────────
 
   // 复制消息内容到剪贴板（先检查 API 可用性，防止沙箱 webview 中抛出同步错误）
@@ -901,6 +938,8 @@ export default function App() {
       }
       return { role: m.role as any, content: m.content };
     });
+
+    aiMessages.unshift({ role: 'system', content: buildSystemPrompt() });
 
     const skillsOption = selectedSkillIds.length > 0
       ? { mode: 'manual' as const, skillIds: selectedSkillIds }
@@ -1399,6 +1438,8 @@ export default function App() {
             models={models}
             currentModel={currentModel}
             showModelPicker={showModelPicker}
+            directoryGrants={directoryGrants}
+            showDirectoryPanel={showDirectoryPanel}
             onInputChange={handleInputChange}
             onKeyDown={handleInputKeyDown}
             onPaste={handlePaste}
@@ -1409,18 +1450,29 @@ export default function App() {
             onToggleSkills={() => {
               setShowSkills(s => !s);
               setShowWebSearch(false);
+              setShowDirectoryPanel(false);
             }}
             onSkillToggle={handleSkillToggle}
             onToggleWebSearch={() => {
               refreshWebSearchSettings();
               setShowWebSearch(s => !s);
               setShowSkills(false);
+              setShowDirectoryPanel(false);
             }}
             onToggleWebSearchEnabled={handleToggleWebSearchEnabled}
             onSetWebSearchProvider={handleSetWebSearchProvider}
+            onToggleDirectoryPanel={() => {
+              refreshDirectoryGrants();
+              setShowDirectoryPanel(s => !s);
+              setShowSkills(false);
+              setShowWebSearch(false);
+            }}
+            onRequestDirectory={handleRequestDirectory}
+            onRevokeDirectory={handleRevokeDirectory}
             onClosePopovers={() => {
               setShowSkills(false);
               setShowWebSearch(false);
+              setShowDirectoryPanel(false);
             }}
             onModelChange={handleSessionModelChange}
             onModelPickerToggle={() => setShowModelPicker(v => !v)}

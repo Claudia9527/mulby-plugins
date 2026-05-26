@@ -46,10 +46,6 @@ export async function startGame(
           { role: 'user', content: '出题吧！' },
         ],
         params: { maxOutputTokens: 150, temperature: 1.0 },
-        capabilities: [],
-        toolingPolicy: { enableInternalTools: false },
-        mcp: { mode: 'off' },
-        skills: { mode: 'off' },
       },
       (chunk: any) => {
         if (chunk.chunkType === 'text' && chunk.content) {

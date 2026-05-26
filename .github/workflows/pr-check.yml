@@ -1,0 +1,265 @@
+name: PR Plugin Check
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+          cache: 'pnpm'
+
+      - name: Detect changed plugins
+        id: detect
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA"..."$HEAD_SHA")
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Extract unique plugin names from changed files
+          PLUGINS=$(echo "$CHANGED_FILES" | grep -oP '^plugins/\K[^/]+' | sort -u || true)
+          echo "Changed plugins: $PLUGINS"
+
+          # Check for non-plugin changes
+          NON_PLUGIN=$(echo "$CHANGED_FILES" | grep -v '^plugins/' | grep -v '^\.' | grep -v '^docs/' || true)
+
+          PLUGIN_COUNT=$(echo "$PLUGINS" | grep -c . || echo 0)
+          PLUGIN_LIST=$(echo "$PLUGINS" | tr '\n' ',' | sed 's/,$//')
+
+          echo "plugin_count=$PLUGIN_COUNT" >> "$GITHUB_OUTPUT"
+          echo "plugin_list=$PLUGIN_LIST" >> "$GITHUB_OUTPUT"
+          echo "has_non_plugin_changes=$([ -n "$NON_PLUGIN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "non_plugin_files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NON_PLUGIN" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # Save plugin list for later steps
+          echo "$PLUGINS" > /tmp/changed_plugins.txt
+
+      - name: Validate changed plugins
+        id: validate
+        if: steps.detect.outputs.plugin_count != '0'
+        run: |
+          VALIDATION_REPORT=""
+          ALL_VALID=true
+
+          while IFS= read -r plugin; do
+            [ -z "$plugin" ] && continue
+            echo "Validating plugin: $plugin"
+
+            RESULT=$(node scripts/validate-plugin.js "$plugin" 2>&1) || true
+            PASSED=$(echo "$RESULT" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');try{const j=JSON.parse(d);console.log(j.passed)}catch{console.log('false')}")
+
+            if [ "$PASSED" = "false" ]; then
+              ALL_VALID=false
+            fi
+
+            VALIDATION_REPORT="${VALIDATION_REPORT}
+          ### \`${plugin}\`
+          \`\`\`json
+          ${RESULT}
+          \`\`\`
+          "
+          done < /tmp/changed_plugins.txt
+
+          echo "all_valid=$ALL_VALID" >> "$GITHUB_OUTPUT"
+          # Save report for comment step
+          echo "$VALIDATION_REPORT" > /tmp/validation_report.md
+
+      - name: Install dependencies
+        if: steps.detect.outputs.plugin_count != '0'
+        run: pnpm install --frozen-lockfile
+
+      - name: Install mulby-cli
+        if: steps.detect.outputs.plugin_count != '0'
+        run: npm install -g mulby-cli
+
+      - name: Build changed plugins
+        id: build
+        if: steps.detect.outputs.plugin_count != '0'
+        run: |
+          BUILD_REPORT=""
+          ALL_BUILT=true
+          mkdir -p pr-artifacts
+
+          while IFS= read -r plugin; do
+            [ -z "$plugin" ] && continue
+            echo "::group::Building $plugin"
+
+            PLUGIN_DIR="plugins/$plugin"
+            if [ ! -f "$PLUGIN_DIR/package.json" ]; then
+              echo "Skipping $plugin: no package.json"
+              echo "::endgroup::"
+              continue
+            fi
+
+            BUILD_OK=true
+            PACK_OK=true
+            INPLUGIN_FILE=""
+
+            (cd "$PLUGIN_DIR" && pnpm run build) || BUILD_OK=false
+
+            if [ "$BUILD_OK" = true ]; then
+              (cd "$PLUGIN_DIR" && pnpm run pack) || PACK_OK=false
+            fi
+
+            if [ "$PACK_OK" = true ]; then
+              INPLUGIN_FILE=$(ls -1 "$PLUGIN_DIR"/*.inplugin 2>/dev/null | head -n1)
+              if [ -n "$INPLUGIN_FILE" ]; then
+                cp "$INPLUGIN_FILE" pr-artifacts/
+                INPLUGIN_FILE=$(basename "$INPLUGIN_FILE")
+              fi
+            fi
+
+            if [ "$BUILD_OK" = false ] || [ "$PACK_OK" = false ]; then
+              ALL_BUILT=false
+            fi
+
+            BUILD_REPORT="${BUILD_REPORT}| \`${plugin}\` | $([ "$BUILD_OK" = true ] && echo '✅' || echo '❌') | $([ "$PACK_OK" = true ] && echo '✅' || echo '❌') | ${INPLUGIN_FILE:-N/A} |
+          "
+            echo "::endgroup::"
+          done < /tmp/changed_plugins.txt
+
+          echo "all_built=$ALL_BUILT" >> "$GITHUB_OUTPUT"
+          echo "$BUILD_REPORT" > /tmp/build_report.md
+
+      - name: Upload build artifacts
+        if: steps.detect.outputs.plugin_count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-packages
+          path: pr-artifacts/*.inplugin
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Determine previous versions
+        id: versions
+        if: steps.detect.outputs.plugin_count != '0'
+        run: |
+          VERSION_INFO=""
+          while IFS= read -r plugin; do
+            [ -z "$plugin" ] && continue
+            # Current version from manifest
+            CUR_VER=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('plugins/$plugin/manifest.json','utf8')).version||'?')}catch{console.log('?')}")
+            # Previous version from plugins.json index
+            PREV_VER=$(node -e "try{const d=JSON.parse(require('fs').readFileSync('plugins.json','utf8'));const p=d.plugins.find(x=>x.name==='$plugin');console.log(p?p.version:'new')}catch{console.log('?')}")
+            TYPE=$([ "$PREV_VER" = "new" ] && echo "🆕 新增" || echo "📦 更新")
+            VERSION_INFO="${VERSION_INFO}- **\`${plugin}\`**: ${TYPE} (${PREV_VER} → ${CUR_VER})
+          "
+          done < /tmp/changed_plugins.txt
+          echo "$VERSION_INFO" > /tmp/version_info.md
+
+      - name: Post PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const pluginCount = '${{ steps.detect.outputs.plugin_count }}';
+            const pluginList = '${{ steps.detect.outputs.plugin_list }}';
+            const hasNonPlugin = '${{ steps.detect.outputs.has_non_plugin_changes }}';
+            const allValid = '${{ steps.validate.outputs.all_valid }}';
+            const allBuilt = '${{ steps.build.outputs.all_built }}';
+
+            let body = '## 🔍 Mulby Plugin CI Report\n\n';
+
+            if (pluginCount === '0') {
+              body += '> ℹ️ 本次 PR 未涉及任何插件目录变更。\n';
+            } else {
+              // Version info
+              let versionInfo = '';
+              try { versionInfo = fs.readFileSync('/tmp/version_info.md', 'utf8'); } catch {}
+              body += '### 变更检测\n' + versionInfo + '\n';
+
+              // Scope warning
+              if (hasNonPlugin === 'true') {
+                body += '> ⚠️ **注意**：本次 PR 修改了插件目录以外的文件，需要维护者额外审核。\n\n';
+              }
+              if (parseInt(pluginCount) > 1) {
+                body += '> 💡 **建议**：每个 PR 只修改一个插件，方便审核和增量发布。\n\n';
+              }
+
+              // Validation
+              body += '### 校验结果\n';
+              body += allValid === 'true' ? '✅ 所有插件校验通过\n\n' : '❌ 部分插件校验失败，请查看详情\n\n';
+              let validationReport = '';
+              try { validationReport = fs.readFileSync('/tmp/validation_report.md', 'utf8'); } catch {}
+              if (validationReport) {
+                body += '<details><summary>校验详情</summary>\n\n' + validationReport + '\n</details>\n\n';
+              }
+
+              // Build
+              body += '### 构建结果\n';
+              body += '| 插件 | 构建 | 打包 | 产物 |\n|------|------|------|------|\n';
+              let buildReport = '';
+              try { buildReport = fs.readFileSync('/tmp/build_report.md', 'utf8'); } catch {}
+              body += buildReport + '\n';
+
+              if (allBuilt === 'true') {
+                body += '📦 构建产物已上传为 Artifact，审核者可下载测试。\n\n';
+              }
+
+              // Checklist reminder
+              body += '### 自检清单\n';
+              body += '- [ ] 已在本地 Mulby 客户端测试过主要功能\n';
+              body += '- [ ] manifest.json 的 version 已更新\n';
+              body += '- [ ] 已移除调试日志和敏感信息\n';
+              body += '- [ ] README.md 已更新（如有功能变化）\n';
+              body += '- [ ] 同意以 MIT 协议发布此插件\n';
+            }
+
+            // Find and update existing comment or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Mulby Plugin CI Report')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if validation or build failed
+        if: steps.validate.outputs.all_valid == 'false' || steps.build.outputs.all_built == 'false'
+        run: |
+          echo "::error::Plugin validation or build failed. Check the PR comment for details."
+          exit 1

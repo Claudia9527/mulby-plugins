@@ -1696,10 +1696,6 @@ export default function PetView() {
               { role: 'user', content: wrapUntrustedText(clip.slice(0, CLIPBOARD_MAX_LEN_TRANSLATE)) },
             ],
             params: { maxOutputTokens: 80, temperature: 0.3 },
-            capabilities: [],
-            toolingPolicy: { enableInternalTools: false },
-            mcp: { mode: 'off' },
-            skills: { mode: 'off' },
           })
           if (resp?.content) {
             const translated = typeof resp.content === 'string' ? resp.content : ''
