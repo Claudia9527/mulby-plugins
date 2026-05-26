@@ -5,7 +5,7 @@ import { Theme, AiModel, AiSkillRecord, ChatMessage, Session, AiAttachmentRef, W
 import {
   genId, getDefaultTitle,
   ai, storage, directoryAccess,
-  STORAGE_NS, STORAGE_KEY_MODEL, STORAGE_KEY_WEB_SEARCH_REQUEST,
+  buildSystemPrompt, STORAGE_NS, STORAGE_KEY_MODEL, STORAGE_KEY_WEB_SEARCH_REQUEST,
   fileToBase64,
 } from './utils';
 import {
@@ -504,6 +504,8 @@ export default function App() {
       aiMessages.push({ role: 'user', content: text });
     }
 
+    aiMessages.unshift({ role: 'system', content: buildSystemPrompt() });
+
     const skillsOption = selectedSkillIds.length > 0
       ? { mode: 'manual' as const, skillIds: selectedSkillIds }
       : undefined;
@@ -936,6 +938,8 @@ export default function App() {
       }
       return { role: m.role as any, content: m.content };
     });
+
+    aiMessages.unshift({ role: 'system', content: buildSystemPrompt() });
 
     const skillsOption = selectedSkillIds.length > 0
       ? { mode: 'manual' as const, skillIds: selectedSkillIds }

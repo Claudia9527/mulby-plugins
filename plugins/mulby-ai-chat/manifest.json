@@ -10,7 +10,12 @@
   "ui": "ui/index.html",
   "icon": "icon.png",
   "permissions": {
-    "clipboard": true
+    "clipboard": true,
+    "commandExecution": {
+      "ai": {
+        "enabled": true
+      }
+    }
   },
   "pluginSetting": {
     "single": true
