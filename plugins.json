@@ -130,11 +130,11 @@
       "id": "clipboard-history",
       "name": "clipboard-history",
       "displayName": "剪贴板历史",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "Mulby",
       "description": "查看和管理剪贴板历史记录，支持文本、图片、文件",
-      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.25-1441/clipboard-history-1.0.1.inplugin",
-      "lastPackageTime": "2026-05-25T14:42:30.229Z",
+      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.26-1504/clipboard-history-1.0.2.inplugin",
+      "lastPackageTime": "2026-05-26T15:05:06.643Z",
       "type": "productivity",
       "details": "# 剪贴板历史插件\n\n查看和管理剪贴板历史记录，支持文本、图片、文件。\n\n## 功能特性\n\n- ✅ **自动记录** - 自动记录所有剪贴板变化（文本、图片、文件）\n- ✅ **按时间倒序** - 最新的记录显示在最前面\n- ✅ **类型过滤** - 按文本、图片、文件类型过滤\n- ✅ **搜索功能** - 快速搜索文本内容和文件名\n- ✅ **收藏功能** - 收藏重要的记录，永久保留\n- ✅ **一键复制** - 点击即可复制历史记录到剪贴板\n- ✅ **统计信息** - 显示各类型记录的数量\n- ✅ **暗色主题** - 自动跟随系统主题\n\n## 触发方式\n\n- `剪贴板` - 打开剪贴板历史\n- `clipboard` - 打开剪贴板历史\n- `cb` - 打开剪贴板历史（快捷方式）\n\n## 使用说明\n\n### 查看历史\n\n1. 输入触发词（如 `剪贴板`）打开插件\n2. 历史记录按时间倒序显示\n3. 支持查看文本、图片预览、文件列表\n\n### 过滤和搜索\n\n- **类型过滤**：点击顶部的\"全部\"、\"文本\"、\"图片\"、\"文件\"、\"收藏\"按钮\n- **文本搜索**：在搜索框中输入关键词，支持搜索文本内容和文件名\n\n### 操作记录\n\n每条记录提供三个操作按钮：\n\n- **收藏** ⭐ - 收藏/取消收藏记录（收藏的记录不会被自动清理）\n- **复制** 📋 - 复制到剪贴板并自动关闭窗口\n- **删除** 🗑️ - 删除单条记录\n\n### 清空历史\n\n点击右上角的\"清空历史\"按钮可以清空所有历史记录（收藏的记录会保留）。\n\n## 数据存储\n\n- 历史记录存储在 SQLite 数据库中\n- 默认保留最近 1000 条记录\n- 收藏的记录永久保留\n- 图片最大 5MB\n\n## 技术实现\n\n- **前端**：React + TypeScript + Tailwind CSS\n- **后端**：Node.js + SQLite\n- **剪贴板监听**：Native Addon（零性能开销）\n- **主题**：自动跟随系统主题\n\n## 开发\n\n### 安装依赖\n\n```bash\npnpm install\n```\n\n### 开发模式\n\n```bash\npnpm run dev\n```\n\n### 构建\n\n```bash\npnpm run build\n```\n\n### 打包\n\n```bash\npnpm run pack\n```\n\n## 许可证\n\nMIT License",
       "icon": {
@@ -147,7 +147,7 @@
           "caption": "主界面"
         }
       ],
-      "sha256": "1a37342243f5af969da5ccf81936ebc7efe6eba7b7b7b2a56bdfc2eb373b347b",
+      "sha256": "ecc33632cc9c2b719f8c07039b2632aebc7daeda14270bd6bbf35cbfe8274db7",
       "homepage": "https://github.com/Unicellular-SU/mulby_plugins",
       "repository": "https://github.com/Unicellular-SU/mulby-plugins/tree/main/plugins/clipboard-history"
     },
@@ -183,8 +183,8 @@
       "version": "1.0.5",
       "author": "Mulby Team",
       "description": "一只活泼的桌面伴侣，能感知你的鼠标和键盘操作并做出有趣反应",
-      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.25-1441/desktop-pet-1.0.5.inplugin",
-      "lastPackageTime": "2026-05-25T14:44:20.894Z",
+      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.26-1504/desktop-pet-1.0.5.inplugin",
+      "lastPackageTime": "2026-05-26T15:05:09.293Z",
       "type": "entertainment",
       "details": "# 桌面宠物\n\n一只住在桌面上的像素小幽灵。它能根据鼠标、键盘、前台应用、番茄钟、提醒和对话上下文做出表情、姿势、气泡与 AI 回复。\n\n## 功能特性\n\n- **桌面陪伴**：透明置顶小幽灵，会闲逛、追逐、探头、睡觉、挥手、跳跃和摇摆。\n- **AI 对话**：长按宠物打开输入框；宠物会结合性格、心情、生活档案、天气和当前应用上下文回复。\n- **表现控制**：AI 可调用表情、姿势、动作、移动和心情工具，让回复过程同步变脸和运动。\n- **生活档案**：多轮对话后自动维护用户档案、偏好、习惯、关系线索和近期事件，可在设置页编辑或清空。\n- **生态系统**：记录精力、关注、好奇、专注、补水状态，识别工作模式，维护今日时间线和每日目标。\n- **日记时间线**：晚上自动根据今日事件、最近对话和统计数据生成宠物日记。\n- **番茄钟与节律提醒**：支持专注计时、喝水提醒、休息提醒和自定义定时提醒。\n- **小游戏**：支持猜谜语、成语接龙、冷知识问答，并记录积分、连续答对和今日游玩情况。\n- **成就与状态**：记录亲密度、心情、签到、互动、专注时长和成就解锁。\n\n## 使用方式\n\n在 Mulby 搜索栏输入以下任意关键词启动：\n\n- `宠物`\n- `pet`\n- `桌面宠物`\n\n## 操作\n\n- 左键点击：触发宠物互动与主动搭话。\n- 长按左键：打开聊天输入框。\n- 右键点击：打开菜单，可进入设置、开始番茄钟、启动小游戏、查看思考过程或退出。\n\n## 设置页\n\n右键宠物后选择「设置」：\n\n- **设置**：宠物名称、性格、AI 模型、说话频率、番茄钟时长、生日、位置信息、上下文隐私和触发行为。\n- **生态**：查看心情、亲密度、签到、番茄钟、专注时长、需求状态、当前工作模式、每日任务、小游戏积分和今日时间线。\n- **提醒**：配置喝水、休息眼睛和自定义定时提醒。\n- **记忆**：查看、编辑、删除或清空生活档案。\n- **成就**：查看已解锁成就。\n- **日记**：查看自动生成的宠物日记。\n- **对话**：查看用户上下文、模型思考和宠物发言历史。\n- **表现预览**：测试所有表情、姿势、情绪和动作组合。\n\n## 隐私说明\n\n- 默认只使用应用名识别工作模式，不把窗口标题写入长期存储。\n- 设置页可选择允许窗口标题参与短期 AI 上下文；标题仍不会进入今日时间线。\n- 剪贴板响应默认关闭，并沿用敏感内容过滤。\n\n## 技术实现\n\n- 透明置顶 detached 窗口，内容区为 `PET_SIZE` 120。\n- 内置 SVG 小幽灵精灵，由 `svg-renderer` 加载，姿势和表情通过状态机与 CSS 动画表现。\n- 输入监听使用 Mulby `inputMonitor`，前台窗口上下文通过主进程 RPC 读取。\n- 数据使用 Mulby storage 持久化，包括性格、位置、生活档案、对话历史、生态状态、时间线、每日任务、小游戏统计、日记和成就。\n\n## 权限\n\n- `inputMonitor`：监听鼠标和键盘行为。\n- `ai`：调用文本模型生成回复、日记和小游戏题目。\n- `accessibility`：在 macOS 上支持全局输入监听。\n- `clipboard`：可选剪贴板响应。\n- `screen`：读取屏幕与窗口位置。\n- `geolocation`：可选定位和天气上下文。\n\n## 系统要求\n\n- Mulby 桌面客户端。\n- macOS 需授予辅助功能权限。",
       "icon": {
@@ -197,7 +197,7 @@
           "caption": "主界面"
         }
       ],
-      "sha256": "a0ff9bae0f3eee1597d7bda7756ada6f66e4006fbd58af13d1573cc8ce8a52ee",
+      "sha256": "cbf136ffd86d86adddadb63a0a9382bd6ed40975685adfce061614a66845a672",
       "homepage": "https://github.com/Unicellular-SU/mulby-plugins",
       "repository": "https://github.com/Unicellular-SU/mulby-plugins/tree/main/plugins/desktop-pet"
     },
@@ -373,13 +373,13 @@
       "id": "mulby-ai-chat",
       "name": "mulby-ai-chat",
       "displayName": "AI 助手",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "author": "mulby",
       "description": "支持多轮对话的 AI 聊天助手，支持多模型切换、流式输出、附件上传、AI Skills",
-      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.25-1441/mulby-ai-chat-1.0.2.inplugin",
-      "lastPackageTime": "2026-05-25T14:45:06.409Z",
+      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.26-1504/mulby-ai-chat-1.0.3.inplugin",
+      "lastPackageTime": "2026-05-26T15:05:17.447Z",
       "type": "ai",
-      "details": "# mulby-ai-chat · AI 助手插件\n\n支持多轮对话的 AI 聊天助手，参考 Cherry Studio 交互风格，集成 Mulby 内置 AI 全部能力。\n\n## 功能特性\n\n| 功能 | 说明 |\n|------|------|\n| 多模型切换 | 顶栏下拉选择所有已配置模型（allModels） |\n| 流式输出 | 实时打字效果，onChunk 回调 + 打字光标动画 |\n| 多轮对话 | 完整历史上下文，持久化到 Mulby storage |\n| 会话管理 | 左侧列表，支持新建 / 切换 / 删除，最多保存 50 条 |\n| 附件上传 | 支持图片（vision）和文件，通过 ai.attachments.upload 上传 |\n| AI Skills | 弹出面板选择启用的 Skills，支持手动 / 自动模式 |\n| Markdown 渲染 | react-markdown + remark-gfm，代码块语法高亮 |\n| 主题跟随 | 监听 onThemeChange，light/dark 双色板 CSS 变量实时切换 |\n| Liquid Glass UI | iOS 26 风格毛玻璃+高斯模糊+半透明卡片+高光边框 |\n\n## 触发方式\n\n在 Mulby 搜索栏输入以下任一关键词：\n\n- `ai`\n- `chat`  \n- `助手`\n\n## 界面说明\n\n```\n┌─ 顶栏（拖拽移动）─────────────────────────────┐\n│  [Logo] AI 助手   [模型选择器▼]        [✕]   │\n├─ 侧边栏 240px ─┬─ 对话区 ─────────────────────┤\n│  [+ 新建对话]  │  消息列表（弹入动画）          │\n│  会话 1 ✕     │  ···                          │\n│  会话 2 ✕     │                               │\n│  ···          ├─ 输入区 ─────────────────────┤\n│               │  [附件预览]                   │\n│               │  ┌────────────────────────┐  │\n│               │  │ textarea (Shift+Enter) │  │\n│               │  │            [📎][⚡][▶]│  │\n│               │  └────────────────────────┘  │\n└───────────────┴──────────────────────────────┘\n```\n\n## 快捷键\n\n| 按键 | 动作 |\n|------|------|\n| `Enter` | 发送消息 |\n| `Shift+Enter` | 文本框换行 |\n\n## 依赖\n\n- `react-markdown` + `remark-gfm` — Markdown 渲染\n- `react-syntax-highlighter` — 代码高亮\n\n## 构建\n\n```bash\npnpm install\npnpm run build\npnpm run pack   # 打包为 .inplugin\n```\n\n## 注意事项\n\n- 需要在 Mulby 中配置至少一个 AI Provider 才能正常使用\n- 附件上传依赖 Mulby AI 附件 API，图片自动使用 vision 模式\n- 会话历史每条会话最多保留 100 条消息",
+      "details": "# mulby-ai-chat · AI 助手插件\n\n支持多轮对话的 AI 聊天助手，参考 Cherry Studio 交互风格，集成 Mulby 内置 AI 全部能力。\n\n## 功能特性\n\n| 功能 | 说明 |\n|------|------|\n| 多模型切换 | 顶栏下拉选择所有已配置模型（allModels） |\n| 流式输出 | 实时打字效果，onChunk 回调 + 打字光标动画 |\n| 多轮对话 | 完整历史上下文，持久化到 Mulby storage |\n| 会话管理 | 左侧列表，支持新建 / 切换 / 删除，最多保存 50 条 |\n| 附件上传 | 支持图片（vision）和文件，通过 ai.attachments.upload 上传 |\n| AI Skills | 弹出面板选择启用的 Skills，支持手动 / 自动模式 |\n| 联网搜索 | 工具栏联网开关，可选搜索源，AI 可主动搜索互联网 |\n| 工作目录授权 | 动态授权项目目录，AI 可在授权目录内执行命令和读写文件 |\n| 工具调用可视化 | 实时显示 AI 工具调用过程（名称、参数、结果、状态） |\n| Markdown 渲染 | react-markdown + remark-gfm，代码块语法高亮 |\n| 主题跟随 | 监听 onThemeChange，light/dark 双色板 CSS 变量实时切换 |\n| Liquid Glass UI | iOS 26 风格毛玻璃+高斯模糊+半透明卡片+高光边框 |\n\n## 触发方式\n\n在 Mulby 搜索栏输入以下任一关键词：\n\n- `ai`\n- `chat`\n- `助手`\n\n## 界面说明\n\n```\n┌─ 侧边栏 ──────┬─ 对话区 ─────────────────────┐\n│  [+ 新建对话]  │  消息列表（弹入动画）          │\n│  会话 1 ✕     │  ···                          │\n│  会话 2 ✕     │                               │\n│  ···          ├─ 输入区 ─────────────────────┤\n│               │  ┌────────────────────────┐  │\n│               │  │ textarea               │  │\n│               │  └────────────────────────┘  │\n│               │  [模型] [📎] [⚡] [🌐] [📁] [▶] │\n└───────────────┴──────────────────────────────┘\n```\n\n工具栏按钮从左到右：模型切换、附件上传、AI Skills、联网搜索、工作目录、发送/停止。\n\n## 权限声明\n\n```json\n{\n  \"permissions\": {\n    \"clipboard\": true,\n    \"commandExecution\": {\n      \"ai\": {\n        \"enabled\": true,\n        \"defaultProfile\": \"sandbox\",\n        \"maxProfile\": \"workspace\"\n      }\n    }\n  }\n}\n```\n\n- `commandExecution.ai` — 允许插件承载的 AI 使用 Mulby 内置命令工具（shell.exec、patch.apply、git.status 等）\n- `defaultProfile: \"sandbox\"` — AI 生成命令默认在沙箱环境执行\n- `maxProfile: \"workspace\"` — 最高可提升到 workspace 环境\n\n## AI 命令执行流程\n\n本插件通过 `window.mulby.ai.call()` 发起 AI 对话。当 AI 需要执行命令时，整个流程如下：\n\n### 完整链路\n\n```\n[用户输入消息]\n    ↓\n[插件 UI] ai.call({ model, messages, skills, maxToolSteps: 200 })\n    ↓ IPC\n[Mulby 主进程 AI 引擎]\n    ↓\n[选择模型 → 调用 LLM]\n    ↓ LLM 返回 tool_call (如 mulby_run_command)\n[内置工具运行时 internal-tool-runtime]\n    ↓\nresolveRunCommandContext(toolContext)\n    ├── 从 toolContext.pluginName 取出插件 ID = \"mulby-ai-chat\"\n    ├── 校验 manifest: commandExecution.ai.enabled = true ✓\n    ├── defaultProfile = \"sandbox\", maxProfile = \"workspace\"\n    └── 调用 getPluginCommandDirectoryAccessRoots(\"mulby-ai-chat\")\n        → 返回 { read: [...], readwrite: [...] }\n    ↓\n[CommandRunnerService.runCommand(input, context)]\n    ├── 合并 directoryAccessRoots 到 rootScope\n    ├── 校验 cwd 在 rootScope 内\n    ├── 黑名单/白名单/用户确认等策略\n    ├── sandbox 后端准备 (macOS sandbox-exec / Windows Job Object / Linux namespace)\n    └── spawn 执行命令\n    ↓\n[执行结果] → [AI 引擎] → [LLM 继续推理或输出]\n    ↓ 流式 chunk 回传\n[插件 UI 更新]\n    ├── chunkType: 'tool-call'   → 显示工具调用中\n    ├── chunkType: 'tool-result' → 显示命令结果\n    └── chunkType: 'text'        → 流式显示 AI 回复\n```\n\n### 关键设计\n\n1. **插件不直接执行命令** — 插件只负责发起 AI 对话和管理目录授权，命令执行完全在宿主侧闭环\n2. **安全策略分层** — 命令执行经过总开关 → 插件权限校验 → profile 校验 → root scope → 黑白名单 → 用户确认 → sandbox 多层保护\n3. **工具调用可视化** — AI 的 tool_call/tool_result 通过流式 chunk 回传，插件 UI 实时展示调用状态\n\n## 目录授权（directoryAccess）\n\nAI 执行命令时需要知道可以在哪个目录工作。通过 `directoryAccess` API 让用户在运行时授权项目目录。\n\n### 使用流程\n\n1. 用户点击工具栏的「工作目录」按钮\n2. 弹出目录授权面板，显示已授权目录列表\n3. 点击「选择目录」→ 弹出系统目录选择器\n4. 用户选择项目目录 → 授权记录持久保存\n5. 之后 AI 执行命令时，宿主自动将授权目录纳入可操作范围\n\n### 授权模式\n\n| 模式 | 说明 |\n|------|------|\n| `read` | AI 可在该目录下执行文件读取、目录列表、文本搜索、git status/diff |\n| `readwrite` | 包含 read，并允许命令执行、patch.apply 把该目录作为可写 workspace root |\n\n### 前端 API\n\n```typescript\n// 申请目录授权（弹出系统目录选择器）\nconst grant = await window.mulby.directoryAccess.request({\n  mode: 'readwrite',\n  reason: '在用户选择的项目目录中读写文件和执行命令'\n})\n\n// 列出已授权目录\nconst grants = await window.mulby.directoryAccess.list()\n\n// 撤销授权（支持 grant ID 或目录路径）\nawait window.mulby.directoryAccess.revoke(grants[0].id)\n```\n\n### 后端 API\n\n```typescript\nexport async function run(context: BackendPluginContext) {\n  const grant = await context.api.directoryAccess.request({\n    mode: 'readwrite',\n    reason: '在用户选择的项目目录中运行 git 命令'\n  })\n  if (!grant) return\n\n  const result = await context.api.shell.runCommand({\n    command: 'git',\n    args: ['status'],\n    cwd: grant.path,\n    executionProfile: 'workspace'\n  })\n  console.log(result.stdout)\n}\n```\n\n### 注意事项\n\n- 目录授权按插件 ID 隔离，持久保存，直到用户主动撤销\n- 目录授权只扩展 root 范围，不替代命令执行权限（manifest 必须声明 `commandExecution`）\n- 用户可在 Mulby 设置页安全区域查看和撤销所有插件的目录授权\n\n## 快捷键\n\n| 按键 | 动作 |\n|------|------|\n| `Enter` | 发送消息 |\n| `Shift+Enter` | 文本框换行 |\n\n## 依赖\n\n- `react-markdown` + `remark-gfm` — Markdown 渲染\n- `react-syntax-highlighter` — 代码高亮\n\n## 构建\n\n```bash\npnpm install\npnpm run build\npnpm run pack   # 打包为 .inplugin\n```\n\n## 注意事项\n\n- 需要在 Mulby 中配置至少一个 AI Provider 才能正常使用\n- 附件上传依赖 Mulby AI 附件 API，图片自动使用 vision 模式\n- 会话历史每条会话最多保留 100 条消息\n- AI 命令执行能力需要宿主全局命令执行开关开启",
       "icon": {
         "type": "url",
         "value": "https://raw.githubusercontent.com/Unicellular-SU/mulby-plugins/main/plugins/mulby-ai-chat/icon.png"
@@ -390,7 +390,7 @@
           "caption": "主界面"
         }
       ],
-      "sha256": "164489904e298ac5ff783bf491dcdd5c4f16ee8986fe3e3a0c656203ffadbb1b",
+      "sha256": "de82bce79d750f20212b2093979aed05e9e0275997dc027e914a06d881aa556b",
       "homepage": "https://github.com/Unicellular-SU/mulby-plugins",
       "repository": "https://github.com/Unicellular-SU/mulby-plugins/tree/main/plugins/mulby-ai-chat"
     },
@@ -398,11 +398,11 @@
       "id": "@mulby/showcase",
       "name": "mulby-showcase",
       "displayName": "Mulby 功能展示",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Mulby",
       "description": "综合展示 Mulby 所有 API 能力的示例插件，涵盖系统信息、剪贴板、文件管理、网络、屏幕捕获、媒体、高级设置和安全存储等功能",
-      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.25-1441/mulby-showcase-1.0.0.inplugin",
-      "lastPackageTime": "2026-05-25T14:45:10.427Z",
+      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.05.26-1504/mulby-showcase-1.0.1.inplugin",
+      "lastPackageTime": "2026-05-26T15:05:21.209Z",
       "type": "other",
       "details": "# Mulby Showcase\n\n**综合展示 Mulby 所有 API 能力的示例插件**\n\n![Mulby Showcase](./icon.png)\n\n## 功能特性\n\n这个插件是 Mulby 平台的完整功能展示，涵盖了所有 20+ 个 API 模块：\n\n| 模块 | 涵盖的 API | 功能描述 |\n|------|-----------|---------|\n| **系统信息** | system, power, geolocation, network | 系统/应用信息、电源状态、位置信息、网络状态 |\n| **剪贴板** | clipboard, notification | 剪贴板读写、格式检测、图片和文件支持 |\n| **输入控制** | input | 隐藏主窗口后粘贴文本/图片/文件或模拟键入 |\n| **文件管理** | filesystem, dialog, shell | 文件操作、对话框、系统打开、Finder 定位 |\n| **网络与HTTP** | http, network | HTTP 请求测试、网络状态监控 |\n| **屏幕与捕获** | screen, media, window | 显示器信息、区域截图、多窗口协作、媒体权限 |\n| **媒体与音频** | tts, shell | 语音合成、系统提示音 |\n| **高级设置** | theme, window, shortcut, tray, menu | 主题切换、窗口控制、快捷键、托盘、菜单 |\n| **安全与存储** | security, storage | 加密存储、数据持久化 |\n\n## 触发方式\n\n插件支持多种触发关键词：\n\n- `showcase` / `demo` / `示例` - 打开功能展示面板\n- `sysinfo` / `系统信息` - 直接进入系统信息模块\n- `cb` / `剪贴板` - 直接进入剪贴板管理\n- `input` / `输入` - 直接进入输入控制\n- `files` / `文件` - 直接进入文件管理\n- `http` / `网络` - 直接进入网络测试\n- `screenshot` / `截图` / `screen` - 直接进入截图功能\n- `tts` / `语音` / `朗读` - 直接进入语音合成\n- `settings` / `设置` - 直接进入高级设置\n\n## 开发\n\n### 安装依赖\n\n```bash\npnpm install\n```\n\n### 开发模式\n\n```bash\npnpm run dev\n```\n\n### 构建\n\n```bash\npnpm run build\n```\n\n### 打包\n\n```bash\npnpm run pack\n```\n\n## 项目结构\n\n```\nmulby-showcase/\n├── manifest.json              # 插件配置\n├── package.json\n├── src/\n│   ├── main.ts                # 后端入口\n│   └── ui/\n│       ├── App.tsx            # 主应用\n│       ├── styles.css         # 全局样式\n│       ├── components/        # 通用组件\n│       │   ├── Sidebar.tsx\n│       │   ├── PageHeader.tsx\n│       │   ├── Card.tsx\n│       │   ├── Button.tsx\n│       │   ├── StatusBadge.tsx\n│       │   └── CodeBlock.tsx\n│       ├── hooks/             # 自定义 Hooks\n│       │   ├── useTheme.ts\n│       │   ├── useNotification.ts\n│       │   └── useMulby.ts\n│       └── modules/           # 功能模块\n│           ├── SystemInfo/\n│           ├── Clipboard/\n│           ├── Input/\n│           ├── FileManager/\n│           ├── Network/\n│           ├── Screen/\n│           ├── Media/\n│           ├── Settings/\n│           └── Security/\n├── dist/                      # 后端构建输出\n└── ui/                        # UI 构建输出\n```\n\n## API 覆盖\n\n此插件完整展示了 Mulby 的以下 API：\n\n### 基础 API\n- `[已覆盖]` `clipboard` - 剪贴板操作\n- `[已覆盖]` `input` - 输入与粘贴模拟\n- `[已覆盖]` `notification` - 系统通知\n- `[已覆盖]` `storage` - 数据存储\n- `[已覆盖]` `window` - 窗口控制\n- `[已覆盖]` `http` - HTTP 请求\n- `[已覆盖]` `filesystem` - 文件系统\n\n### 系统 API\n- `[已覆盖]` `theme` - 主题管理\n- `[已覆盖]` `screen` - 屏幕信息与截图\n- `[已覆盖]` `shell` - 系统操作\n- `[已覆盖]` `dialog` - 对话框\n- `[已覆盖]` `system` - 系统信息\n- `[已覆盖]` `power` - 电源状态\n\n### 高级 API\n- `[已覆盖]` `shortcut` - 全局快捷键\n- `[已覆盖]` `security` - 加密存储\n- `[已覆盖]` `media` - 媒体权限\n- `[已覆盖]` `tray` - 系统托盘\n- `[已覆盖]` `network` - 网络状态\n- `[已覆盖]` `menu` - 右键菜单\n- `[已覆盖]` `geolocation` - 地理位置\n- `[已覆盖]` `tts` - 语音合成\n- `[已覆盖]` `window` - 多窗口管理 (create/show/close)\n\n## 典型案例：区域截图与编辑流程\n\n本项目实现了一个经典的\"区域截图 -> 独立窗口编辑 -> 回传主窗口\"的工作流，展示了多窗口协作与数据传递的最佳实践。\n\n```mermaid\nsequenceDiagram\n    participant U as 用户\n    participant Main as 主窗口(Screen模块)\n    participant IPC as 主进程\n    participant Overlay as 截图覆盖层\n    participant Editor as 图片编辑器\n\n    U->>Main: 点击\"区域截图\"\n    Main->>IPC: 调用 screen.screenCapture()\n    Note over Main: 主窗口自动隐藏(失焦)\n    \n    IPC->>Overlay: 创建全屏透明窗口\n    U->>Overlay: 拖拽选择区域\n    Overlay->>IPC: 完成选择\n    IPC->>Overlay: 关闭覆盖层\n    IPC->>Main: 返回截图数据(Base64)\n    \n    Main->>Editor: window.create('/image-editor')\n    Note right of Main: 使用 BroadcastChannel 建立连接\n    \n    Editor-->>Main: 发送 READY 消息\n    Main->>Editor: 发送 INIT_IMAGE (原图)\n    \n    U->>Editor: 绘制/编辑图片\n    U->>Editor: 点击\"确认使用\"\n    \n    Editor->>Main: 发送 SAVE_IMAGE (编辑后图片)\n    Editor->>Editor: 关闭窗口\n    \n    Main->>Main: 更新预览区域\n    Main->>Main: window.show() 恢复显示\n```\n\n### 关键技术点\n\n1.  **多窗口管理**：使用 `window.mulby.window.create` 创建独立的编辑器窗口，互不干扰。\n2.  **窗口通信**：使用 Web 标准 `BroadcastChannel` 实现主窗口与编辑器窗口的直接通信，无需经过主进程中转，高效且低延迟。\n3.  **可见性控制**：利用 `window.show()` 确保截图流程结束后主窗口能正确恢复显示。\n\n## 许可证\n\nMIT License",
       "icon": {
@@ -415,7 +415,7 @@
           "caption": "主界面"
         }
       ],
-      "sha256": "1ed401b68da43d31a73c5bfc414ecbf9a2548e1996ca305ee18d85b5bc4f2f59",
+      "sha256": "2da4fe10a5c1d87231cc5778e555f3bef55fd6c86800f4825f45cdc0daf9f4ab",
       "homepage": "https://github.com/Unicellular-SU/mulby_plugins",
       "repository": "https://github.com/Unicellular-SU/mulby-plugins/tree/main/plugins/mulby-showcase"
     },
