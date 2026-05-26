@@ -14,7 +14,12 @@
     "accessibility": true,
     "clipboard": true,
     "screen": true,
-    "geolocation": true
+    "geolocation": true,
+    "commandExecution": {
+      "ai": {
+        "enabled": true
+      }
+    }
   },
   "features": [
     {

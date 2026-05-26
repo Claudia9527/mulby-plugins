@@ -121,10 +121,6 @@ ${chatSummary || '（今天没有对话）'}`
           },
         ],
         params: { maxOutputTokens: 250, temperature: 0.8 },
-        capabilities: [],
-        toolingPolicy: { enableInternalTools: false },
-        mcp: { mode: 'off' },
-        skills: { mode: 'off' },
       })
 
       if (!resp?.content) return null

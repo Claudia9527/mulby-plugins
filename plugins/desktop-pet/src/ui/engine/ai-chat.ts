@@ -18,6 +18,7 @@ import type { PetStats } from './pet-stats'
 import type { PetStatsController } from './pet-stats'
 import type { PetEcosystemContext } from './pet-ecosystem'
 import { logPetPresentation } from './presentation-debug'
+import { checkFestival, checkBirthday } from './festivals'
 
 export interface PetPersonality {
   name: string
@@ -132,7 +133,15 @@ function buildSystemPrompt(
     : traitData?.desc || '你是一只可爱的桌面宠物。'
   const traitExamples = traitData?.examples || `你好呀~
 你在忙什么？`
-  const timeBlock = `\n【当前本地时间】\n- ${buildCurrentTimeContext()}\n- 回答涉及日期、时间、早晚、午休、深夜时必须以这里为准；不要凭模型常识猜测当前时间\n`
+  const festival = checkFestival()
+  const isBirthday = checkBirthday(personality.birthday)
+  let festivalHint = ''
+  if (isBirthday) {
+    festivalHint = '\n- 今天是用户的生日！记得祝福，但不要每句都提'
+  } else if (festival) {
+    festivalHint = `\n- 今天是${festival.name}，可以自然地融入对话，但不要每句都提`
+  }
+  const timeBlock = `\n【当前本地时间】\n- ${buildCurrentTimeContext()}${festivalHint}\n- 回答涉及日期、时间、早晚、午休、深夜时必须以这里为准；不要凭模型常识猜测当前时间\n`
 
   let statsBlock = ''
   if (stats) {
@@ -195,13 +204,28 @@ ${timeBlock}${statsBlock}${geoBlock}${activeWindowBlock}${ecosystemBlock}
 6) 若工具不可用，才在正文末尾单独一行添加：<<<PET {"face":"happy","pose":"wave","emotion":"joy"}>>>，不要夹在句子中间。
 7) 推理模型若有思考过程，正常输出 reasoning；用户会在气泡上方看到灰色「思考」区域，请保持思考简洁。
 
+【扩展能力（有可用工具时自动生效）】
+- 你可能拥有命令执行、技能调用、MCP 工具等扩展能力
+- 当用户请求实际操作（查天气、跑脚本、搜索信息等）时，优先使用对应工具完成
+- 工具结果不要原样输出，用你的性格口吻简短总结
+- 用户没有提出操作请求时，不要主动调用非表情/动作类工具
+- 工具执行失败时，用你的性格口吻安慰并简要说明原因
+
 【格式规则】
 - 正文不要写任何 [joy]、[happy]、[excited]、[surprised]、[jump] 这类方括号标签，情绪、动作、移动只通过工具或 <<<PET>>> 回退标记表达
 - 正文不要用括号描写动作或表情，例如不要写“（打呵欠）”“（飘到鼠标旁边）”“绕着你的手转圈”；这些必须用工具表达
 - 工具可以随回复分多次调用，让宠物边说边变表情/动作；工具调用后继续正文时，不要重新输出已经说过的内容
-- 普通互动只回 1 句，15-40 个中文字；用户明确要求解释时最多 2 句、60 个中文字
-- 只说宠物会说的话，不写段落，不展开科普长文
-- 用中文回复，不要markdown
+
+【回复长度】
+- 闲聊 / 主动说话：1-2 句，15-50 字
+- 用户提问：最多 3 句，80 字
+- 使用工具完成任务后：最多 5 句，150 字（含简短结果总结）
+- 始终保持宠物口吻，不写段落，不展开科普长文
+
+【语言和排版】
+- 用中文回复
+- 闲聊时不用 markdown
+- 报告工具执行结果时，可以用简单的代码块或列表，但保持简洁
 
 【重要提醒】你的每一句话都必须严格遵守上面的核心性格描述。如果你的性格是毒舌，那就必须毒舌到底，绝不能突然变温柔。性格必须贯穿始终。
 
@@ -214,7 +238,7 @@ function speakResultExpression(intent: PresentationIntent | null, parsedExpr: Pe
   return intent.face as PetExpression
 }
 
-const PET_REPLY_MAX_CHARS = 70
+const PET_REPLY_MAX_CHARS = 200
 
 function repeatKey(sentence: string): string {
   return sentence
@@ -295,7 +319,7 @@ export function compactPetReply(raw: string, maxChars = PET_REPLY_MAX_CHARS): st
 
   const sentences = text.match(/[^。！？!?…]+[。！？!?…]*/g) || [text]
   let out = ''
-  for (const sentence of sentences.slice(0, 2)) {
+  for (const sentence of sentences) {
     const next = `${out}${sentence}`.trim()
     if (next.length > maxChars) break
     out = next
@@ -613,11 +637,7 @@ export class AIChatController {
           tools: PET_PRESENTATION_AI_TOOLS,
           maxToolSteps: 8,
           toolContext: { pluginName: 'desktop-pet' },
-          params: { maxOutputTokens: 90, temperature: 0.85 },
-          capabilities: [],
-          toolingPolicy: { enableInternalTools: false },
-          mcp: { mode: 'off' },
-          skills: { mode: 'off' },
+          params: { maxOutputTokens: 300, temperature: 0.85 },
         },
         (chunk: any) => {
           if (chunk.__requestId) {
@@ -649,7 +669,7 @@ export class AIChatController {
             case 'tool-call': {
               const tc = chunk.tool_call
               logPetPresentation('ai.tool-call.raw', { flow: 'speak', toolCall: tc })
-              if (result.trim()) repairNextTextAfterTool = true
+              if (result.trim() && tc && isPresentationToolName(tc.name)) repairNextTextAfterTool = true
               if (tc && isPresentationToolName(tc.name)) {
                 const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
@@ -852,11 +872,7 @@ export class AIChatController {
           tools: PET_PRESENTATION_AI_TOOLS,
           maxToolSteps: 8,
           toolContext: { pluginName: 'desktop-pet' },
-          params: { maxOutputTokens: 90, temperature: 0.85 },
-          capabilities: [],
-          toolingPolicy: { enableInternalTools: false },
-          mcp: { mode: 'off' },
-          skills: { mode: 'off' },
+          params: { maxOutputTokens: 300, temperature: 0.85 },
         },
         (chunk: any) => {
           if (chunk.__requestId) {
@@ -888,7 +904,7 @@ export class AIChatController {
             case 'tool-call': {
               const tc = chunk.tool_call
               logPetPresentation('ai.tool-call.raw', { flow: 'chat', toolCall: tc })
-              if (result.trim()) repairNextTextAfterTool = true
+              if (result.trim() && tc && isPresentationToolName(tc.name)) repairNextTextAfterTool = true
               if (tc && isPresentationToolName(tc.name)) {
                 const intent = normalizePresentationToolCall(tc.name, tc.args)
                 if (intent) {
