@@ -459,6 +459,36 @@ interface RunCommandInput {
   env?: Record<string, string>
   timeoutMs?: number
   shell?: boolean
+  executionProfile?: 'sandbox' | 'workspace'
+}
+
+// ── Directory Access ──
+
+type PluginDirectoryAccessMode = 'read' | 'readwrite'
+
+interface PluginDirectoryAccessGrant {
+  id: string
+  pluginId: string
+  path: string
+  mode: PluginDirectoryAccessMode
+  source: 'picker' | 'path-confirmation'
+  reason?: string
+  createdAt: number
+  lastUsedAt?: number
+}
+
+interface PluginDirectoryAccessRequestInput {
+  path?: string
+  mode?: PluginDirectoryAccessMode
+  title?: string
+  message?: string
+  reason?: string
+}
+
+interface MulbyDirectoryAccess {
+  request(input?: PluginDirectoryAccessRequestInput): Promise<PluginDirectoryAccessGrant | null>
+  list(): Promise<PluginDirectoryAccessGrant[]>
+  revoke(grantIdOrPath: string): Promise<boolean>
 }
 
 interface RunCommandResult {
@@ -1404,6 +1434,7 @@ interface MulbyAPI {
   scheduler: MulbyScheduler
   host: MulbyHost
   log: MulbyLog
+  directoryAccess: MulbyDirectoryAccess
   onPluginInit(callback: (data: PluginInitData) => void): Disposable
   onPluginAttach(callback: (data: {
     pluginName: string
@@ -1777,6 +1808,11 @@ interface BackendPluginAPIDirect {
   tools: {
     register(name: string, handler: (args: unknown) => unknown | Promise<unknown>): void
     unregister(name: string): void
+  }
+  directoryAccess: {
+    request(input?: PluginDirectoryAccessRequestInput): PluginDirectoryAccessGrant | null
+    list(): PluginDirectoryAccessGrant[]
+    revoke(grantIdOrPath: string): boolean
   }
 }
 

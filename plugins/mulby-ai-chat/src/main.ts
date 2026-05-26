@@ -33,6 +33,18 @@ export const rpc = {
   async ping() {
     return { ok: true };
   },
+
+  async requestDirectoryAccess(input?: { path?: string; mode?: 'read' | 'readwrite'; title?: string; message?: string; reason?: string }) {
+    return await mulby.directoryAccess.request(input);
+  },
+
+  async listDirectoryGrants() {
+    return await mulby.directoryAccess.list();
+  },
+
+  async revokeDirectoryGrant(grantIdOrPath: string) {
+    return await mulby.directoryAccess.revoke(grantIdOrPath);
+  },
 };
 
 export default { onLoad, onUnload, run };

@@ -19,6 +19,7 @@ export function getDefaultTitle(messages: ChatMessage[]) {
 // mulby API 访问（渲染进程）
 export const ai = () => (window as any).mulby?.ai;
 export const storage = () => (window as any).mulby?.storage;
+export const directoryAccess = () => (window as any).mulby?.directoryAccess;
 
 export const STORAGE_NS = 'mulby-ai-chat';
 export const STORAGE_KEY_SESSIONS = 'sessions';

@@ -91,4 +91,15 @@ export interface WebSearchProvider {
   type: 'local' | 'api' | 'custom';
 }
 
+export interface DirectoryGrant {
+  id: string;
+  pluginId: string;
+  path: string;
+  mode: 'read' | 'readwrite';
+  source: 'picker' | 'path-confirmation';
+  reason?: string;
+  createdAt: number;
+  lastUsedAt?: number;
+}
+
 export type Theme = 'light' | 'dark';
