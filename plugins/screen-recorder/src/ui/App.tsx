@@ -26,6 +26,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { buildMp4TranscodeArgs } from './ffmpeg-args'
 import { useMulby } from './hooks/useMulby'
+import { getSourceRefreshTypes } from './source-refresh'
 
 const PLUGIN_ID = 'screen-recorder'
 const SETTINGS_KEY = 'screen-recorder-settings'
@@ -539,6 +540,7 @@ function RecorderPanel() {
   const [errorMessage, setErrorMessage] = useState('')
   const [notice, setNotice] = useState('准备就绪。')
   const [sourcesLoading, setSourcesLoading] = useState(false)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -607,6 +609,7 @@ function RecorderPanel() {
         console.warn('[screen-recorder] load settings failed', error)
       } finally {
         settingsReadyRef.current = true
+        if (mounted) setSettingsLoaded(true)
       }
     }
 
@@ -630,25 +633,36 @@ function RecorderPanel() {
   const refreshSources = useCallback(async () => {
     setSourcesLoading(true)
     try {
+      const refreshTypes = getSourceRefreshTypes(settings.mode)
+      const shouldRefreshScreens = refreshTypes.includes('screen')
+      const shouldRefreshWindows = refreshTypes.includes('window')
       const [screens, windows] = await Promise.all([
-        screen.getSources({ types: ['screen'], thumbnailSize: { width: 320, height: 180 } }),
-        screen.getSources({ types: ['window'], thumbnailSize: { width: 320, height: 180 } })
+        shouldRefreshScreens
+          ? screen.getSources({ types: ['screen'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: false })
+          : Promise.resolve(null),
+        shouldRefreshWindows
+          ? screen.getSources({ types: ['window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: false })
+          : Promise.resolve(null)
       ])
 
       const nextScreens = screens ?? []
       const nextWindows = windows ?? []
-      setScreenSources(nextScreens)
-      setWindowSources(nextWindows)
+      if (screens) setScreenSources(nextScreens)
+      if (windows) setWindowSources(nextWindows)
       setSettings((current) => ({
         ...current,
-        displaySourceId: nextScreens.some((source) => source.id === current.displaySourceId)
+        displaySourceId: !screens || nextScreens.some((source) => source.id === current.displaySourceId)
           ? current.displaySourceId
           : nextScreens[0]?.id ?? '',
-        windowSourceId: nextWindows.some((source) => source.id === current.windowSourceId)
+        windowSourceId: !windows || nextWindows.some((source) => source.id === current.windowSourceId)
           ? current.windowSourceId
           : nextWindows[0]?.id ?? ''
       }))
-      setNotice(nextScreens.length > 0 ? '录制源已更新。' : '未发现可录制屏幕，请检查系统录屏权限。')
+      setNotice(
+        shouldRefreshWindows
+          ? nextWindows.length > 0 ? '窗口源已更新。' : '未发现可录制窗口。'
+          : nextScreens.length > 0 ? '录制源已更新。' : '未发现可录制屏幕，请检查系统录屏权限。'
+      )
     } catch (error) {
       const screenStatus = await permission?.getStatus?.('screen').catch(() => undefined)
       const message = isSystemMediaPermissionError(error)
@@ -659,11 +673,12 @@ function RecorderPanel() {
     } finally {
       setSourcesLoading(false)
     }
-  }, [notification, permission, screen])
+  }, [notification, permission, screen, settings.mode])
 
   useEffect(() => {
+    if (!settingsLoaded) return
     void refreshSources()
-  }, [refreshSources])
+  }, [refreshSources, settingsLoaded])
 
   const getElapsedDurationSec = useCallback(() => {
     let elapsedMs = accumulatedDurationMsRef.current
