@@ -1,0 +1,92 @@
+{
+  "$schema": "./node_modules/.mulby/manifest-schema.json",
+  "id": "todo-focus",
+  "name": "todo-focus",
+  "version": "1.0.0",
+  "author": "mulby",
+  "type": "productivity",
+  "displayName": "待办番茄",
+  "description": "轻量待办、置顶便签、沉浸式番茄钟与 AI 拆解/总结，支持关键字与划词快速捕获",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "permissions": {
+    "clipboard": true,
+    "notification": true
+  },
+  "pluginSetting": {
+    "single": false,
+    "persistent": true,
+    "height": 640,
+    "background": true
+  },
+  "window": {
+    "width": 720,
+    "height": 640,
+    "minWidth": 400,
+    "minHeight": 360,
+    "maxWidth": 1200,
+    "maxHeight": 900
+  },
+  "features": [
+    {
+      "code": "main",
+      "explain": "待办列表与管理",
+      "mode": "ui",
+      "cmds": [
+        { "type": "keyword", "value": "待办" },
+        { "type": "keyword", "value": "todo" },
+        { "type": "keyword", "value": "番茄待办" }
+      ]
+    },
+    {
+      "code": "quick-add",
+      "explain": "静默添加待办",
+      "mode": "silent",
+      "cmds": [
+        {
+          "type": "regex",
+          "match": "^(?:todo|待办|td)\\s+.+",
+          "label": "快速添加待办",
+          "explain": "输入 todo/待办/td 加空格后接标题",
+          "minLength": 3,
+          "maxLength": 500
+        }
+      ]
+    },
+    {
+      "code": "capture-selection",
+      "explain": "划词添加待办",
+      "mode": "silent",
+      "cmds": [
+        {
+          "type": "over",
+          "label": "添加为待办",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      ]
+    },
+    {
+      "code": "sticky",
+      "explain": "置顶便签查看待办",
+      "mode": "detached",
+      "route": "sticky",
+      "cmds": [
+        { "type": "keyword", "value": "便签" },
+        { "type": "keyword", "value": "待办便签" }
+      ]
+    },
+    {
+      "code": "focus",
+      "explain": "番茄钟专注",
+      "mode": "detached",
+      "route": "focus",
+      "mainHide": true,
+      "cmds": [
+        { "type": "keyword", "value": "专注" },
+        { "type": "keyword", "value": "番茄钟" }
+      ]
+    }
+  ]
+}
