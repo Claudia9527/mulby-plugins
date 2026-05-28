@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
   ClipboardList,
+  Download,
   FileVideo2,
   FolderOpen,
   Gauge,
   Import,
+  Loader2,
   Play,
   RefreshCw,
   Scissors,
   Settings2,
   Sparkles,
+  Square,
   Trash2,
   Wand2
 } from 'lucide-react'
@@ -20,7 +23,8 @@ import { useMulby } from './hooks/useMulby'
 const PLUGIN_ID = 'video-batch-editor'
 
 type VideoPreset = 'mp4-h264' | 'mp4-h265' | 'webm' | 'cover-jpg'
-type FfmpegStatus = 'checking' | 'available' | 'missing' | 'idle'
+type FfmpegStatus = 'checking' | 'available' | 'missing' | 'idle' | 'downloading' | 'running'
+type JobRunStatus = 'ready' | 'running' | 'done' | 'failed' | 'stopped'
 
 type VideoFileSummary = {
   path: string
@@ -38,7 +42,8 @@ type PreparedJob = {
   preset: VideoPreset
   args: string[]
   commandPreview: string
-  status: 'ready'
+  status: JobRunStatus
+  error?: string
 }
 
 type JobOptions = {
@@ -116,13 +121,52 @@ function presetLabel(value: VideoPreset) {
   return PRESETS.find((preset) => preset.value === value)?.label ?? value
 }
 
+function jobStatusLabel(status: JobRunStatus) {
+  if (status === 'running') return '处理中'
+  if (status === 'done') return '完成'
+  if (status === 'failed') return '失败'
+  if (status === 'stopped') return '已停止'
+  return '待执行'
+}
+
+function formatProgress(progress: FFmpegRunProgress | null) {
+  if (!progress) return '等待进度'
+  const items: string[] = []
+  if (typeof progress.percent === 'number' && Number.isFinite(progress.percent)) {
+    items.push(`${progress.percent.toFixed(1)}%`)
+  }
+  if (progress.time) items.push(progress.time)
+  if (progress.speed) items.push(progress.speed)
+  if (progress.size) items.push(progress.size)
+  return items.length ? items.join(' / ') : '处理中'
+}
+
+function progressPercent(progress: FFmpegRunProgress | null) {
+  if (!progress || typeof progress.percent !== 'number' || !Number.isFinite(progress.percent)) return 0
+  return Math.max(0, Math.min(100, progress.percent))
+}
+
+function downloadProgressText(progress: FFmpegDownloadProgress | null) {
+  if (!progress) return ''
+  if (progress.phase === 'extracting') return `解压中 ${progress.percent.toFixed(0)}%`
+  if (progress.phase === 'done') return '下载完成'
+  return `下载中 ${progress.percent.toFixed(0)}%`
+}
+
 export default function App() {
-  const { dialog, host, notification } = useMulby(PLUGIN_ID)
+  const { dialog, host, notification, ffmpeg } = useMulby(PLUGIN_ID)
   const [files, setFiles] = useState<VideoFileSummary[]>([])
   const [jobs, setJobs] = useState<PreparedJob[]>([])
   const [ffmpegStatus, setFfmpegStatus] = useState<FfmpegStatus>('idle')
   const [ffmpegMessage, setFfmpegMessage] = useState('未检测')
+  const [ffmpegPath, setFfmpegPath] = useState<string | null>(null)
+  const [downloadProgress, setDownloadProgress] = useState<FFmpegDownloadProgress | null>(null)
+  const [runProgress, setRunProgress] = useState<FFmpegRunProgress | null>(null)
+  const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  const [activeJobName, setActiveJobName] = useState('')
   const [busy, setBusy] = useState(false)
+  const activeTaskRef = useRef<FFmpegTask | null>(null)
+  const stopRequestedRef = useRef(false)
   const [options, setOptions] = useState<JobOptions>({
     preset: 'mp4-h264',
     outputDirectory: '',
@@ -137,7 +181,9 @@ export default function App() {
 
   const validFiles = useMemo(() => files.filter((file) => file.ok), [files])
   const invalidCount = files.length - validFiles.length
-  const canPrepare = validFiles.length > 0 && !busy
+  const isRunning = activeJobId !== null
+  const canPrepare = validFiles.length > 0 && !busy && !isRunning
+  const canRunJobs = jobs.length > 0 && ffmpegStatus === 'available' && !busy && !isRunning
 
   const summary = useMemo(() => ({
     total: files.length,
@@ -176,23 +222,62 @@ export default function App() {
   }, [host, notification])
 
   const checkFfmpeg = useCallback(async () => {
+    if (!ffmpeg) {
+      setFfmpegStatus('missing')
+      setFfmpegPath(null)
+      setFfmpegMessage('当前 Mulby 版本未提供内置 FFmpeg')
+      return
+    }
     setFfmpegStatus('checking')
     setFfmpegMessage('检测中')
     try {
-      const response = await host.call('detectFfmpeg')
-      const data = unwrapHostData<{ ok: boolean; version?: string; error?: string }>(response)
-      if (data?.ok) {
+      const available = await ffmpeg.isAvailable()
+      if (available) {
+        const [version, runtimePath] = await Promise.all([
+          ffmpeg.getVersion(),
+          ffmpeg.getPath()
+        ])
         setFfmpegStatus('available')
-        setFfmpegMessage(data.version ?? 'ffmpeg 可用')
+        setFfmpegPath(runtimePath)
+        setFfmpegMessage(version ? `内置 FFmpeg 可用：${version}` : '内置 FFmpeg 可用')
       } else {
         setFfmpegStatus('missing')
-        setFfmpegMessage(data?.error ?? '未找到 ffmpeg')
+        setFfmpegPath(null)
+        setFfmpegMessage('内置 FFmpeg 未安装')
       }
     } catch (error) {
       setFfmpegStatus('missing')
+      setFfmpegPath(null)
       setFfmpegMessage(error instanceof Error ? error.message : '检测失败')
     }
-  }, [host])
+  }, [ffmpeg])
+
+  const downloadFfmpeg = useCallback(async () => {
+    if (!ffmpeg || busy || isRunning) return
+    setFfmpegStatus('downloading')
+    setFfmpegMessage('正在下载内置 FFmpeg')
+    setDownloadProgress(null)
+    try {
+      const result = await ffmpeg.download((progress) => {
+        setDownloadProgress(progress)
+        setFfmpegMessage(downloadProgressText(progress))
+      })
+      if (!result.success) {
+        setFfmpegStatus('missing')
+        setFfmpegMessage(result.error || 'FFmpeg 下载失败')
+        notification.show(result.error || 'FFmpeg 下载失败', 'error')
+        return
+      }
+      notification.show('FFmpeg 下载完成', 'success')
+      setDownloadProgress(null)
+      await checkFfmpeg()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'FFmpeg 下载失败'
+      setFfmpegStatus('missing')
+      setFfmpegMessage(message)
+      notification.show(message, 'error')
+    }
+  }, [busy, checkFfmpeg, ffmpeg, isRunning, notification])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -268,7 +353,7 @@ export default function App() {
       )
       const data = unwrapHostData<{ jobs?: PreparedJob[] }>(response)
       const nextJobs = data?.jobs ?? []
-      setJobs(nextJobs)
+      setJobs(nextJobs.map((job) => ({ ...job, status: 'ready' as const, error: undefined })))
       notification.show(`已生成 ${nextJobs.length} 个任务`, nextJobs.length > 0 ? 'success' : 'warning')
     } catch (error) {
       notification.show(error instanceof Error ? error.message : '任务生成失败', 'error')
@@ -278,13 +363,91 @@ export default function App() {
   }
 
   const removeFile = (filePath: string) => {
+    if (isRunning) return
     setFiles((previous) => previous.filter((file) => file.path !== filePath))
     setJobs((previous) => previous.filter((job) => job.sourcePath !== filePath))
   }
 
   const clearFiles = () => {
+    if (isRunning) return
     setFiles([])
     setJobs([])
+  }
+
+  const stopQueue = () => {
+    if (!activeTaskRef.current) return
+    stopRequestedRef.current = true
+    activeTaskRef.current.quit()
+    notification.show('已请求停止当前 FFmpeg 任务', 'info')
+  }
+
+  const runQueue = async () => {
+    if (!ffmpeg || !canRunJobs) return
+    setBusy(true)
+    setFfmpegStatus('running')
+    stopRequestedRef.current = false
+    let successCount = 0
+    let failedCount = 0
+
+    try {
+      for (const job of jobs) {
+        if (stopRequestedRef.current) break
+        setActiveJobId(job.id)
+        setActiveJobName(job.sourceName)
+        setRunProgress(null)
+        setJobs((previous) => previous.map((item) => (
+          item.id === job.id ? { ...item, status: 'running', error: undefined } : item
+        )))
+
+        const task = ffmpeg.run(job.args, (progress) => {
+          setRunProgress(progress)
+        })
+        activeTaskRef.current = task
+
+        try {
+          await task.promise
+          if (stopRequestedRef.current) {
+            setJobs((previous) => previous.map((item) => (
+              item.id === job.id ? { ...item, status: 'stopped' } : item
+            )))
+            break
+          }
+          successCount += 1
+          setJobs((previous) => previous.map((item) => (
+            item.id === job.id ? { ...item, status: 'done' } : item
+          )))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (stopRequestedRef.current) {
+            setJobs((previous) => previous.map((item) => (
+              item.id === job.id ? { ...item, status: 'stopped', error: message } : item
+            )))
+            break
+          }
+          failedCount += 1
+          setJobs((previous) => previous.map((item) => (
+            item.id === job.id ? { ...item, status: 'failed', error: message } : item
+          )))
+        } finally {
+          activeTaskRef.current = null
+        }
+      }
+
+      if (stopRequestedRef.current) {
+        notification.show(`队列已停止，成功 ${successCount}，失败 ${failedCount}`, 'warning')
+      } else if (failedCount > 0) {
+        notification.show(`队列完成：成功 ${successCount}，失败 ${failedCount}`, 'warning')
+      } else {
+        notification.show(`队列完成：成功 ${successCount}`, 'success')
+      }
+    } finally {
+      setBusy(false)
+      setActiveJobId(null)
+      setActiveJobName('')
+      setRunProgress(null)
+      stopRequestedRef.current = false
+      await checkFfmpeg()
+    }
   }
 
   const updateNumberOption = (key: keyof Pick<JobOptions, 'trimStartSeconds' | 'trimDurationSeconds' | 'width' | 'height' | 'videoBitrateKbps' | 'crf'>, value: string) => {
@@ -328,12 +491,18 @@ export default function App() {
           <span>Batch Video Workbench</span>
         </div>
         <div className={ffmpegClassName}>
-          {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+          {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
           <span>{ffmpegMessage}</span>
         </div>
         <button type="button" className="icon-button" onClick={checkFfmpeg} aria-label="重新检测 FFmpeg">
           <RefreshCw size={18} />
         </button>
+        {ffmpegStatus === 'missing' && (
+          <button type="button" className="secondary-button compact-button" onClick={downloadFfmpeg} disabled={!ffmpeg || busy || isRunning}>
+            <Download size={16} />
+            下载 FFmpeg
+          </button>
+        )}
       </header>
 
       <main className="workspace">
@@ -406,10 +575,26 @@ export default function App() {
           <div className="panel-head compact">
             <div>
               <h2>处理配置</h2>
-              <p>{jobs.length > 0 ? `${jobs.length} 个命令已生成` : '等待生成任务'}</p>
+              <p>{activeJobName ? `正在处理 ${activeJobName}` : jobs.length > 0 ? `${jobs.length} 个命令已生成` : '等待生成任务'}</p>
             </div>
             <Settings2 size={20} />
           </div>
+
+          {(downloadProgress || runProgress || ffmpegPath) && (
+            <div className="runtime-panel">
+              <div className="runtime-row">
+                <span>{activeJobName ? '任务进度' : downloadProgress ? '下载进度' : 'FFmpeg 路径'}</span>
+                <strong title={activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ffmpegPath ?? ''}>
+                  {activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ffmpegPath}
+                </strong>
+              </div>
+              {(downloadProgress || runProgress) && (
+                <div className="progress-track" aria-hidden>
+                  <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
+                </div>
+              )}
+            </div>
+          )}
 
           <label className="field">
             <span>导出预设</span>
@@ -533,10 +718,17 @@ export default function App() {
               <Wand2 size={18} />
               生成任务
             </button>
-            <button type="button" className="secondary-button wide" disabled>
-              <Play size={18} />
-              执行队列
-            </button>
+            {isRunning ? (
+              <button type="button" className="secondary-button wide danger" onClick={stopQueue}>
+                <Square size={18} />
+                停止任务
+              </button>
+            ) : (
+              <button type="button" className="secondary-button wide" onClick={runQueue} disabled={!canRunJobs}>
+                <Play size={18} />
+                执行队列
+              </button>
+            )}
           </div>
         </aside>
 
@@ -559,9 +751,16 @@ export default function App() {
               <article className="job-row" key={job.id}>
                 <div className="job-title">
                   <strong>{job.sourceName}</strong>
-                  <span>{presetLabel(job.preset)}</span>
+                  <div className="job-badges">
+                    <span>{presetLabel(job.preset)}</span>
+                    <em className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</em>
+                  </div>
                 </div>
                 <code>{job.commandPreview}</code>
+                {activeJobId === job.id && (
+                  <div className="job-progress">{formatProgress(runProgress)}</div>
+                )}
+                {job.error && <div className="job-error" title={job.error}>{job.error}</div>}
                 <small title={job.outputPath}>{job.outputPath}</small>
               </article>
             ))}

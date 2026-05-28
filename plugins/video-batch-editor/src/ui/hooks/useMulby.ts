@@ -25,6 +25,7 @@ export function useMulby(pluginId: string) {
     shell: {
       showItemInFolder: (filePath: string) => window.mulby?.shell?.showItemInFolder?.(filePath),
       openFolder: (folderPath: string) => window.mulby?.shell?.openFolder?.(folderPath)
-    }
+    },
+    ffmpeg: window.mulby?.ffmpeg
   }), [pluginId])
 }

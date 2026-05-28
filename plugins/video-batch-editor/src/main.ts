@@ -2,7 +2,6 @@
 
 declare const require: any
 
-const { execFile } = require('node:child_process')
 const { access, stat } = require('node:fs/promises')
 const path = require('node:path')
 
@@ -85,18 +84,6 @@ export async function run(context: PluginContext) {
     .map((attachment) => attachment.path)
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
   log(`run feature=${context.featureCode ?? ''} attachments=${pendingPaths.length}`)
-}
-
-function execFileText(command: string, args: string[], timeout = 5000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout }, (error: Error | null, stdout: string, stderr: string) => {
-      if (error) {
-        reject(error)
-        return
-      }
-      resolve(`${stdout || ''}${stderr || ''}`)
-    })
-  })
 }
 
 function isVideoFile(filePath: string) {
@@ -207,17 +194,6 @@ export const rpc = {
     const paths = [...pendingPaths]
     pendingPaths = []
     return { paths }
-  },
-
-  async detectFfmpeg(): Promise<{ ok: boolean; version?: string; error?: string }> {
-    try {
-      const output = await execFileText(DEFAULT_FFMPEG_BIN, ['-version'])
-      const firstLine = output.split(/\r?\n/).find(Boolean) ?? ''
-      return { ok: true, version: firstLine }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      return { ok: false, error: message }
-    }
   },
 
   async inspectFiles(filePaths: string[]): Promise<{ files: VideoFileSummary[] }> {

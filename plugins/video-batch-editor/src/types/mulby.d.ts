@@ -35,12 +35,45 @@ interface MulbyShell {
   openFolder(folderPath: string): Promise<string>
 }
 
+interface FFmpegRunProgress {
+  bitrate: string
+  fps: number
+  frame: number
+  percent?: number
+  q: number | string
+  size: string
+  speed: string
+  time: string
+}
+
+interface FFmpegDownloadProgress {
+  phase: 'downloading' | 'extracting' | 'done'
+  percent: number
+  downloaded?: number
+  total?: number
+}
+
+interface FFmpegTask {
+  promise: Promise<void>
+  kill(): void
+  quit(): void
+}
+
+interface MulbyFFmpeg {
+  isAvailable(): Promise<boolean>
+  getVersion(): Promise<string | null>
+  getPath(): Promise<string | null>
+  download(onProgress?: (progress: FFmpegDownloadProgress) => void): Promise<{ success: boolean; error?: string }>
+  run(args: string[], onProgress?: (progress: FFmpegRunProgress) => void): FFmpegTask
+}
+
 interface MulbyRendererApi {
   dialog?: MulbyDialog
   notification?: MulbyNotification
   host?: MulbyHost
   theme?: MulbyTheme
   shell?: MulbyShell
+  ffmpeg?: MulbyFFmpeg
   onThemeChange?: (callback: (theme: 'light' | 'dark') => void) => void
   onPluginInit?: (callback: (data: { attachments?: BackendAttachment[] }) => void) => void
 }
