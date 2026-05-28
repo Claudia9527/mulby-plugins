@@ -1,0 +1,64 @@
+{
+  "id": "video-batch-editor",
+  "name": "video-batch-editor",
+  "version": "0.1.0",
+  "author": "mulby",
+  "type": "media",
+  "displayName": "视频批量编辑",
+  "description": "面向批量压缩、格式转换、时长裁剪、水印和封面生成的视频处理插件。",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "permissions": {
+    "notification": true
+  },
+  "pluginSetting": {
+    "single": true,
+    "defaultDetached": true
+  },
+  "window": {
+    "width": 1280,
+    "height": 840,
+    "minWidth": 960,
+    "minHeight": 640,
+    "maxWidth": 1920,
+    "maxHeight": 1200
+  },
+  "features": [
+    {
+      "code": "batch-workbench",
+      "explain": "打开视频批量编辑工作台",
+      "mode": "detached",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "视频批量"
+        },
+        {
+          "type": "keyword",
+          "value": "批量视频"
+        },
+        {
+          "type": "keyword",
+          "value": "视频批量编辑"
+        },
+        {
+          "type": "keyword",
+          "value": "video batch"
+        }
+      ]
+    },
+    {
+      "code": "edit-video-files",
+      "explain": "从视频文件附件打开批量编辑",
+      "mode": "detached",
+      "cmds": [
+        {
+          "type": "files",
+          "fileType": "file",
+          "minLength": 1
+        }
+      ]
+    }
+  ]
+}
