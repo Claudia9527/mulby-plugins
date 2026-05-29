@@ -613,6 +613,14 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.job-output-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .job-progress {
   color: var(--blue);
 }

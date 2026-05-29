@@ -10,6 +10,7 @@
   "ui": "ui/index.html",
   "icon": "icon.png",
   "permissions": {
+    "filesystem": true,
     "notification": true
   },
   "pluginSetting": {

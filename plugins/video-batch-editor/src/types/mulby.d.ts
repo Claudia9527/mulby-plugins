@@ -16,6 +16,12 @@ interface MulbyDialog {
     filters?: { name: string; extensions: string[] }[]
     properties?: ('openFile' | 'openDirectory' | 'multiSelections' | 'showHiddenFiles')[]
   }): Promise<string[] | { canceled?: boolean; filePaths?: string[] }>
+  showSaveDialog(options?: {
+    title?: string
+    defaultPath?: string
+    buttonLabel?: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<string | null>
 }
 
 interface MulbyNotification {
@@ -33,6 +39,10 @@ interface MulbyTheme {
 interface MulbyShell {
   showItemInFolder(filePath: string): Promise<void>
   openFolder(folderPath: string): Promise<string>
+}
+
+interface MulbyFilesystem {
+  writeFile(path: string, data: string | Uint8Array | ArrayBuffer, encoding?: 'utf-8' | 'base64'): Promise<void>
 }
 
 interface FFmpegRunProgress {
@@ -73,6 +83,7 @@ interface MulbyRendererApi {
   host?: MulbyHost
   theme?: MulbyTheme
   shell?: MulbyShell
+  filesystem?: MulbyFilesystem
   ffmpeg?: MulbyFFmpeg
   onThemeChange?: (callback: (theme: 'light' | 'dark') => void) => void
   onPluginInit?: (callback: (data: { attachments?: BackendAttachment[] }) => void) => void

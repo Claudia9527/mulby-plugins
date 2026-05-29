@@ -2,7 +2,7 @@
 
 declare const require: any
 
-const { access, stat } = require('node:fs/promises')
+const { access, readdir, stat } = require('node:fs/promises')
 const path = require('node:path')
 
 type PluginContext = BackendPluginContext
@@ -29,6 +29,12 @@ type VideoFileSummary = {
   error?: string
 }
 
+type ScanSkippedItem = {
+  path: string
+  name: string
+  reason: string
+}
+
 type PreparedJob = {
   id: string
   sourcePath: string
@@ -42,6 +48,9 @@ type PreparedJob = {
 
 const PLUGIN_TAG = '[video-batch-editor]'
 const DEFAULT_FFMPEG_BIN = 'ffmpeg'
+const MAX_SCAN_DEPTH = 8
+const MAX_SCAN_FILES = 5000
+const MAX_SKIPPED_SAMPLES = 200
 const VIDEO_EXTENSIONS = new Set([
   '.mp4',
   '.mov',
@@ -88,6 +97,15 @@ export async function run(context: PluginContext) {
 
 function isVideoFile(filePath: string) {
   return VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase())
+}
+
+function pushSkipped(skipped: ScanSkippedItem[], filePath: string, reason: string) {
+  if (skipped.length >= MAX_SKIPPED_SAMPLES) return
+  skipped.push({
+    path: filePath,
+    name: path.basename(filePath),
+    reason
+  })
 }
 
 function quoteArg(value: string) {
@@ -170,7 +188,11 @@ function buildArgs(sourcePath: string, outputPath: string, options: ReturnType<t
     args.push('-c:v', 'libx264', '-crf', String(options.crf), '-preset', 'medium')
   }
 
-  args.push('-c:a', options.preset === 'webm' ? 'libopus' : 'aac', '-movflags', '+faststart', outputPath)
+  args.push('-c:a', options.preset === 'webm' ? 'libopus' : 'aac')
+  if (options.preset !== 'webm') {
+    args.push('-movflags', '+faststart')
+  }
+  args.push(outputPath)
   return args
 }
 
@@ -189,6 +211,121 @@ function buildPreparedJob(sourcePath: string, index: number, options: ReturnType
   }
 }
 
+async function inspectPath(filePath: string): Promise<VideoFileSummary> {
+  try {
+    await access(filePath)
+    const fileStat = await stat(filePath)
+    if (fileStat.isDirectory()) {
+      return {
+        path: filePath,
+        name: path.basename(filePath),
+        size: 0,
+        ok: false,
+        error: '请选择“导入文件夹”扫描目录'
+      }
+    }
+    if (!isVideoFile(filePath)) {
+      return {
+        path: filePath,
+        name: path.basename(filePath),
+        size: fileStat.size,
+        ok: false,
+        error: '不是当前支持的视频扩展名'
+      }
+    }
+    return {
+      path: filePath,
+      name: path.basename(filePath),
+      size: fileStat.size,
+      ok: true
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      path: filePath,
+      name: path.basename(filePath),
+      size: 0,
+      ok: false,
+      error: message
+    }
+  }
+}
+
+async function scanDirectory(
+  directoryPath: string,
+  files: VideoFileSummary[],
+  skipped: ScanSkippedItem[],
+  depth = 0
+): Promise<{ skippedCount: number; truncated: boolean }> {
+  if (depth > MAX_SCAN_DEPTH) {
+    pushSkipped(skipped, directoryPath, `超过最大扫描深度 ${MAX_SCAN_DEPTH}`)
+    return { skippedCount: 1, truncated: false }
+  }
+
+  let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean }>
+  try {
+    entries = await readdir(directoryPath, { withFileTypes: true })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    pushSkipped(skipped, directoryPath, message)
+    return { skippedCount: 1, truncated: false }
+  }
+
+  let skippedCount = 0
+  let truncated = false
+
+  for (const entry of entries) {
+    if (files.length >= MAX_SCAN_FILES) {
+      truncated = true
+      break
+    }
+
+    const entryPath = path.join(directoryPath, entry.name)
+
+    if (entry.isSymbolicLink()) {
+      skippedCount += 1
+      pushSkipped(skipped, entryPath, '跳过符号链接')
+      continue
+    }
+
+    if (entry.isDirectory()) {
+      const result = await scanDirectory(entryPath, files, skipped, depth + 1)
+      skippedCount += result.skippedCount
+      truncated = truncated || result.truncated
+      if (truncated) break
+      continue
+    }
+
+    if (!entry.isFile()) {
+      skippedCount += 1
+      pushSkipped(skipped, entryPath, '不是普通文件')
+      continue
+    }
+
+    if (!isVideoFile(entryPath)) {
+      skippedCount += 1
+      pushSkipped(skipped, entryPath, '不是当前支持的视频扩展名')
+      continue
+    }
+
+    try {
+      const fileStat = await stat(entryPath)
+      files.push({
+        path: entryPath,
+        name: entry.name,
+        size: fileStat.size,
+        ok: true
+      })
+    } catch (error) {
+      skippedCount += 1
+      const message = error instanceof Error ? error.message : String(error)
+      pushSkipped(skipped, entryPath, message)
+    }
+  }
+
+  return { skippedCount, truncated }
+}
+
 export const rpc = {
   async getPendingInit(): Promise<{ paths: string[] }> {
     const paths = [...pendingPaths]
@@ -198,51 +335,46 @@ export const rpc = {
 
   async inspectFiles(filePaths: string[]): Promise<{ files: VideoFileSummary[] }> {
     const unique = [...new Set((filePaths ?? []).filter((value) => typeof value === 'string' && value.length > 0))]
-    const files: VideoFileSummary[] = []
-
-    for (const filePath of unique) {
-      try {
-        await access(filePath)
-        const fileStat = await stat(filePath)
-        if (fileStat.isDirectory()) {
-          files.push({
-            path: filePath,
-            name: path.basename(filePath),
-            size: 0,
-            ok: false,
-            error: '暂未扫描文件夹，请选择具体视频文件'
-          })
-          continue
-        }
-        if (!isVideoFile(filePath)) {
-          files.push({
-            path: filePath,
-            name: path.basename(filePath),
-            size: fileStat.size,
-            ok: false,
-            error: '不是当前支持的视频扩展名'
-          })
-          continue
-        }
-        files.push({
-          path: filePath,
-          name: path.basename(filePath),
-          size: fileStat.size,
-          ok: true
-        })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        files.push({
-          path: filePath,
-          name: path.basename(filePath),
-          size: 0,
-          ok: false,
-          error: message
-        })
-      }
-    }
+    const files = await Promise.all(unique.map((filePath) => inspectPath(filePath)))
 
     return { files }
+  },
+
+  async scanDirectories(directoryPaths: string[]): Promise<{
+    files: VideoFileSummary[]
+    skipped: ScanSkippedItem[]
+    skippedCount: number
+    truncated: boolean
+  }> {
+    const unique = [...new Set((directoryPaths ?? []).filter((value) => typeof value === 'string' && value.length > 0))]
+    const files: VideoFileSummary[] = []
+    const skipped: ScanSkippedItem[] = []
+    let skippedCount = 0
+    let truncated = false
+
+    for (const directoryPath of unique) {
+      try {
+        const directoryStat = await stat(directoryPath)
+        if (!directoryStat.isDirectory()) {
+          skippedCount += 1
+          pushSkipped(skipped, directoryPath, '不是文件夹')
+          continue
+        }
+      } catch (error) {
+        skippedCount += 1
+        const message = error instanceof Error ? error.message : String(error)
+        pushSkipped(skipped, directoryPath, message)
+        continue
+      }
+
+      const result = await scanDirectory(directoryPath, files, skipped)
+      skippedCount += result.skippedCount
+      truncated = truncated || result.truncated
+      if (truncated) break
+    }
+
+    files.sort((left, right) => left.path.localeCompare(right.path))
+    return { files, skipped, skippedCount, truncated }
   },
 
   async prepareJobs(filePaths: string[], options: JobOptions): Promise<{ jobs: PreparedJob[] }> {

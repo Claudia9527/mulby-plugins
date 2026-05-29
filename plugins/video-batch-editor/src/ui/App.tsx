@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Download,
+  FileDown,
   FileVideo2,
   FolderOpen,
   Gauge,
@@ -32,6 +33,12 @@ type VideoFileSummary = {
   size: number
   ok: boolean
   error?: string
+}
+
+type ScanSkippedItem = {
+  path: string
+  name: string
+  reason: string
 }
 
 type PreparedJob = {
@@ -153,8 +160,12 @@ function downloadProgressText(progress: FFmpegDownloadProgress | null) {
   return `下载中 ${progress.percent.toFixed(0)}%`
 }
 
+function formatTimestampForFile(date: Date) {
+  return date.toISOString().replace(/[:.]/g, '-')
+}
+
 export default function App() {
-  const { dialog, host, notification, ffmpeg } = useMulby(PLUGIN_ID)
+  const { dialog, filesystem, host, notification, shell, ffmpeg } = useMulby(PLUGIN_ID)
   const [files, setFiles] = useState<VideoFileSummary[]>([])
   const [jobs, setJobs] = useState<PreparedJob[]>([])
   const [ffmpegStatus, setFfmpegStatus] = useState<FfmpegStatus>('idle')
@@ -181,9 +192,12 @@ export default function App() {
 
   const validFiles = useMemo(() => files.filter((file) => file.ok), [files])
   const invalidCount = files.length - validFiles.length
+  const runnableJobs = useMemo(() => jobs.filter((job) => job.status !== 'done'), [jobs])
+  const failedJobs = useMemo(() => jobs.filter((job) => job.status === 'failed' || job.status === 'stopped'), [jobs])
   const isRunning = activeJobId !== null
   const canPrepare = validFiles.length > 0 && !busy && !isRunning
-  const canRunJobs = jobs.length > 0 && ffmpegStatus === 'available' && !busy && !isRunning
+  const canRunJobs = runnableJobs.length > 0 && ffmpegStatus === 'available' && !busy && !isRunning
+  const canRetryJobs = failedJobs.length > 0 && ffmpegStatus === 'available' && !busy && !isRunning
 
   const summary = useMemo(() => ({
     total: files.length,
@@ -216,6 +230,40 @@ export default function App() {
       })
     } catch (error) {
       notification.show(error instanceof Error ? error.message : '导入失败', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }, [host, notification])
+
+  const scanAndMergeDirectories = useCallback(async (directoryPaths: string[]) => {
+    const nextPaths = directoryPaths.filter(Boolean)
+    if (!nextPaths.length) return
+    setBusy(true)
+    setJobs([])
+    try {
+      const response = await host.call('scanDirectories', nextPaths)
+      const data = unwrapHostData<{
+        files?: VideoFileSummary[]
+        skipped?: ScanSkippedItem[]
+        skippedCount?: number
+        truncated?: boolean
+      }>(response)
+      const rows = data?.files ?? []
+
+      setFiles((previous) => {
+        const map = new Map(previous.map((file) => [file.path, file]))
+        for (const row of rows) {
+          map.set(row.path, row)
+        }
+        return Array.from(map.values())
+      })
+
+      const skippedCount = data?.skippedCount ?? data?.skipped?.length ?? 0
+      const truncatedText = data?.truncated ? '，已达到扫描上限' : ''
+      const type = rows.length > 0 ? 'success' : 'warning'
+      notification.show(`已从文件夹导入 ${rows.length} 个视频，跳过 ${skippedCount} 项${truncatedText}`, type)
+    } catch (error) {
+      notification.show(error instanceof Error ? error.message : '文件夹扫描失败', 'error')
     } finally {
       setBusy(false)
     }
@@ -322,6 +370,18 @@ export default function App() {
     }
   }
 
+  const pickDirectories = async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: '选择视频文件夹',
+        properties: ['openDirectory', 'multiSelections', 'showHiddenFiles']
+      })
+      await scanAndMergeDirectories(pathsFromOpenDialog(result))
+    } catch (error) {
+      notification.show(error instanceof Error ? error.message : '无法打开文件夹选择框', 'error')
+    }
+  }
+
   const pickOutputDirectory = async () => {
     try {
       const result = await dialog.showOpenDialog({
@@ -381,16 +441,21 @@ export default function App() {
     notification.show('已请求停止当前 FFmpeg 任务', 'info')
   }
 
-  const runQueue = async () => {
-    if (!ffmpeg || !canRunJobs) return
+  const runQueue = async (jobIds?: string[]) => {
+    const targetIdSet = jobIds ? new Set(jobIds) : null
+    const selectedJobs = jobs.filter((job) => (
+      targetIdSet ? targetIdSet.has(job.id) : job.status !== 'done'
+    ))
+    if (!ffmpeg || !selectedJobs.length || ffmpegStatus !== 'available' || busy || isRunning) return
     setBusy(true)
     setFfmpegStatus('running')
     stopRequestedRef.current = false
     let successCount = 0
     let failedCount = 0
+    let stoppedCount = 0
 
     try {
-      for (const job of jobs) {
+      for (const job of selectedJobs) {
         if (stopRequestedRef.current) break
         setActiveJobId(job.id)
         setActiveJobName(job.sourceName)
@@ -407,6 +472,7 @@ export default function App() {
         try {
           await task.promise
           if (stopRequestedRef.current) {
+            stoppedCount += 1
             setJobs((previous) => previous.map((item) => (
               item.id === job.id ? { ...item, status: 'stopped' } : item
             )))
@@ -419,6 +485,7 @@ export default function App() {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (stopRequestedRef.current) {
+            stoppedCount += 1
             setJobs((previous) => previous.map((item) => (
               item.id === job.id ? { ...item, status: 'stopped', error: message } : item
             )))
@@ -434,7 +501,7 @@ export default function App() {
       }
 
       if (stopRequestedRef.current) {
-        notification.show(`队列已停止，成功 ${successCount}，失败 ${failedCount}`, 'warning')
+        notification.show(`队列已停止，成功 ${successCount}，失败 ${failedCount}，停止 ${stoppedCount}`, 'warning')
       } else if (failedCount > 0) {
         notification.show(`队列完成：成功 ${successCount}，失败 ${failedCount}`, 'warning')
       } else {
@@ -447,6 +514,68 @@ export default function App() {
       setRunProgress(null)
       stopRequestedRef.current = false
       await checkFfmpeg()
+    }
+  }
+
+  const retryFailedJobs = async () => {
+    if (!canRetryJobs) return
+    await runQueue(failedJobs.map((job) => job.id))
+  }
+
+  const revealOutput = async (job: PreparedJob) => {
+    if (!window.mulby?.shell?.showItemInFolder) {
+      notification.show('当前 Mulby 版本未提供输出定位 API', 'error')
+      return
+    }
+    try {
+      await shell.showItemInFolder(job.outputPath)
+    } catch (error) {
+      notification.show(error instanceof Error ? error.message : '无法定位输出文件', 'error')
+    }
+  }
+
+  const exportRunLog = async () => {
+    if (!files.length && !jobs.length) {
+      notification.show('暂无可导出的日志', 'warning')
+      return
+    }
+    if (!window.mulby?.dialog?.showSaveDialog || !window.mulby?.filesystem?.writeFile) {
+      notification.show('当前 Mulby 版本未提供日志导出 API', 'error')
+      return
+    }
+
+    try {
+      const exportedAt = new Date()
+      const savePath = await dialog.showSaveDialog({
+        title: '导出处理日志',
+        defaultPath: `video-batch-editor-log-${formatTimestampForFile(exportedAt)}.json`,
+        buttonLabel: '导出',
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      })
+      if (!savePath) return
+
+      const payload = {
+        pluginId: PLUGIN_ID,
+        exportedAt: exportedAt.toISOString(),
+        ffmpeg: {
+          status: ffmpegStatus,
+          message: ffmpegMessage,
+          path: ffmpegPath
+        },
+        options: {
+          ...options,
+          outputDirectory: options.outputDirectory || null,
+          watermarkText: options.watermarkText.trim() || null
+        },
+        summary,
+        files,
+        jobs
+      }
+
+      await filesystem.writeFile(savePath, JSON.stringify(payload, null, 2), 'utf-8')
+      notification.show('日志已导出', 'success')
+    } catch (error) {
+      notification.show(error instanceof Error ? error.message : '日志导出失败', 'error')
     }
   }
 
@@ -516,6 +645,10 @@ export default function App() {
               <button type="button" className="primary-button" onClick={pickFiles} disabled={busy}>
                 <Import size={17} />
                 导入视频
+              </button>
+              <button type="button" className="secondary-button" onClick={pickDirectories} disabled={busy}>
+                <FolderOpen size={17} />
+                导入文件夹
               </button>
               <button type="button" className="ghost-button" onClick={clearFiles} disabled={!files.length || busy} aria-label="清空队列">
                 <Trash2 size={17} />
@@ -724,7 +857,7 @@ export default function App() {
                 停止任务
               </button>
             ) : (
-              <button type="button" className="secondary-button wide" onClick={runQueue} disabled={!canRunJobs}>
+              <button type="button" className="secondary-button wide" onClick={() => void runQueue()} disabled={!canRunJobs}>
                 <Play size={18} />
                 执行队列
               </button>
@@ -736,9 +869,19 @@ export default function App() {
           <div className="panel-head">
             <div>
               <h2>任务预览</h2>
-              <p>{jobs.length > 0 ? `${jobs.length} 条 FFmpeg 命令` : '未生成命令'}</p>
+              <p>{jobs.length > 0 ? `${jobs.length} 条命令 / ${failedJobs.length} 条可重试` : '未生成命令'}</p>
             </div>
-            <ClipboardList size={20} />
+            <div className="head-actions">
+              <button type="button" className="secondary-button compact-button" onClick={retryFailedJobs} disabled={!canRetryJobs}>
+                <RefreshCw size={16} />
+                重试失败
+              </button>
+              <button type="button" className="secondary-button compact-button" onClick={exportRunLog} disabled={(!files.length && !jobs.length) || busy}>
+                <FileDown size={16} />
+                导出日志
+              </button>
+              <ClipboardList size={20} />
+            </div>
           </div>
 
           <div className="job-list">
@@ -761,7 +904,18 @@ export default function App() {
                   <div className="job-progress">{formatProgress(runProgress)}</div>
                 )}
                 {job.error && <div className="job-error" title={job.error}>{job.error}</div>}
-                <small title={job.outputPath}>{job.outputPath}</small>
+                <div className="job-output-row">
+                  <small title={job.outputPath}>{job.outputPath}</small>
+                  <button
+                    type="button"
+                    className="icon-button subtle"
+                    onClick={() => void revealOutput(job)}
+                    disabled={job.status !== 'done' || isRunning}
+                    aria-label={`定位输出 ${job.sourceName}`}
+                  >
+                    <FolderOpen size={16} />
+                  </button>
+                </div>
               </article>
             ))}
           </div>
