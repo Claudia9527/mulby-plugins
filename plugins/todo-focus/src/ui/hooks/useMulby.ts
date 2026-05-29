@@ -1,5 +1,12 @@
 import { useMemo } from 'react'
 
+interface WrappedHost {
+  invoke(method: string, ...args: unknown[]): Promise<unknown>
+  call(method: string, ...args: unknown[]): Promise<{ success: boolean; data: unknown }>
+  status(): Promise<{ ready: boolean; active: boolean }>
+  restart(): Promise<boolean>
+}
+
 export function useMulby(pluginId?: string) {
   return useMemo(() => {
     const mulby = window.mulby
@@ -13,15 +20,19 @@ export function useMulby(pluginId?: string) {
         }
       : mulby.storage
 
-    const host = pluginId && mulby.host
+    const host: WrappedHost = pluginId && mulby.host
       ? {
-          ...mulby.host,
           invoke: (method: string, ...args: unknown[]) => mulby.host!.invoke(pluginId, method, ...args),
           call: (method: string, ...args: unknown[]) => mulby.host!.call(pluginId, method, ...args),
           status: () => mulby.host!.status(pluginId),
           restart: () => mulby.host!.restart(pluginId),
         }
-      : mulby.host
+      : {
+          invoke: (method: string, ...args: unknown[]) => mulby.host!.invoke('', method, ...args),
+          call: (method: string, ...args: unknown[]) => mulby.host!.call('', method, ...args),
+          status: () => mulby.host!.status(''),
+          restart: () => mulby.host!.restart(''),
+        }
 
     return {
       ...mulby,

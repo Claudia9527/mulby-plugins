@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Pause, Play, RotateCcw, SkipForward } from 'lucide-react'
 import { useTodos } from '../hooks/useTodos'
 import { usePomodoro, formatTimer } from '../hooks/usePomodoro'
@@ -17,16 +17,23 @@ const PHASE_LABEL = {
 export default function FocusView() {
   const { todos, settings, stats, recordPomodoro, saveSettings } = useTodos()
   const { notification, window: win } = useMulby(PLUGIN_ID)
+  const [showComplete, setShowComplete] = useState(false)
 
   const effectiveSettings = settings || DEFAULT_SETTINGS
   const activeTodos = todos.filter((t) => !t.done)
   const activeId = effectiveSettings.activeTodoId || activeTodos.find((t) => t.pinned)?.id || activeTodos[0]?.id
   const activeTodo = activeTodos.find((t) => t.id === activeId)
 
+  const pomodoroCount = activeTodo?.focusMinutes
+    ? Math.floor(activeTodo.focusMinutes / effectiveSettings.pomodoroMinutes)
+    : 0
+
   const onComplete = useCallback(
     (phase: string, completedFocus: boolean) => {
       if (completedFocus) {
         void recordPomodoro(activeId, effectiveSettings.pomodoroMinutes)
+        setShowComplete(true)
+        setTimeout(() => setShowComplete(false), 1500)
         notification.show('专注完成，休息一下吧', 'success')
       } else if (phase === 'shortBreak' || phase === 'longBreak') {
         notification.show('休息结束，继续加油', 'info')
@@ -36,6 +43,8 @@ export default function FocusView() {
   )
 
   const { phase, remaining, running, progress, toggle, reset, skipBreak } = usePomodoro(effectiveSettings, onComplete)
+
+  const isBreak = phase === 'shortBreak' || phase === 'longBreak'
 
   useEffect(() => {
     void win?.setBackgroundThrottling?.(false)
@@ -48,21 +57,10 @@ export default function FocusView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'SELECT') return
-      if (e.code === 'Space') {
-        e.preventDefault()
-        toggle()
-      }
-      if (e.key === 'r' || e.key === 'R') {
-        e.preventDefault()
-        reset()
-      }
-      if (e.key === 's' || e.key === 'S') {
-        e.preventDefault()
-        skipBreak()
-      }
-      if (e.key === 'Escape') {
-        void win?.close?.()
-      }
+      if (e.code === 'Space') { e.preventDefault(); toggle() }
+      if (e.key === 'r' || e.key === 'R') { e.preventDefault(); reset() }
+      if (e.key === 's' || e.key === 'S') { e.preventDefault(); skipBreak() }
+      if (e.key === 'Escape') { void win?.close?.() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -95,14 +93,19 @@ export default function FocusView() {
             </option>
           ))}
         </select>
-        {activeTodo && <p className="focus-task-name">{activeTodo.title}</p>}
+        {activeTodo && (
+          <>
+            <p className="focus-task-name">{activeTodo.title}</p>
+            <p className="focus-task-count">已专注 {pomodoroCount} 个番茄 · {((activeTodo.focusMinutes || 0) / 60).toFixed(1)}小时</p>
+          </>
+        )}
       </div>
 
-      <div className="focus-timer">
+      <div className={`focus-timer ${showComplete ? 'focus-timer--complete' : ''}`}>
         <svg className="focus-ring" viewBox="0 0 200 200" aria-hidden>
           <circle className="focus-ring__bg" cx="100" cy="100" r="88" />
           <circle
-            className="focus-ring__fg"
+            className={`focus-ring__fg ${isBreak ? 'focus-ring__fg--break' : ''}`}
             cx="100"
             cy="100"
             r="88"
@@ -110,9 +113,25 @@ export default function FocusView() {
             strokeDashoffset={dashOffset}
           />
         </svg>
-        <div className="focus-time">
-          {formatTimer(phase === 'idle' ? effectiveSettings.pomodoroMinutes * 60 : remaining)}
-        </div>
+        {showComplete ? (
+          <div className="focus-complete-check">
+            <svg width="48" height="48" viewBox="0 0 48 48">
+              <path
+                className="focus-check-path"
+                d="M12 24L21 33L36 15"
+                fill="none"
+                stroke="#22c55e"
+                strokeWidth="4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </div>
+        ) : (
+          <div className="focus-time">
+            {formatTimer(phase === 'idle' ? effectiveSettings.pomodoroMinutes * 60 : remaining)}
+          </div>
+        )}
       </div>
 
       <div className="focus-actions">
@@ -122,7 +141,7 @@ export default function FocusView() {
         <button type="button" className="btn-ghost" onClick={reset} aria-label="重置">
           <RotateCcw size={18} />
         </button>
-        {(phase === 'shortBreak' || phase === 'longBreak') && (
+        {isBreak && (
           <button type="button" className="btn-ghost" onClick={skipBreak} aria-label="跳过休息">
             <SkipForward size={18} />
           </button>

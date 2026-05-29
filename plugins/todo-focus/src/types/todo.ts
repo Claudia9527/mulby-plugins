@@ -1,3 +1,9 @@
+export interface ChecklistItem {
+  id: string
+  text: string
+  done: boolean
+}
+
 export interface TodoItem {
   id: string
   title: string
@@ -7,6 +13,17 @@ export interface TodoItem {
   updatedAt: number
   focusMinutes?: number
   pinned?: boolean
+  dueDate?: number
+  priority?: 'high' | 'medium' | 'low'
+  checklist?: ChecklistItem[]
+  sortOrder?: number
+}
+
+export interface DailyRecord {
+  date: string
+  pomodoroCount: number
+  focusMinutes: number
+  completedTodos: number
 }
 
 export interface Settings {
@@ -22,6 +39,7 @@ export interface Stats {
   pomodoroTotal: number
   focusMinutesToday: number
   lastStatsDate?: string
+  dailyHistory: DailyRecord[]
 }
 
 export interface TodoState {
@@ -43,4 +61,5 @@ export const DEFAULT_STATS: Stats = {
   pomodoroToday: 0,
   pomodoroTotal: 0,
   focusMinutesToday: 0,
+  dailyHistory: [],
 }

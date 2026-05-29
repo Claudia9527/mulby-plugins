@@ -36,8 +36,8 @@ export function useTodos() {
   }, [refresh])
 
   const addTodo = useCallback(
-    async (title: string, note?: string) => {
-      const item = unwrapHostResult<TodoItem>(await host.call('addTodo', title, note))
+    async (title: string, note?: string, priority?: 'high' | 'medium' | 'low', dueDate?: number) => {
+      const item = unwrapHostResult<TodoItem>(await host.call('addTodo', title, note, priority, dueDate))
       await refresh()
       return item
     },
@@ -45,7 +45,7 @@ export function useTodos() {
   )
 
   const updateTodo = useCallback(
-    async (id: string, patch: Parameters<typeof host.call>[1] extends string ? never : object) => {
+    async (id: string, patch: Partial<Pick<TodoItem, 'title' | 'note' | 'done' | 'pinned' | 'focusMinutes' | 'priority' | 'dueDate' | 'checklist' | 'sortOrder'>>) => {
       await host.call('updateTodo', id, patch)
       await refresh()
     },
@@ -87,6 +87,46 @@ export function useTodos() {
     [host, refresh]
   )
 
+  const addChecklistItem = useCallback(
+    async (todoId: string, text: string) => {
+      await host.call('addChecklistItem', todoId, text)
+      await refresh()
+    },
+    [host, refresh]
+  )
+
+  const toggleChecklistItem = useCallback(
+    async (todoId: string, checklistId: string) => {
+      await host.call('toggleChecklistItem', todoId, checklistId)
+      await refresh()
+    },
+    [host, refresh]
+  )
+
+  const removeChecklistItem = useCallback(
+    async (todoId: string, checklistId: string) => {
+      await host.call('removeChecklistItem', todoId, checklistId)
+      await refresh()
+    },
+    [host, refresh]
+  )
+
+  const importAsChecklist = useCallback(
+    async (todoId: string, titles: string[]) => {
+      await host.call('importAsChecklist', todoId, titles)
+      await refresh()
+    },
+    [host, refresh]
+  )
+
+  const reorderTodos = useCallback(
+    async (todoIds: string[]) => {
+      await host.call('reorderTodos', todoIds)
+      await refresh()
+    },
+    [host, refresh]
+  )
+
   return {
     todos,
     settings,
@@ -99,5 +139,10 @@ export function useTodos() {
     toggleDone,
     saveSettings,
     recordPomodoro,
+    addChecklistItem,
+    toggleChecklistItem,
+    removeChecklistItem,
+    importAsChecklist,
+    reorderTodos,
   }
 }

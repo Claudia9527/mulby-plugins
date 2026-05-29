@@ -52,13 +52,27 @@ export const rpc = {
     return store.getState()
   },
 
-  async addTodo(title: string, note?: string) {
-    return store.addTodo(title, note)
+  async getStats() {
+    return store.getStats()
+  },
+
+  async addTodo(title: string, note?: string, priority?: 'high' | 'medium' | 'low', dueDate?: number) {
+    return store.addTodo(title, note, priority, dueDate)
   },
 
   async updateTodo(
     id: string,
-    patch: { title?: string; note?: string; done?: boolean; pinned?: boolean; focusMinutes?: number }
+    patch: {
+      title?: string
+      note?: string
+      done?: boolean
+      pinned?: boolean
+      focusMinutes?: number
+      priority?: 'high' | 'medium' | 'low'
+      dueDate?: number
+      checklist?: Array<{ id: string; text: string; done: boolean }>
+      sortOrder?: number
+    }
   ) {
     return store.updateTodo(id, patch)
   },
@@ -83,6 +97,26 @@ export const rpc = {
 
   async recordPomodoroComplete(todoId?: string, minutes?: number) {
     return store.recordPomodoroComplete(todoId, minutes)
+  },
+
+  async addChecklistItem(todoId: string, text: string) {
+    return store.addChecklistItem(todoId, text)
+  },
+
+  async toggleChecklistItem(todoId: string, checklistId: string) {
+    return store.toggleChecklistItem(todoId, checklistId)
+  },
+
+  async removeChecklistItem(todoId: string, checklistId: string) {
+    return store.removeChecklistItem(todoId, checklistId)
+  },
+
+  async importAsChecklist(todoId: string, titles: string[]) {
+    return store.importAsChecklist(todoId, titles)
+  },
+
+  async reorderTodos(todoIds: string[]) {
+    return store.reorderTodos(todoIds)
   },
 }
 
