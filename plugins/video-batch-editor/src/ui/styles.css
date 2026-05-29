@@ -260,6 +260,13 @@ button {
   font-size: 12px;
 }
 
+.panel-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--blue);
+}
+
 .queue-head {
   min-height: 0;
   align-items: stretch;
@@ -385,7 +392,20 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-soft);
+  cursor: pointer;
   font-size: 13px;
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.queue-card:hover,
+.queue-card:focus-visible {
+  border-color: rgba(15, 143, 131, 0.36);
+  background: rgba(15, 143, 131, 0.06);
+}
+
+.queue-card:focus-visible {
+  outline: 2px solid rgba(15, 143, 131, 0.28);
+  outline-offset: 2px;
 }
 
 .file-cell {
@@ -408,10 +428,11 @@ button:disabled {
   color: inherit;
   text-align: left;
   background: transparent;
-  cursor: pointer;
+  cursor: inherit;
 }
 
-.file-select-button:hover strong {
+.queue-card:hover .file-select-button strong,
+.queue-card:focus-visible .file-select-button strong {
   color: var(--teal-strong);
 }
 
@@ -541,6 +562,35 @@ button:disabled {
   overflow: hidden;
 }
 
+.preview-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.preview-title-line h2 {
+  flex: 0 0 auto;
+}
+
+.preview-file-name,
+.preview-mod-summary {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.preview-file-name {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.preview-mod-summary {
+  max-width: min(660px, 54vw);
+}
+
 .video-preview-column {
   display: grid;
   grid-template-rows: auto auto;
@@ -571,6 +621,23 @@ button:disabled {
   min-height: 0;
   object-fit: contain;
   background: #101514;
+}
+
+.video-stage.focus-crop {
+  cursor: default;
+}
+
+.crop-focus-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: #101514;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.2);
+}
+
+.crop-focus-frame video {
+  max-width: none;
+  max-height: none;
 }
 
 .preview-placeholder {
@@ -962,6 +1029,7 @@ button:disabled {
   outline: none;
   color: var(--text);
   background: var(--surface-soft);
+  font-size: 12px;
 }
 
 .field input[type="range"] {
@@ -1253,5 +1321,14 @@ button:disabled {
 
   .timeline-actions {
     flex-direction: column;
+  }
+
+  .preview-title-line {
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .preview-mod-summary {
+    max-width: 100%;
   }
 }

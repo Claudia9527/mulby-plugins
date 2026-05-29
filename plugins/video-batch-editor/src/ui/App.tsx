@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent } from 'react'
 import {
   AlertCircle,
   Camera,
@@ -332,6 +332,19 @@ function normalizeOptionsForHost(options: JobOptions): JobOptions {
   }
 }
 
+function normalizeOptionsForCompare(options: JobOptions): JobOptions {
+  return {
+    ...DEFAULT_OPTIONS,
+    ...options,
+    outputDirectory: options.outputDirectory || '',
+    watermarkText: options.watermarkText.trim()
+  }
+}
+
+function areOptionsEquivalent(left: JobOptions, right: JobOptions) {
+  return JSON.stringify(normalizeOptionsForCompare(left)) === JSON.stringify(normalizeOptionsForCompare(right))
+}
+
 export default function App() {
   const { dialog, filesystem, host, notification, shell, ffmpeg } = useMulby(PLUGIN_ID)
   const [files, setFiles] = useState<VideoFileSummary[]>([])
@@ -360,9 +373,16 @@ export default function App() {
   const [cropSelection, setCropSelection] = useState<CropSelection | null>(null)
   const [cropDrag, setCropDrag] = useState<CropDragState | null>(null)
   const [timelineDrag, setTimelineDrag] = useState<TimelineDragState | null>(null)
+  const [focusCropPreview, setFocusCropPreview] = useState(false)
   const [configScope, setConfigScope] = useState<ConfigScope>('global')
   const [globalConfig, setGlobalConfig] = useState<JobOptions>(DEFAULT_OPTIONS)
   const [overrideConfigs, setOverrideConfigs] = useState<Record<string, JobOptions>>({})
+
+  useEffect(() => {
+    if (!cropSelection) {
+      setFocusCropPreview(false)
+    }
+  }, [cropSelection])
 
   const validFiles = useMemo(() => files.filter((file) => file.ok), [files])
   const invalidCount = files.length - validFiles.length
@@ -370,7 +390,11 @@ export default function App() {
   const failedJobs = useMemo(() => jobs.filter((job) => job.status === 'failed' || job.status === 'stopped'), [jobs])
   const selectedFile = useMemo(() => validFiles.find((file) => file.path === selectedPath) ?? validFiles[0] ?? null, [selectedPath, validFiles])
   const selectedOverrideConfig = selectedFile ? overrideConfigs[selectedFile.path] : undefined
-  const hasSelectedOverride = Boolean(selectedFile && selectedOverrideConfig)
+  const isOverrideConfigChanged = useCallback((filePath: string) => {
+    const overrideConfig = overrideConfigs[filePath]
+    return Boolean(overrideConfig && !areOptionsEquivalent(overrideConfig, globalConfig))
+  }, [globalConfig, overrideConfigs])
+  const hasSelectedOverride = selectedFile ? isOverrideConfigChanged(selectedFile.path) : false
   const options = configScope === 'current' && selectedOverrideConfig ? selectedOverrideConfig : globalConfig
   const configPanelTitle = configScope === 'current' ? '当前视频配置' : '批量处理配置'
   const configPanelHint = configScope === 'current'
@@ -391,16 +415,18 @@ export default function App() {
       height: `${displayedSelection.height * viewport.height * 100}%`
     }
   }, [displayedSelection, videoNaturalSize.height, videoNaturalSize.width])
+  const effectiveTrimStartSeconds = options.timeMode === 'full' ? 0 : options.trimStartSeconds
   const trimEndSeconds = videoDuration > 0
-    ? Math.min(videoDuration, options.trimStartSeconds + options.trimDurationSeconds)
+    ? options.timeMode === 'full' ? videoDuration : Math.min(videoDuration, options.trimStartSeconds + options.trimDurationSeconds)
     : options.trimStartSeconds + options.trimDurationSeconds
-  const trimStartPercent = videoDuration > 0 ? clampValue(options.trimStartSeconds / videoDuration * 100, 0, 100) : 0
+  const trimStartPercent = videoDuration > 0 ? clampValue(effectiveTrimStartSeconds / videoDuration * 100, 0, 100) : 0
   const trimEndPercent = videoDuration > 0 ? clampValue(trimEndSeconds / videoDuration * 100, 0, 100) : 0
   const currentTimePercent = videoDuration > 0 ? clampValue(currentTime / videoDuration * 100, 0, 100) : 0
   const trimRangeWidthPercent = Math.max(0, trimEndPercent - trimStartPercent)
   const cropStats = cropSelection
     ? `X ${options.cropX} / Y ${options.cropY} / ${options.cropWidth} x ${options.cropHeight}`
     : '未框选画面'
+  const hasPreviewModification = options.timeMode !== 'full' || options.cropMode !== 'none' || options.orientationMode !== 'keep'
   const previewHint = useMemo(() => {
     const parts: string[] = []
     if (options.timeMode === 'range') {
@@ -422,6 +448,40 @@ export default function App() {
     }
     return parts.join(' / ')
   }, [cropSelection, options.cropMode, options.orientationMode, options.removeStartSeconds, options.timeMode, options.trimDurationSeconds, options.trimStartSeconds, trimEndSeconds])
+  const previewChangeText = hasPreview
+    ? hasPreviewModification ? `当前修改：${previewHint}` : '默认配置'
+    : previewMessage
+  const cropFocusFrameStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!focusCropPreview || !displayedSelection || !videoNaturalSize.width || !videoNaturalSize.height) return undefined
+    const stage = previewStageRef.current
+    const stageAspect = stage && stage.clientWidth > 0 && stage.clientHeight > 0
+      ? stage.clientWidth / stage.clientHeight
+      : 16 / 9
+    const cropAspect = displayedSelection.width * videoNaturalSize.width / (displayedSelection.height * videoNaturalSize.height)
+    if (cropAspect > stageAspect) {
+      return {
+        width: '100%',
+        height: `${stageAspect / cropAspect * 100}%`
+      }
+    }
+    return {
+      width: `${cropAspect / stageAspect * 100}%`,
+      height: '100%'
+    }
+  }, [displayedSelection, focusCropPreview, videoNaturalSize.height, videoNaturalSize.width])
+  const cropFocusVideoStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!focusCropPreview || !displayedSelection) return undefined
+    const width = Math.max(displayedSelection.width, 0.01)
+    const height = Math.max(displayedSelection.height, 0.01)
+    return {
+      position: 'absolute',
+      left: `${-displayedSelection.x / width * 100}%`,
+      top: `${-displayedSelection.y / height * 100}%`,
+      width: `${100 / width}%`,
+      height: `${100 / height}%`,
+      objectFit: 'fill'
+    }
+  }, [displayedSelection, focusCropPreview])
   const isRunning = activeJobId !== null
   const canPrepare = validFiles.length > 0 && !busy && !isRunning
   const canRunJobs = runnableJobs.length > 0 && ffmpegStatus === 'available' && !busy && !isRunning
@@ -441,10 +501,13 @@ export default function App() {
         const next = typeof updater === 'function'
           ? (updater as (previous: JobOptions) => JobOptions)(base)
           : updater
-        return {
-          ...previous,
-          [selectedFile.path]: next
+        const nextConfigs = { ...previous }
+        if (areOptionsEquivalent(next, globalConfig)) {
+          delete nextConfigs[selectedFile.path]
+        } else {
+          nextConfigs[selectedFile.path] = next
         }
+        return nextConfigs
       })
     } else {
       setGlobalConfig((previous) => (
@@ -473,7 +536,7 @@ export default function App() {
       cropHeight
     }))
     setJobs([])
-  }, [videoNaturalSize])
+  }, [updateOptions, videoNaturalSize])
 
   const capturePreviewFrame = useCallback((keepMessage = false) => {
     const video = videoRef.current
@@ -511,15 +574,15 @@ export default function App() {
     const video = videoRef.current
     if (!video) return
     if (video.paused) {
-      if (videoDuration > 0 && (video.currentTime < options.trimStartSeconds || video.currentTime >= trimEndSeconds)) {
-        video.currentTime = options.trimStartSeconds
-        setCurrentTime(options.trimStartSeconds)
+      if (videoDuration > 0 && (video.currentTime < effectiveTrimStartSeconds || video.currentTime >= trimEndSeconds)) {
+        video.currentTime = effectiveTrimStartSeconds
+        setCurrentTime(effectiveTrimStartSeconds)
       }
       void video.play()
     } else {
       video.pause()
     }
-  }, [options.trimStartSeconds, trimEndSeconds, videoDuration])
+  }, [effectiveTrimStartSeconds, trimEndSeconds, videoDuration])
 
   const inspectAndMergePaths = useCallback(async (paths: string[]) => {
     const nextPaths = paths.filter(Boolean)
@@ -603,6 +666,7 @@ export default function App() {
       setCurrentTime(0)
       setPreviewFrameUrl('')
       setCropSelection(null)
+      setFocusCropPreview(false)
       setPreviewMessage('选择一个视频后可预览')
       return
     }
@@ -614,6 +678,7 @@ export default function App() {
     setVideoNaturalSize({ width: 0, height: 0 })
     setCurrentTime(0)
     setCropSelection(null)
+    setFocusCropPreview(false)
 
     void (async () => {
       try {
@@ -642,14 +707,6 @@ export default function App() {
       canceled = true
     }
   }, [host, selectedFile])
-
-  useEffect(() => {
-    if (configScope !== 'current' || !selectedFile || overrideConfigs[selectedFile.path]) return
-    setOverrideConfigs((previous) => ({
-      ...previous,
-      [selectedFile.path]: globalConfig
-    }))
-  }, [configScope, globalConfig, overrideConfigs, selectedFile])
 
   const checkFfmpeg = useCallback(async () => {
     if (!ffmpeg) {
@@ -785,7 +842,8 @@ export default function App() {
     try {
       const preparedGroups = await Promise.all(validFiles.map(async (file) => {
         const overrideConfig = overrideConfigs[file.path]
-        const finalConfig = overrideConfig ?? globalConfig
+        const hasChangedOverride = Boolean(overrideConfig && !areOptionsEquivalent(overrideConfig, globalConfig))
+        const finalConfig = hasChangedOverride && overrideConfig ? overrideConfig : globalConfig
         const response = await host.call(
           'prepareJobs',
           [file.path],
@@ -794,7 +852,7 @@ export default function App() {
         const data = unwrapHostData<{ jobs?: PreparedJob[] }>(response)
         return (data?.jobs ?? []).map((job) => ({
           ...job,
-          configSource: overrideConfig ? 'override' as const : 'global' as const
+          configSource: hasChangedOverride ? 'override' as const : 'global' as const
         }))
       }))
       const nextJobs = preparedGroups.flat()
@@ -833,6 +891,18 @@ export default function App() {
     setJobs([])
     setSelectedPath('')
     setOverrideConfigs({})
+  }
+
+  const clearJobs = () => {
+    if (busy || isRunning) return
+    setJobs([])
+    setRunProgress(null)
+    setActiveJobId(null)
+    setActiveJobName('')
+  }
+
+  const showSettingsHint = () => {
+    notification.show('当前版本暂无独立设置页。FFmpeg 状态在顶部查看，视频处理参数在右侧配置面板调整。', 'info')
   }
 
   const stopQueue = () => {
@@ -1044,7 +1114,7 @@ export default function App() {
   }
 
   const startCropDrag = (event: PointerEvent<HTMLDivElement>) => {
-    if (!hasPreview || !videoNaturalSize.width || !videoNaturalSize.height) return
+    if (focusCropPreview || !hasPreview || !videoNaturalSize.width || !videoNaturalSize.height) return
     const point = pointerToSelectionPoint(event)
     if (!point) return
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -1078,6 +1148,7 @@ export default function App() {
 
   const clearCropSelection = () => {
     setCropSelection(null)
+    setFocusCropPreview(false)
     updateOption('cropMode', 'none')
   }
 
@@ -1097,12 +1168,12 @@ export default function App() {
       return
     }
     if (target === 'end') {
-      const nextEnd = clampValue(time, options.trimStartSeconds + 0.1, videoDuration)
-      applyTimeRange(options.trimStartSeconds, nextEnd)
+      const nextEnd = clampValue(time, effectiveTrimStartSeconds + 0.1, videoDuration)
+      applyTimeRange(effectiveTrimStartSeconds, nextEnd)
       seekPreview(nextEnd)
       return
     }
-    const nextTime = clampValue(time, options.trimStartSeconds, trimEndSeconds)
+    const nextTime = clampValue(time, effectiveTrimStartSeconds, trimEndSeconds)
     seekPreview(nextTime)
   }
 
@@ -1132,7 +1203,7 @@ export default function App() {
   const seekWithinTrimRange = (event: PointerEvent<HTMLDivElement>) => {
     if (!videoDuration) return
     const time = timelinePointToSeconds(event)
-    if (time === null || time < options.trimStartSeconds || time > trimEndSeconds) return
+    if (time === null || time < effectiveTrimStartSeconds || time > trimEndSeconds) return
     event.preventDefault()
     seekPreview(time)
   }
@@ -1174,27 +1245,27 @@ export default function App() {
           <span>视频批量编辑</span>
         </div>
         <div className="toolbar-actions">
-        <div className={ffmpegClassName} title={ffmpegTooltip}>
-          {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
-          <span>{ffmpegStatus === 'available' ? 'FFmpeg 可用' : ffmpegStatus === 'missing' ? 'FFmpeg 未安装' : ffmpegMessage}</span>
-        </div>
-        {(downloadProgress || runProgress) && (
-          <div className="runtime-inline-progress" aria-hidden>
-            <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
+          <div className={ffmpegClassName} title={ffmpegTooltip}>
+            {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
+            <span>{ffmpegStatus === 'available' ? 'FFmpeg 可用' : ffmpegStatus === 'missing' ? 'FFmpeg 未安装' : ffmpegMessage}</span>
           </div>
-        )}
-        <button type="button" className="icon-button" onClick={checkFfmpeg} aria-label="重新检测 FFmpeg">
-          <RefreshCw size={18} />
-        </button>
-        {ffmpegStatus === 'missing' && (
-          <button type="button" className="secondary-button compact-button" onClick={downloadFfmpeg} disabled={!ffmpeg || busy || isRunning}>
-            <Download size={16} />
-            下载 FFmpeg
+          {(downloadProgress || runProgress) && (
+            <div className="runtime-inline-progress" aria-hidden>
+              <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
+            </div>
+          )}
+          <button type="button" className="icon-button" onClick={checkFfmpeg} aria-label="重新检测 FFmpeg" title="重新检测 FFmpeg">
+            <RefreshCw size={18} />
           </button>
-        )}
-        <button type="button" className="icon-button" aria-label="设置">
-          <Settings2 size={18} />
-        </button>
+          {ffmpegStatus === 'missing' && (
+            <button type="button" className="secondary-button compact-button" onClick={downloadFfmpeg} disabled={!ffmpeg || busy || isRunning} title="下载内置 FFmpeg">
+              <Download size={16} />
+              下载 FFmpeg
+            </button>
+          )}
+          <button type="button" className="icon-button" onClick={showSettingsHint} aria-label="设置说明" title="设置说明">
+            <Settings2 size={18} />
+          </button>
         </div>
       </header>
 
@@ -1208,15 +1279,15 @@ export default function App() {
               </p>
             </div>
             <div className="head-actions">
-              <button type="button" className="primary-button compact-button" onClick={pickFiles} disabled={busy}>
+              <button type="button" className="primary-button compact-button" onClick={pickFiles} disabled={busy} title="导入视频文件">
                 <Import size={17} />
                 导入视频
               </button>
-              <button type="button" className="secondary-button compact-button" onClick={pickDirectories} disabled={busy}>
+              <button type="button" className="secondary-button compact-button" onClick={pickDirectories} disabled={busy} title="导入文件夹中的视频">
                 <FolderOpen size={17} />
                 导入文件夹
               </button>
-              <button type="button" className="ghost-button" onClick={clearFiles} disabled={!files.length || busy} aria-label="清空队列">
+              <button type="button" className="ghost-button" onClick={clearFiles} disabled={!files.length || busy} aria-label="清空队列" title="清空文件队列">
                 <Trash2 size={17} />
               </button>
             </div>
@@ -1229,22 +1300,48 @@ export default function App() {
                 <span>暂无视频</span>
               </div>
             ) : files.map((file) => (
-              <article className={`queue-card ${selectedFile?.path === file.path ? 'selected-row' : ''}`} key={file.path}>
-                <button type="button" className="file-cell file-select-button" onClick={() => selectPreviewFile(file.path)} title={`${file.name}\n${file.path}`}>
+              <article
+                className={`queue-card ${selectedFile?.path === file.path ? 'selected-row' : ''}`}
+                key={file.path}
+                role="button"
+                tabIndex={isRunning ? -1 : 0}
+                title={`${file.name}\n${file.path}`}
+                onClick={() => selectPreviewFile(file.path)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    selectPreviewFile(file.path)
+                  }
+                }}
+              >
+                <div className="file-cell file-select-button">
                   <FileVideo2 size={18} />
                   <div>
                     <strong title={file.name}>{file.name}</strong>
                     <small title={file.path}>{file.path}</small>
                   </div>
-                </button>
+                </div>
                 <span className="queue-meta" title={`大小：${formatBytes(file.size)}`}>{formatBytes(file.size)}</span>
                 <span className={`queue-state ${file.ok ? 'state-ok' : 'state-error'}`} title={`状态：${file.ok ? '就绪' : file.error ?? '异常'}`}>
                   {file.ok ? '就绪' : file.error ?? '异常'}
                 </span>
-                {overrideConfigs[file.path] && (
-                  <span className="override-badge" title="该视频使用单独配置">已单独配置</span>
+                {isOverrideConfigChanged(file.path) && (
+                  <span className="override-badge" title="该视频有不同于全局配置的单独配置">已单独配置</span>
                 )}
-                <button type="button" className="icon-button subtle" onClick={() => removeFile(file.path)} aria-label={`移除 ${file.name}`}>
+                <button
+                  type="button"
+                  className="icon-button subtle"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    removeFile(file.path)
+                  }}
+                  onKeyDown={(event) => {
+                    event.stopPropagation()
+                  }}
+                  aria-label={`移除 ${file.name}`}
+                  title={`移除 ${file.name}`}
+                >
                   <Trash2 size={16} />
                 </button>
               </article>
@@ -1255,10 +1352,15 @@ export default function App() {
         <section className="preview-panel">
           <div className="panel-head">
             <div>
-              <h2>预览与裁剪</h2>
-              <p>{preview ? `${preview.name} / ${previewHint}` : previewMessage}</p>
+              <div className="preview-title-line">
+                <h2>预览与裁剪</h2>
+                {preview && (
+                  <span className="preview-file-name" title={preview.path}>{preview.name}</span>
+                )}
+              </div>
+              <p className="preview-mod-summary" title={previewChangeText}>{previewChangeText}</p>
             </div>
-            <button type="button" className="secondary-button compact-button" onClick={captureScreenshot} disabled={!previewFrameUrl && !hasPreview}>
+            <button type="button" className="secondary-button compact-button" onClick={captureScreenshot} disabled={!previewFrameUrl && !hasPreview} title="保存当前帧截图">
               <Camera size={16} />
               当前帧截图
             </button>
@@ -1267,14 +1369,61 @@ export default function App() {
           <div className="preview-workbench">
             <div className="video-preview-column">
               <div
-                className="video-stage"
+                className={`video-stage ${focusCropPreview && displayedSelection ? 'focus-crop' : ''}`}
                 ref={previewStageRef}
                 onPointerDown={startCropDrag}
                 onPointerMove={moveCropDrag}
                 onPointerUp={finishCropDrag}
                 onPointerCancel={finishCropDrag}
               >
-                {preview ? (
+                {preview && focusCropPreview && displayedSelection ? (
+                  <div className="crop-focus-frame" style={cropFocusFrameStyle}>
+                    <video
+                      ref={videoRef}
+                      src={preview.url}
+                      playsInline
+                      style={cropFocusVideoStyle}
+                      onLoadedMetadata={(event) => {
+                        const video = event.currentTarget
+                        const duration = Number.isFinite(video.duration) ? video.duration : 0
+                        setVideoDuration(duration)
+                        setVideoNaturalSize({ width: video.videoWidth, height: video.videoHeight })
+                        setCurrentTime(video.currentTime)
+                        setPreviewMessage(`${video.videoWidth} x ${video.videoHeight} / ${formatSeconds(duration)}`)
+                      }}
+                      onTimeUpdate={(event) => {
+                        const video = event.currentTarget
+                        if (videoDuration > 0 && video.currentTime > trimEndSeconds + 0.05) {
+                          video.pause()
+                          video.currentTime = trimEndSeconds
+                          setCurrentTime(trimEndSeconds)
+                          capturePreviewFrame(true)
+                          return
+                        }
+                        setCurrentTime(video.currentTime)
+                        capturePreviewFrame(true)
+                      }}
+                      onPlay={() => {
+                        setVideoPlaying(true)
+                      }}
+                      onPause={() => {
+                        setVideoPlaying(false)
+                      }}
+                      onEnded={() => {
+                        setVideoPlaying(false)
+                      }}
+                      onSeeked={() => {
+                        capturePreviewFrame()
+                      }}
+                      onLoadedData={() => {
+                        capturePreviewFrame()
+                      }}
+                      onError={() => {
+                        setPreviewMessage('视频预览加载失败')
+                      }}
+                    />
+                  </div>
+                ) : preview ? (
                   <video
                     ref={videoRef}
                     src={preview.url}
@@ -1286,13 +1435,6 @@ export default function App() {
                       setVideoNaturalSize({ width: video.videoWidth, height: video.videoHeight })
                       setCurrentTime(video.currentTime)
                       setPreviewMessage(`${video.videoWidth} x ${video.videoHeight} / ${formatSeconds(duration)}`)
-                      if (duration > 0 && options.timeMode === 'full') {
-                        updateOptions((previous) => ({
-                          ...previous,
-                          trimStartSeconds: 0,
-                          trimDurationSeconds: Number(duration.toFixed(2))
-                        }))
-                      }
                     }}
                     onTimeUpdate={(event) => {
                       const video = event.currentTarget
@@ -1332,7 +1474,7 @@ export default function App() {
                   </div>
                 )}
 
-                {displayedSelection && (
+                {displayedSelection && !focusCropPreview && (
                   <div
                     className="crop-overlay"
                     style={selectionOverlayStyle}
@@ -1341,14 +1483,14 @@ export default function App() {
 
                 {displayedSelection && (
                   <div className="crop-readout" title={cropStats}>
-                    {cropStats}
+                    {focusCropPreview ? `裁剪区域预览 / ${cropStats}` : cropStats}
                   </div>
                 )}
               </div>
 
               <div className="timeline-panel">
                 <div className="timeline-meta">
-                  <span>{formatSeconds(options.trimStartSeconds)}</span>
+                  <span>{formatSeconds(effectiveTrimStartSeconds)}</span>
                   <strong title={`${formatSeconds(currentTime)} / ${formatSeconds(videoDuration)}`}>
                     {formatSeconds(currentTime)} / {formatSeconds(videoDuration)}
                   </strong>
@@ -1378,6 +1520,7 @@ export default function App() {
                     onPointerDown={(event) => startTimelineDrag('start', event)}
                     disabled={!videoDuration}
                     aria-label="裁剪起点"
+                    title="拖动设置截取起点"
                   />
                   <button
                     type="button"
@@ -1386,6 +1529,7 @@ export default function App() {
                     onPointerDown={(event) => startTimelineDrag('end', event)}
                     disabled={!videoDuration}
                     aria-label="裁剪终点"
+                    title="拖动设置截取终点"
                   />
                   <button
                     type="button"
@@ -1394,20 +1538,30 @@ export default function App() {
                     onPointerDown={(event) => startTimelineDrag('playhead', event)}
                     disabled={!videoDuration}
                     aria-label="播放头"
+                    title="拖动定位播放头"
                   />
                 </div>
                 <div className="timeline-actions">
-                  <button type="button" className="secondary-button compact-button" onClick={togglePreviewPlayback} disabled={!hasPreview}>
+                  <button type="button" className="secondary-button compact-button" onClick={togglePreviewPlayback} disabled={!hasPreview} title={videoPlaying ? '暂停预览' : '播放预览'}>
                     {videoPlaying ? <Pause size={16} /> : <Play size={16} />}
                     {videoPlaying ? '暂停' : '播放'}
                   </button>
-                  <button type="button" className="secondary-button compact-button" onClick={() => seekPreview(options.trimStartSeconds)} disabled={!videoDuration}>
+                  <button type="button" className="secondary-button compact-button" onClick={() => seekPreview(effectiveTrimStartSeconds)} disabled={!videoDuration} title="定位到截取起点">
                     定位起点
                   </button>
-                  <button type="button" className="secondary-button compact-button" onClick={() => seekPreview(trimEndSeconds)} disabled={!videoDuration}>
+                  <button type="button" className="secondary-button compact-button" onClick={() => seekPreview(trimEndSeconds)} disabled={!videoDuration} title="定位到截取终点">
                     定位终点
                   </button>
-                  <button type="button" className="secondary-button compact-button" onClick={clearCropSelection} disabled={!cropSelection}>
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    onClick={() => setFocusCropPreview((previous) => !previous)}
+                    disabled={!cropSelection}
+                    title={focusCropPreview ? '显示完整画面' : '放大显示裁剪区域'}
+                  >
+                    {focusCropPreview ? '显示完整画面' : '只看裁剪区域'}
+                  </button>
+                  <button type="button" className="secondary-button compact-button" onClick={clearCropSelection} disabled={!cropSelection} title="清除画面框选">
                     清除框选
                   </button>
                 </div>
@@ -1422,11 +1576,15 @@ export default function App() {
                 <p>{jobs.length > 0 ? `${jobs.length} 条命令 / ${failedJobs.length} 条可重试` : '未生成命令'}</p>
               </div>
               <div className="head-actions">
-                <button type="button" className="secondary-button compact-button" onClick={retryFailedJobs} disabled={!canRetryJobs}>
+                <button type="button" className="secondary-button compact-button" onClick={retryFailedJobs} disabled={!canRetryJobs} title="重试失败或已停止的任务">
                   <RefreshCw size={16} />
                   重试失败
                 </button>
-                <button type="button" className="secondary-button compact-button" onClick={exportRunLog} disabled={(!files.length && !jobs.length) || busy}>
+                <button type="button" className="secondary-button compact-button" onClick={clearJobs} disabled={!jobs.length || busy || isRunning} title="清空任务预览">
+                  <Trash2 size={16} />
+                  清空任务
+                </button>
+                <button type="button" className="secondary-button compact-button" onClick={exportRunLog} disabled={(!files.length && !jobs.length) || busy} title="导出处理日志">
                   <FileDown size={16} />
                   导出日志
                 </button>
@@ -1464,6 +1622,7 @@ export default function App() {
                       onClick={() => void revealOutput(job)}
                       disabled={job.status !== 'done' || isRunning}
                       aria-label={`定位输出 ${job.sourceName}`}
+                      title={`定位输出 ${job.sourceName}`}
                     >
                       <FolderOpen size={16} />
                     </button>
@@ -1480,7 +1639,9 @@ export default function App() {
               <h2>{configPanelTitle}</h2>
               <p title={configPanelHint}>{activeJobName ? `正在处理 ${activeJobName}` : configPanelHint}</p>
             </div>
-            <Settings2 size={20} />
+            <span className="panel-icon" aria-label="当前配置面板" title="当前配置面板">
+              <Settings2 size={20} />
+            </span>
           </div>
 
           <div className="scope-panel">
@@ -1497,15 +1658,7 @@ export default function App() {
               <button
                 type="button"
                 className={configScope === 'current' ? 'active' : ''}
-                onClick={() => {
-                  if (selectedFile && !overrideConfigs[selectedFile.path]) {
-                    setOverrideConfigs((previous) => ({
-                      ...previous,
-                      [selectedFile.path]: globalConfig
-                    }))
-                  }
-                  setConfigScope('current')
-                }}
+                onClick={() => setConfigScope('current')}
                 disabled={!selectedFile}
                 aria-pressed={configScope === 'current'}
               >
@@ -1514,7 +1667,7 @@ export default function App() {
             </div>
             {configScope === 'current' && selectedFile && (
               <p title={selectedFile.path}>
-                {hasSelectedOverride ? '正在编辑单独配置' : '将从全局配置创建单独配置'}
+                {hasSelectedOverride ? '已存在单独配置' : '尚未修改，当前仍等同全局配置'}
               </p>
             )}
           </div>
@@ -1793,7 +1946,7 @@ export default function App() {
                 placeholder="默认原目录"
                 onChange={(event) => updateOption('outputDirectory', event.target.value)}
               />
-              <button type="button" className="icon-button" onClick={pickOutputDirectory} aria-label="选择输出目录">
+              <button type="button" className="icon-button" onClick={pickOutputDirectory} aria-label="选择输出目录" title="选择输出目录">
                 <FolderOpen size={17} />
               </button>
             </div>
@@ -1801,17 +1954,17 @@ export default function App() {
           </div>
 
           <div className="config-action-bar action-row">
-            <button type="button" className="primary-button wide" onClick={prepareJobs} disabled={!canPrepare}>
+            <button type="button" className="primary-button wide" onClick={prepareJobs} disabled={!canPrepare} title="根据当前配置生成任务预览">
               <Wand2 size={18} />
               生成任务
             </button>
             {isRunning ? (
-              <button type="button" className="secondary-button wide danger" onClick={stopQueue}>
+              <button type="button" className="secondary-button wide danger" onClick={stopQueue} title="停止当前 FFmpeg 任务">
                 <Square size={18} />
                 停止任务
               </button>
             ) : (
-              <button type="button" className="secondary-button wide" onClick={() => void runQueue()} disabled={!canRunJobs}>
+              <button type="button" className="secondary-button wide" onClick={() => void runQueue()} disabled={!canRunJobs} title="执行任务队列">
                 <Play size={18} />
                 执行队列
               </button>
