@@ -80,7 +80,11 @@ export default function App() {
         const initInput = data?.input || ''
         let pendingInput: string | null = null
         try {
-          pendingInput = await (mulby as any).host?.invoke?.('local-search', 'getPendingInput')
+          // getPendingInput 是后端自定义 rpc 方法，必须用 host.call；
+          // host.invoke 仅用于 Mulby 内置 API 命名空间（如 clipboard.readText）。
+          // host.call 返回 { success, data }，真正的返回值在 data 上。
+          const res = await (mulby as any).host?.call?.('local-search', 'getPendingInput')
+          pendingInput = (res?.data ?? null) as string | null
         } catch {}
 
         const keyword = pendingInput || initInput || ''
