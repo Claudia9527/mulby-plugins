@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent } from 'react'
 import {
   AlertCircle,
+  Camera,
   CheckCircle2,
   ClipboardList,
   Crop,
@@ -11,6 +12,7 @@ import {
   Gauge,
   Import,
   Loader2,
+  Pause,
   Play,
   RefreshCw,
   RotateCw,
@@ -56,6 +58,39 @@ type PreparedJob = {
   commandPreview: string
   status: JobRunStatus
   error?: string
+}
+
+type VideoPreview = {
+  path: string
+  url: string
+  name: string
+}
+
+type CropSelection = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type CropDragState = {
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+}
+
+type TimelineDragTarget = 'start' | 'end' | 'playhead' | null
+
+type TimelineDragState = {
+  target: TimelineDragTarget
+}
+
+type PreviewViewport = {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 type JobOptions = {
@@ -155,6 +190,18 @@ function formatBytes(value: number) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+function formatSeconds(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '00:00'
+  const totalSeconds = Math.floor(value)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 function baseName(filePath: string) {
   const normalized = filePath.replace(/\\/g, '/')
   const index = normalized.lastIndexOf('/')
@@ -205,6 +252,55 @@ function formatTimestampForFile(date: Date) {
   return date.toISOString().replace(/[:.]/g, '-')
 }
 
+function clampValue(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min
+  return Math.max(min, Math.min(max, value))
+}
+
+function normalizeSelection(selection: CropSelection): CropSelection {
+  return {
+    x: clampValue(selection.x, 0, 1),
+    y: clampValue(selection.y, 0, 1),
+    width: clampValue(selection.width, 0, 1),
+    height: clampValue(selection.height, 0, 1)
+  }
+}
+
+function selectionFromPoints(startX: number, startY: number, currentX: number, currentY: number): CropSelection {
+  const x = clampValue(Math.min(startX, currentX), 0, 1)
+  const y = clampValue(Math.min(startY, currentY), 0, 1)
+  const width = clampValue(Math.abs(currentX - startX), 0, 1 - x)
+  const height = clampValue(Math.abs(currentY - startY), 0, 1 - y)
+  return { x, y, width, height }
+}
+
+function fitContainViewport(stageWidth: number, stageHeight: number, videoWidth: number, videoHeight: number): PreviewViewport {
+  if (stageWidth <= 0 || stageHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) {
+    return { x: 0, y: 0, width: 1, height: 1 }
+  }
+
+  const stageRatio = stageWidth / stageHeight
+  const videoRatio = videoWidth / videoHeight
+
+  if (videoRatio > stageRatio) {
+    const height = stageWidth / videoRatio
+    return {
+      x: 0,
+      y: (stageHeight - height) / 2 / stageHeight,
+      width: 1,
+      height: height / stageHeight
+    }
+  }
+
+  const width = stageHeight * videoRatio
+  return {
+    x: (stageWidth - width) / 2 / stageWidth,
+    y: 0,
+    width: width / stageWidth,
+    height: 1
+  }
+}
+
 export default function App() {
   const { dialog, filesystem, host, notification, shell, ffmpeg } = useMulby(PLUGIN_ID)
   const [files, setFiles] = useState<VideoFileSummary[]>([])
@@ -219,6 +315,20 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const activeTaskRef = useRef<FFmpegTask | null>(null)
   const stopRequestedRef = useRef(false)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const previewStageRef = useRef<HTMLDivElement | null>(null)
+  const timelineRef = useRef<HTMLDivElement | null>(null)
+  const [selectedPath, setSelectedPath] = useState('')
+  const [preview, setPreview] = useState<VideoPreview | null>(null)
+  const [previewMessage, setPreviewMessage] = useState('选择一个视频后可预览')
+  const [previewFrameUrl, setPreviewFrameUrl] = useState('')
+  const [videoDuration, setVideoDuration] = useState(0)
+  const [videoNaturalSize, setVideoNaturalSize] = useState({ width: 0, height: 0 })
+  const [currentTime, setCurrentTime] = useState(0)
+  const [videoPlaying, setVideoPlaying] = useState(false)
+  const [cropSelection, setCropSelection] = useState<CropSelection | null>(null)
+  const [cropDrag, setCropDrag] = useState<CropDragState | null>(null)
+  const [timelineDrag, setTimelineDrag] = useState<TimelineDragState | null>(null)
   const [options, setOptions] = useState<JobOptions>({
     preset: 'mp4-h264',
     outputDirectory: '',
@@ -243,6 +353,53 @@ export default function App() {
   const invalidCount = files.length - validFiles.length
   const runnableJobs = useMemo(() => jobs.filter((job) => job.status !== 'done'), [jobs])
   const failedJobs = useMemo(() => jobs.filter((job) => job.status === 'failed' || job.status === 'stopped'), [jobs])
+  const selectedFile = useMemo(() => validFiles.find((file) => file.path === selectedPath) ?? validFiles[0] ?? null, [selectedPath, validFiles])
+  const displayedSelection = cropDrag ? selectionFromPoints(cropDrag.startX, cropDrag.startY, cropDrag.currentX, cropDrag.currentY) : cropSelection
+  const hasPreview = preview !== null
+  const selectionOverlayStyle = useMemo(() => {
+    if (!displayedSelection) return undefined
+    const stage = previewStageRef.current
+    const viewport = stage
+      ? fitContainViewport(stage.clientWidth, stage.clientHeight, videoNaturalSize.width, videoNaturalSize.height)
+      : { x: 0, y: 0, width: 1, height: 1 }
+    return {
+      left: `${(viewport.x + displayedSelection.x * viewport.width) * 100}%`,
+      top: `${(viewport.y + displayedSelection.y * viewport.height) * 100}%`,
+      width: `${displayedSelection.width * viewport.width * 100}%`,
+      height: `${displayedSelection.height * viewport.height * 100}%`
+    }
+  }, [displayedSelection, videoNaturalSize.height, videoNaturalSize.width])
+  const trimEndSeconds = videoDuration > 0
+    ? Math.min(videoDuration, options.trimStartSeconds + options.trimDurationSeconds)
+    : options.trimStartSeconds + options.trimDurationSeconds
+  const trimStartPercent = videoDuration > 0 ? clampValue(options.trimStartSeconds / videoDuration * 100, 0, 100) : 0
+  const trimEndPercent = videoDuration > 0 ? clampValue(trimEndSeconds / videoDuration * 100, 0, 100) : 0
+  const currentTimePercent = videoDuration > 0 ? clampValue(currentTime / videoDuration * 100, 0, 100) : 0
+  const trimRangeWidthPercent = Math.max(0, trimEndPercent - trimStartPercent)
+  const cropStats = cropSelection
+    ? `X ${options.cropX} / Y ${options.cropY} / ${options.cropWidth} x ${options.cropHeight}`
+    : '未框选画面'
+  const previewHint = useMemo(() => {
+    const parts: string[] = []
+    if (options.timeMode === 'range') {
+      parts.push(`${formatSeconds(options.trimStartSeconds)} - ${formatSeconds(trimEndSeconds)}`)
+    } else if (options.timeMode === 'first') {
+      parts.push(`前 ${formatSeconds(options.trimDurationSeconds)}`)
+    } else if (options.timeMode === 'remove-start') {
+      parts.push(`去掉前 ${formatSeconds(options.removeStartSeconds)}`)
+    } else {
+      parts.push('完整视频')
+    }
+    if (options.cropMode === 'manual' && cropSelection) {
+      parts.push(`裁剪 ${Math.round(cropSelection.width * 100)}% x ${Math.round(cropSelection.height * 100)}%`)
+    } else if (options.cropMode !== 'none') {
+      parts.push(optionLabel(CROP_MODES, options.cropMode))
+    }
+    if (options.orientationMode !== 'keep') {
+      parts.push(optionLabel(ORIENTATION_MODES, options.orientationMode))
+    }
+    return parts.join(' / ')
+  }, [cropSelection, options.cropMode, options.orientationMode, options.removeStartSeconds, options.timeMode, options.trimDurationSeconds, options.trimStartSeconds, trimEndSeconds])
   const isRunning = activeJobId !== null
   const canPrepare = validFiles.length > 0 && !busy && !isRunning
   const canRunJobs = runnableJobs.length > 0 && ffmpegStatus === 'available' && !busy && !isRunning
@@ -254,6 +411,71 @@ export default function App() {
     invalid: invalidCount,
     jobs: jobs.length
   }), [files.length, invalidCount, jobs.length, validFiles.length])
+
+  const syncManualCropFromSelection = useCallback((selection: CropSelection, naturalSize = videoNaturalSize) => {
+    if (!naturalSize.width || !naturalSize.height) return
+    const normalized = normalizeSelection(selection)
+    const cropWidth = Math.max(2, Math.floor(Math.round(normalized.width * naturalSize.width) / 2) * 2)
+    const cropHeight = Math.max(2, Math.floor(Math.round(normalized.height * naturalSize.height) / 2) * 2)
+    const cropX = clampValue(Math.round(normalized.x * naturalSize.width), 0, Math.max(0, naturalSize.width - cropWidth))
+    const cropY = clampValue(Math.round(normalized.y * naturalSize.height), 0, Math.max(0, naturalSize.height - cropHeight))
+
+    setOptions((previous) => ({
+      ...previous,
+      cropMode: 'manual',
+      cropX,
+      cropY,
+      cropWidth,
+      cropHeight
+    }))
+    setJobs([])
+  }, [videoNaturalSize])
+
+  const capturePreviewFrame = useCallback((keepMessage = false) => {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) return ''
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const context = canvas.getContext('2d')
+      if (!context) return ''
+      context.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const dataUrl = canvas.toDataURL('image/png')
+      setPreviewFrameUrl(dataUrl)
+      if (!keepMessage) {
+        setPreviewMessage(`当前帧 ${formatSeconds(video.currentTime)}`)
+      }
+      return dataUrl
+    } catch {
+      if (!keepMessage) {
+        setPreviewMessage('当前环境无法读取视频帧')
+      }
+      return ''
+    }
+  }, [])
+
+  const seekPreview = useCallback((time: number) => {
+    const video = videoRef.current
+    if (!video || !Number.isFinite(time)) return
+    const nextTime = clampValue(time, 0, videoDuration || video.duration || 0)
+    video.currentTime = nextTime
+    setCurrentTime(nextTime)
+  }, [videoDuration])
+
+  const togglePreviewPlayback = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) {
+      if (videoDuration > 0 && (video.currentTime < options.trimStartSeconds || video.currentTime >= trimEndSeconds)) {
+        video.currentTime = options.trimStartSeconds
+        setCurrentTime(options.trimStartSeconds)
+      }
+      void video.play()
+    } else {
+      video.pause()
+    }
+  }, [options.trimStartSeconds, trimEndSeconds, videoDuration])
 
   const inspectAndMergePaths = useCallback(async (paths: string[]) => {
     const nextPaths = paths.filter(Boolean)
@@ -317,6 +539,65 @@ export default function App() {
       setBusy(false)
     }
   }, [host, notification])
+
+  useEffect(() => {
+    if (!selectedFile && selectedPath) {
+      setSelectedPath('')
+    }
+    if (!selectedPath && validFiles[0]) {
+      setSelectedPath(validFiles[0].path)
+    }
+  }, [selectedFile, selectedPath, validFiles])
+
+  useEffect(() => {
+    let canceled = false
+
+    if (!selectedFile) {
+      setPreview(null)
+      setVideoDuration(0)
+      setVideoNaturalSize({ width: 0, height: 0 })
+      setCurrentTime(0)
+      setPreviewFrameUrl('')
+      setCropSelection(null)
+      setPreviewMessage('选择一个视频后可预览')
+      return
+    }
+
+    setPreviewMessage('正在加载预览')
+    setPreview(null)
+    setPreviewFrameUrl('')
+    setVideoDuration(0)
+    setVideoNaturalSize({ width: 0, height: 0 })
+    setCurrentTime(0)
+    setCropSelection(null)
+
+    void (async () => {
+      try {
+        const response = await host.call('getVideoPreview', selectedFile.path)
+        const data = unwrapHostData<{ url?: string; name?: string }>(response)
+        if (canceled) return
+        if (data?.url) {
+          setPreview({
+            path: selectedFile.path,
+            url: data.url,
+            name: data.name || selectedFile.name
+          })
+          setPreviewMessage('预览就绪')
+        } else {
+          setPreview(null)
+          setPreviewMessage('无法生成预览地址')
+        }
+      } catch (error) {
+        if (canceled) return
+        setPreview(null)
+        setPreviewMessage(error instanceof Error ? error.message : '视频预览加载失败')
+      }
+    })()
+
+    return () => {
+      canceled = true
+    }
+  }, [host, selectedFile])
 
   const checkFfmpeg = useCallback(async () => {
     if (!ffmpeg) {
@@ -471,16 +752,25 @@ export default function App() {
     }
   }
 
+  const selectPreviewFile = (filePath: string) => {
+    if (isRunning) return
+    setSelectedPath(filePath)
+  }
+
   const removeFile = (filePath: string) => {
     if (isRunning) return
     setFiles((previous) => previous.filter((file) => file.path !== filePath))
     setJobs((previous) => previous.filter((job) => job.sourcePath !== filePath))
+    if (selectedPath === filePath) {
+      setSelectedPath('')
+    }
   }
 
   const clearFiles = () => {
     if (isRunning) return
     setFiles([])
     setJobs([])
+    setSelectedPath('')
   }
 
   const stopQueue = () => {
@@ -639,6 +929,153 @@ export default function App() {
     setJobs([])
   }
 
+  const applyTimeRange = (start: number, end: number) => {
+    const duration = videoDuration || Math.max(end, start, 0.1)
+    const minGap = duration >= 0.1 ? 0.1 : duration
+    const nextStart = clampValue(start, 0, Math.max(0, duration - minGap))
+    const nextEnd = clampValue(end, nextStart + minGap, duration)
+    setOptions((previous) => ({
+      ...previous,
+      timeMode: 'range',
+      trimStartSeconds: Number(nextStart.toFixed(2)),
+      trimDurationSeconds: Number(Math.max(minGap, nextEnd - nextStart).toFixed(2))
+    }))
+    setJobs([])
+  }
+
+  const captureScreenshot = async () => {
+    const dataUrl = capturePreviewFrame()
+    if (!dataUrl) {
+      notification.show('当前帧不可截图', 'warning')
+      return
+    }
+    if (!window.mulby?.dialog?.showSaveDialog || !window.mulby?.filesystem?.writeFile) {
+      notification.show('当前 Mulby 版本未提供截图保存 API', 'error')
+      return
+    }
+
+    try {
+      const selectedName = selectedFile ? baseName(selectedFile.path).replace(/\.[^.]+$/, '') : 'frame'
+      const savePath = await dialog.showSaveDialog({
+        title: '保存当前帧截图',
+        defaultPath: `${selectedName}-frame-${formatTimestampForFile(new Date())}.png`,
+        buttonLabel: '保存',
+        filters: [{ name: 'PNG', extensions: ['png'] }]
+      })
+      if (!savePath) return
+      await filesystem.writeFile(savePath, dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64')
+      notification.show('当前帧截图已保存', 'success')
+    } catch (error) {
+      notification.show(error instanceof Error ? error.message : '截图保存失败', 'error')
+    }
+  }
+
+  const pointerToSelectionPoint = (event: PointerEvent<HTMLDivElement>) => {
+    const rect = previewStageRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    const viewport = fitContainViewport(rect.width, rect.height, videoNaturalSize.width, videoNaturalSize.height)
+    const localX = (event.clientX - rect.left) / rect.width
+    const localY = (event.clientY - rect.top) / rect.height
+    return {
+      x: clampValue((localX - viewport.x) / viewport.width, 0, 1),
+      y: clampValue((localY - viewport.y) / viewport.height, 0, 1)
+    }
+  }
+
+  const startCropDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!hasPreview || !videoNaturalSize.width || !videoNaturalSize.height) return
+    const point = pointerToSelectionPoint(event)
+    if (!point) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setCropDrag({
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y
+    })
+  }
+
+  const moveCropDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!cropDrag) return
+    const point = pointerToSelectionPoint(event)
+    if (!point) return
+    setCropDrag((previous) => previous ? {
+      ...previous,
+      currentX: point.x,
+      currentY: point.y
+    } : null)
+  }
+
+  const finishCropDrag = () => {
+    if (!cropDrag) return
+    const selection = selectionFromPoints(cropDrag.startX, cropDrag.startY, cropDrag.currentX, cropDrag.currentY)
+    setCropDrag(null)
+    if (selection.width < 0.02 || selection.height < 0.02) return
+    setCropSelection(selection)
+    syncManualCropFromSelection(selection)
+  }
+
+  const clearCropSelection = () => {
+    setCropSelection(null)
+    updateOption('cropMode', 'none')
+  }
+
+  const timelinePointToSeconds = (event: PointerEvent<HTMLDivElement>) => {
+    const rect = timelineRef.current?.getBoundingClientRect()
+    if (!rect || !videoDuration) return null
+    const ratio = clampValue((event.clientX - rect.left) / rect.width, 0, 1)
+    return ratio * videoDuration
+  }
+
+  const applyTimelineDrag = (target: TimelineDragTarget, time: number) => {
+    if (!target || !videoDuration) return
+    if (target === 'start') {
+      const nextStart = clampValue(time, 0, Math.max(0, trimEndSeconds - 0.1))
+      applyTimeRange(nextStart, trimEndSeconds)
+      seekPreview(nextStart)
+      return
+    }
+    if (target === 'end') {
+      const nextEnd = clampValue(time, options.trimStartSeconds + 0.1, videoDuration)
+      applyTimeRange(options.trimStartSeconds, nextEnd)
+      seekPreview(nextEnd)
+      return
+    }
+    const nextTime = clampValue(time, options.trimStartSeconds, trimEndSeconds)
+    seekPreview(nextTime)
+  }
+
+  const startTimelineDrag = (target: TimelineDragTarget, event: PointerEvent<HTMLButtonElement | HTMLDivElement>) => {
+    if (!target || !videoDuration) return
+    const time = timelinePointToSeconds(event as PointerEvent<HTMLDivElement>)
+    if (time === null) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.nativeEvent.stopImmediatePropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setTimelineDrag({ target })
+    applyTimelineDrag(target, time)
+  }
+
+  const moveTimelineDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!timelineDrag?.target) return
+    const time = timelinePointToSeconds(event)
+    if (time === null) return
+    applyTimelineDrag(timelineDrag.target, time)
+  }
+
+  const finishTimelineDrag = () => {
+    setTimelineDrag(null)
+  }
+
+  const seekWithinTrimRange = (event: PointerEvent<HTMLDivElement>) => {
+    if (!videoDuration) return
+    const time = timelinePointToSeconds(event)
+    if (time === null || time < options.trimStartSeconds || time > trimEndSeconds) return
+    event.preventDefault()
+    seekPreview(time)
+  }
+
   const onDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
     event.stopPropagation()
@@ -665,18 +1102,16 @@ export default function App() {
 
   return (
     <div className="app-shell" onDragOver={onDragOver} onDrop={onDrop}>
-      <header className="topbar">
-        <div className="brand-mark" aria-hidden>
-          <FileVideo2 size={22} />
-        </div>
-        <div className="title-block">
-          <h1>视频批量编辑</h1>
-          <span>Batch Video Workbench</span>
-        </div>
+      <header className="runtime-bar">
         <div className={ffmpegClassName}>
           {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
-          <span>{ffmpegMessage}</span>
+          <span title={ffmpegMessage}>{ffmpegMessage}</span>
         </div>
+        {(downloadProgress || runProgress) && (
+          <div className="runtime-inline-progress" aria-hidden>
+            <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
+          </div>
+        )}
         <button type="button" className="icon-button" onClick={checkFfmpeg} aria-label="重新检测 FFmpeg">
           <RefreshCw size={18} />
         </button>
@@ -690,17 +1125,19 @@ export default function App() {
 
       <main className="workspace">
         <section className="queue-panel">
-          <div className="panel-head">
+          <div className="panel-head queue-head">
             <div>
               <h2>文件队列</h2>
-              <p>{summary.ready} 可处理 / {summary.total} 总数 / {summary.invalid} 异常</p>
+              <p title={`${summary.ready} 可处理 / ${summary.total} 总数 / ${summary.invalid} 异常 / ${summary.jobs} 任务`}>
+                {summary.ready} 可处理 / {summary.total} 总数 / {summary.invalid} 异常
+              </p>
             </div>
             <div className="head-actions">
-              <button type="button" className="primary-button" onClick={pickFiles} disabled={busy}>
+              <button type="button" className="primary-button compact-button" onClick={pickFiles} disabled={busy}>
                 <Import size={17} />
                 导入视频
               </button>
-              <button type="button" className="secondary-button" onClick={pickDirectories} disabled={busy}>
+              <button type="button" className="secondary-button compact-button" onClick={pickDirectories} disabled={busy}>
                 <FolderOpen size={17} />
                 导入文件夹
               </button>
@@ -710,51 +1147,194 @@ export default function App() {
             </div>
           </div>
 
-          <div className="metrics">
-            <div>
-              <span>任务</span>
-              <strong>{summary.jobs}</strong>
-            </div>
-            <div>
-              <span>预设</span>
-              <strong>{presetLabel(options.preset)}</strong>
-            </div>
-            <div>
-              <span>CRF</span>
-              <strong>{options.preset === 'cover-jpg' ? '-' : options.crf}</strong>
-            </div>
-          </div>
-
-          <div className="file-table" role="table">
-            <div className="table-row table-head" role="row">
-              <span>文件</span>
-              <span>大小</span>
-              <span>状态</span>
-              <span />
-            </div>
+          <div className="queue-list" aria-label="文件队列">
             {files.length === 0 ? (
-              <div className="empty-state">
-                <FileVideo2 size={32} />
+              <div className="empty-state queue-empty">
+                <FileVideo2 size={24} />
                 <span>暂无视频</span>
               </div>
             ) : files.map((file) => (
-              <div className="table-row" role="row" key={file.path}>
-                <div className="file-cell">
+              <article className={`queue-card ${selectedFile?.path === file.path ? 'selected-row' : ''}`} key={file.path}>
+                <button type="button" className="file-cell file-select-button" onClick={() => selectPreviewFile(file.path)} title={`${file.name}\n${file.path}`}>
                   <FileVideo2 size={18} />
                   <div>
                     <strong title={file.name}>{file.name}</strong>
                     <small title={file.path}>{file.path}</small>
                   </div>
-                </div>
-                <span>{formatBytes(file.size)}</span>
-                <span className={file.ok ? 'state-ok' : 'state-error'}>
+                </button>
+                <span className="queue-meta" title={`大小：${formatBytes(file.size)}`}>{formatBytes(file.size)}</span>
+                <span className={`queue-state ${file.ok ? 'state-ok' : 'state-error'}`} title={`状态：${file.ok ? '就绪' : file.error ?? '异常'}`}>
                   {file.ok ? '就绪' : file.error ?? '异常'}
                 </span>
                 <button type="button" className="icon-button subtle" onClick={() => removeFile(file.path)} aria-label={`移除 ${file.name}`}>
                   <Trash2 size={16} />
                 </button>
-              </div>
+              </article>
             ))}
+          </div>
+        </section>
+
+        <section className="preview-panel">
+          <div className="panel-head">
+            <div>
+              <h2>预览与裁剪</h2>
+              <p>{preview ? `${preview.name} / ${previewHint}` : previewMessage}</p>
+            </div>
+            <button type="button" className="secondary-button compact-button" onClick={captureScreenshot} disabled={!previewFrameUrl && !hasPreview}>
+              <Camera size={16} />
+              当前帧截图
+            </button>
+          </div>
+
+          <div className="preview-workbench">
+            <div className="video-preview-column">
+              <div
+                className="video-stage"
+                ref={previewStageRef}
+                onPointerDown={startCropDrag}
+                onPointerMove={moveCropDrag}
+                onPointerUp={finishCropDrag}
+                onPointerCancel={finishCropDrag}
+              >
+                {preview ? (
+                  <video
+                    ref={videoRef}
+                    src={preview.url}
+                    playsInline
+                    onLoadedMetadata={(event) => {
+                      const video = event.currentTarget
+                      const duration = Number.isFinite(video.duration) ? video.duration : 0
+                      setVideoDuration(duration)
+                      setVideoNaturalSize({ width: video.videoWidth, height: video.videoHeight })
+                      setCurrentTime(video.currentTime)
+                      setPreviewMessage(`${video.videoWidth} x ${video.videoHeight} / ${formatSeconds(duration)}`)
+                      if (duration > 0 && options.timeMode === 'full') {
+                        setOptions((previous) => ({
+                          ...previous,
+                          trimStartSeconds: 0,
+                          trimDurationSeconds: Number(duration.toFixed(2))
+                        }))
+                      }
+                    }}
+                    onTimeUpdate={(event) => {
+                      const video = event.currentTarget
+                      if (videoDuration > 0 && video.currentTime > trimEndSeconds + 0.05) {
+                        video.pause()
+                        video.currentTime = trimEndSeconds
+                        setCurrentTime(trimEndSeconds)
+                        capturePreviewFrame(true)
+                        return
+                      }
+                      setCurrentTime(video.currentTime)
+                      capturePreviewFrame(true)
+                    }}
+                    onPlay={() => {
+                      setVideoPlaying(true)
+                    }}
+                    onPause={() => {
+                      setVideoPlaying(false)
+                    }}
+                    onEnded={() => {
+                      setVideoPlaying(false)
+                    }}
+                    onSeeked={() => {
+                      capturePreviewFrame()
+                    }}
+                    onLoadedData={() => {
+                      capturePreviewFrame()
+                    }}
+                    onError={() => {
+                      setPreviewMessage('视频预览加载失败')
+                    }}
+                  />
+                ) : (
+                  <div className="preview-placeholder">
+                    <FileVideo2 size={34} />
+                    <span>{previewMessage}</span>
+                  </div>
+                )}
+
+                {displayedSelection && (
+                  <div
+                    className="crop-overlay"
+                    style={selectionOverlayStyle}
+                  />
+                )}
+
+                {displayedSelection && (
+                  <div className="crop-readout" title={cropStats}>
+                    {cropStats}
+                  </div>
+                )}
+              </div>
+
+              <div className="timeline-panel">
+                <div className="timeline-meta">
+                  <span>{formatSeconds(options.trimStartSeconds)}</span>
+                  <strong title={`${formatSeconds(currentTime)} / ${formatSeconds(videoDuration)}`}>
+                    {formatSeconds(currentTime)} / {formatSeconds(videoDuration)}
+                  </strong>
+                  <span>{formatSeconds(trimEndSeconds)}</span>
+                </div>
+                <div
+                  className={`trim-timeline ${videoDuration ? '' : 'disabled'}`}
+                  ref={timelineRef}
+                  onPointerDown={seekWithinTrimRange}
+                  onPointerMove={moveTimelineDrag}
+                  onPointerUp={finishTimelineDrag}
+                  onPointerCancel={finishTimelineDrag}
+                >
+                  <div className="trim-muted trim-muted-left" style={{ width: `${trimStartPercent}%` }} />
+                  <div
+                    className="trim-range"
+                    style={{
+                      left: `${trimStartPercent}%`,
+                      width: `${trimRangeWidthPercent}%`
+                    }}
+                  />
+                  <div className="trim-muted trim-muted-right" style={{ left: `${trimEndPercent}%` }} />
+                  <button
+                    type="button"
+                    className="trim-handle start"
+                    style={{ left: `${trimStartPercent}%` }}
+                    onPointerDown={(event) => startTimelineDrag('start', event)}
+                    disabled={!videoDuration}
+                    aria-label="裁剪起点"
+                  />
+                  <button
+                    type="button"
+                    className="trim-handle end"
+                    style={{ left: `${trimEndPercent}%` }}
+                    onPointerDown={(event) => startTimelineDrag('end', event)}
+                    disabled={!videoDuration}
+                    aria-label="裁剪终点"
+                  />
+                  <button
+                    type="button"
+                    className="playhead"
+                    style={{ left: `${currentTimePercent}%` }}
+                    onPointerDown={(event) => startTimelineDrag('playhead', event)}
+                    disabled={!videoDuration}
+                    aria-label="播放头"
+                  />
+                </div>
+                <div className="timeline-actions">
+                  <button type="button" className="secondary-button compact-button" onClick={togglePreviewPlayback} disabled={!hasPreview}>
+                    {videoPlaying ? <Pause size={16} /> : <Play size={16} />}
+                    {videoPlaying ? '暂停' : '播放'}
+                  </button>
+                  <button type="button" className="secondary-button compact-button" onClick={() => seekPreview(options.trimStartSeconds)} disabled={!videoDuration}>
+                    定位起点
+                  </button>
+                  <button type="button" className="secondary-button compact-button" onClick={() => seekPreview(trimEndSeconds)} disabled={!videoDuration}>
+                    定位终点
+                  </button>
+                  <button type="button" className="secondary-button compact-button" onClick={clearCropSelection} disabled={!cropSelection}>
+                    清除框选
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -783,7 +1363,7 @@ export default function App() {
             </div>
           )}
 
-          <label className="field">
+          <label className="field compact-field">
             <span>导出预设</span>
             <select
               value={options.preset}
@@ -803,7 +1383,7 @@ export default function App() {
               <span>批量截取</span>
               <em>{optionLabel(TIME_MODES, options.timeMode)}</em>
             </div>
-            <label className="field">
+            <label className="field compact-field">
               <span>截取方式</span>
               <select
                 value={options.timeMode}
@@ -819,7 +1399,7 @@ export default function App() {
 
             {options.timeMode === 'range' && (
               <div className="field-grid">
-                <label className="field">
+                <label className="field compact-field">
                   <span>起点秒</span>
                   <input
                     type="number"
@@ -828,7 +1408,7 @@ export default function App() {
                     onChange={(event) => updateNumberOption('trimStartSeconds', event.target.value)}
                   />
                 </label>
-                <label className="field">
+                <label className="field compact-field">
                   <span>时长秒</span>
                   <input
                     type="number"
@@ -841,7 +1421,7 @@ export default function App() {
             )}
 
             {options.timeMode === 'first' && (
-              <label className="field">
+              <label className="field compact-field">
                 <span>截取前 N 秒</span>
                 <input
                   type="number"
@@ -853,7 +1433,7 @@ export default function App() {
             )}
 
             {options.timeMode === 'remove-start' && (
-              <label className="field">
+              <label className="field compact-field">
                 <span>去掉开头秒数</span>
                 <input
                   type="number"
@@ -872,7 +1452,7 @@ export default function App() {
                 <span>画面裁剪</span>
                 <em>{optionLabel(CROP_MODES, options.cropMode)}</em>
               </div>
-              <label className="field">
+              <label className="field compact-field">
                 <span>裁剪模式</span>
                 <select
                   value={options.cropMode}
@@ -889,7 +1469,7 @@ export default function App() {
               {options.cropMode === 'manual' && (
                 <>
                   <div className="field-grid">
-                    <label className="field">
+                    <label className="field compact-field">
                       <span>X</span>
                       <input
                         type="number"
@@ -898,7 +1478,7 @@ export default function App() {
                         onChange={(event) => updateNumberOption('cropX', event.target.value)}
                       />
                     </label>
-                    <label className="field">
+                    <label className="field compact-field">
                       <span>Y</span>
                       <input
                         type="number"
@@ -909,7 +1489,7 @@ export default function App() {
                     </label>
                   </div>
                   <div className="field-grid">
-                    <label className="field">
+                    <label className="field compact-field">
                       <span>裁剪宽度</span>
                       <input
                         type="number"
@@ -919,7 +1499,7 @@ export default function App() {
                         onChange={(event) => updateNumberOption('cropWidth', event.target.value)}
                       />
                     </label>
-                    <label className="field">
+                    <label className="field compact-field">
                       <span>裁剪高度</span>
                       <input
                         type="number"
@@ -942,7 +1522,7 @@ export default function App() {
                 <span>横竖屏转换</span>
                 <em>{optionLabel(ORIENTATION_MODES, options.orientationMode)}</em>
               </div>
-              <label className="field">
+              <label className="field compact-field">
                 <span>方向/比例</span>
                 <select
                   value={options.orientationMode}
@@ -965,7 +1545,7 @@ export default function App() {
                 <em>{options.width || '-'} x {options.height || '-'}</em>
               </div>
               <div className="field-grid">
-                <label className="field">
+                <label className="field compact-field">
                   <span>宽度</span>
                   <input
                     type="number"
@@ -975,7 +1555,7 @@ export default function App() {
                     onChange={(event) => updateNumberOption('width', event.target.value)}
                   />
                 </label>
-                <label className="field">
+                <label className="field compact-field">
                   <span>高度</span>
                   <input
                     type="number"
@@ -996,7 +1576,7 @@ export default function App() {
                 <span>编码参数</span>
                 <em>{options.preset === 'webm' ? `${options.videoBitrateKbps} kbps` : `CRF ${options.crf}`}</em>
               </div>
-              <label className="field">
+              <label className="field compact-field">
                 <span><Gauge size={14} /> 码率 kbps</span>
                 <input
                   type="number"
@@ -1006,7 +1586,7 @@ export default function App() {
                 />
               </label>
 
-              <label className="field">
+              <label className="field compact-field range-field">
                 <span>CRF {options.crf}</span>
                 <input
                   type="range"
@@ -1017,7 +1597,7 @@ export default function App() {
                 />
               </label>
 
-              <label className="field">
+              <label className="field compact-field">
                 <span><Sparkles size={14} /> 文字水印</span>
                 <input
                   type="text"
@@ -1031,7 +1611,7 @@ export default function App() {
             </div>
           )}
 
-          <label className="field">
+          <label className="field compact-field output-field">
             <span>输出目录</span>
             <div className="directory-row">
               <input

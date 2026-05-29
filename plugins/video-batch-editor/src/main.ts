@@ -4,6 +4,7 @@ declare const require: any
 
 const { access, readdir, stat } = require('node:fs/promises')
 const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 
 type PluginContext = BackendPluginContext
 
@@ -485,6 +486,18 @@ export const rpc = {
 
     files.sort((left, right) => left.path.localeCompare(right.path))
     return { files, skipped, skippedCount, truncated }
+  },
+
+  async getVideoPreview(filePath: string): Promise<{ url: string; name: string }> {
+    const inspected = await inspectPath(filePath)
+    if (!inspected.ok) {
+      throw new Error(inspected.error || '无法预览该文件')
+    }
+
+    return {
+      url: pathToFileURL(filePath).toString(),
+      name: inspected.name
+    }
   },
 
   async prepareJobs(filePaths: string[], options: JobOptions): Promise<{ jobs: PreparedJob[] }> {
