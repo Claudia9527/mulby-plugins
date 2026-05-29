@@ -33,6 +33,8 @@ type CropMode = 'none' | 'manual' | 'center-square' | 'center-portrait' | 'cente
 type OrientationMode = 'keep' | 'landscape' | 'portrait' | 'square' | 'rotate-left' | 'rotate-right'
 type FfmpegStatus = 'checking' | 'available' | 'missing' | 'idle' | 'downloading' | 'running'
 type JobRunStatus = 'ready' | 'running' | 'done' | 'failed' | 'stopped'
+type ConfigScope = 'global' | 'current'
+type JobConfigSource = 'global' | 'override'
 
 type VideoFileSummary = {
   path: string
@@ -57,6 +59,7 @@ type PreparedJob = {
   args: string[]
   commandPreview: string
   status: JobRunStatus
+  configSource?: JobConfigSource
   error?: string
 }
 
@@ -161,6 +164,26 @@ const ORIENTATION_MODES: Array<{ value: OrientationMode; label: string }> = [
   { value: 'rotate-left', label: '左转 90°' },
   { value: 'rotate-right', label: '右转 90°' }
 ]
+
+const DEFAULT_OPTIONS: JobOptions = {
+  preset: 'mp4-h264',
+  outputDirectory: '',
+  timeMode: 'full',
+  trimStartSeconds: 0,
+  trimDurationSeconds: 10,
+  removeStartSeconds: 0,
+  cropMode: 'none',
+  cropX: 0,
+  cropY: 0,
+  cropWidth: 1080,
+  cropHeight: 1080,
+  orientationMode: 'keep',
+  width: 1920,
+  height: 1080,
+  videoBitrateKbps: 4500,
+  crf: 23,
+  watermarkText: ''
+}
 
 function unwrapHostData<T>(value: unknown): T | undefined {
   if (!value || typeof value !== 'object') return value as T | undefined
@@ -301,6 +324,14 @@ function fitContainViewport(stageWidth: number, stageHeight: number, videoWidth:
   }
 }
 
+function normalizeOptionsForHost(options: JobOptions): JobOptions {
+  return {
+    ...options,
+    outputDirectory: options.outputDirectory || undefined,
+    watermarkText: options.watermarkText.trim() || ''
+  }
+}
+
 export default function App() {
   const { dialog, filesystem, host, notification, shell, ffmpeg } = useMulby(PLUGIN_ID)
   const [files, setFiles] = useState<VideoFileSummary[]>([])
@@ -329,31 +360,22 @@ export default function App() {
   const [cropSelection, setCropSelection] = useState<CropSelection | null>(null)
   const [cropDrag, setCropDrag] = useState<CropDragState | null>(null)
   const [timelineDrag, setTimelineDrag] = useState<TimelineDragState | null>(null)
-  const [options, setOptions] = useState<JobOptions>({
-    preset: 'mp4-h264',
-    outputDirectory: '',
-    timeMode: 'full',
-    trimStartSeconds: 0,
-    trimDurationSeconds: 10,
-    removeStartSeconds: 0,
-    cropMode: 'none',
-    cropX: 0,
-    cropY: 0,
-    cropWidth: 1080,
-    cropHeight: 1080,
-    orientationMode: 'keep',
-    width: 1920,
-    height: 1080,
-    videoBitrateKbps: 4500,
-    crf: 23,
-    watermarkText: ''
-  })
+  const [configScope, setConfigScope] = useState<ConfigScope>('global')
+  const [globalConfig, setGlobalConfig] = useState<JobOptions>(DEFAULT_OPTIONS)
+  const [overrideConfigs, setOverrideConfigs] = useState<Record<string, JobOptions>>({})
 
   const validFiles = useMemo(() => files.filter((file) => file.ok), [files])
   const invalidCount = files.length - validFiles.length
   const runnableJobs = useMemo(() => jobs.filter((job) => job.status !== 'done'), [jobs])
   const failedJobs = useMemo(() => jobs.filter((job) => job.status === 'failed' || job.status === 'stopped'), [jobs])
   const selectedFile = useMemo(() => validFiles.find((file) => file.path === selectedPath) ?? validFiles[0] ?? null, [selectedPath, validFiles])
+  const selectedOverrideConfig = selectedFile ? overrideConfigs[selectedFile.path] : undefined
+  const hasSelectedOverride = Boolean(selectedFile && selectedOverrideConfig)
+  const options = configScope === 'current' && selectedOverrideConfig ? selectedOverrideConfig : globalConfig
+  const configPanelTitle = configScope === 'current' ? '当前视频配置' : '批量处理配置'
+  const configPanelHint = configScope === 'current'
+    ? selectedFile ? `仅作用于：${selectedFile.name}` : '未选中可配置的视频'
+    : `当前配置将应用到 ${validFiles.length} 个视频`
   const displayedSelection = cropDrag ? selectionFromPoints(cropDrag.startX, cropDrag.startY, cropDrag.currentX, cropDrag.currentY) : cropSelection
   const hasPreview = preview !== null
   const selectionOverlayStyle = useMemo(() => {
@@ -412,6 +434,28 @@ export default function App() {
     jobs: jobs.length
   }), [files.length, invalidCount, jobs.length, validFiles.length])
 
+  const updateOptions = useCallback((updater: JobOptions | ((previous: JobOptions) => JobOptions)) => {
+    if (configScope === 'current' && selectedFile) {
+      setOverrideConfigs((previous) => {
+        const base = previous[selectedFile.path] ?? globalConfig
+        const next = typeof updater === 'function'
+          ? (updater as (previous: JobOptions) => JobOptions)(base)
+          : updater
+        return {
+          ...previous,
+          [selectedFile.path]: next
+        }
+      })
+    } else {
+      setGlobalConfig((previous) => (
+        typeof updater === 'function'
+          ? (updater as (previous: JobOptions) => JobOptions)(previous)
+          : updater
+      ))
+    }
+    setJobs([])
+  }, [configScope, globalConfig, selectedFile])
+
   const syncManualCropFromSelection = useCallback((selection: CropSelection, naturalSize = videoNaturalSize) => {
     if (!naturalSize.width || !naturalSize.height) return
     const normalized = normalizeSelection(selection)
@@ -420,7 +464,7 @@ export default function App() {
     const cropX = clampValue(Math.round(normalized.x * naturalSize.width), 0, Math.max(0, naturalSize.width - cropWidth))
     const cropY = clampValue(Math.round(normalized.y * naturalSize.height), 0, Math.max(0, naturalSize.height - cropHeight))
 
-    setOptions((previous) => ({
+    updateOptions((previous) => ({
       ...previous,
       cropMode: 'manual',
       cropX,
@@ -599,6 +643,14 @@ export default function App() {
     }
   }, [host, selectedFile])
 
+  useEffect(() => {
+    if (configScope !== 'current' || !selectedFile || overrideConfigs[selectedFile.path]) return
+    setOverrideConfigs((previous) => ({
+      ...previous,
+      [selectedFile.path]: globalConfig
+    }))
+  }, [configScope, globalConfig, overrideConfigs, selectedFile])
+
   const checkFfmpeg = useCallback(async () => {
     if (!ffmpeg) {
       setFfmpegStatus('missing')
@@ -720,8 +772,7 @@ export default function App() {
       })
       const [directory] = pathsFromOpenDialog(result)
       if (directory) {
-        setOptions((previous) => ({ ...previous, outputDirectory: directory }))
-        setJobs([])
+        updateOptions((previous) => ({ ...previous, outputDirectory: directory }))
       }
     } catch (error) {
       notification.show(error instanceof Error ? error.message : '无法选择输出目录', 'error')
@@ -732,17 +783,21 @@ export default function App() {
     if (!canPrepare) return
     setBusy(true)
     try {
-      const response = await host.call(
-        'prepareJobs',
-        validFiles.map((file) => file.path),
-        {
-          ...options,
-          outputDirectory: options.outputDirectory || undefined,
-          watermarkText: options.watermarkText.trim() || undefined
-        }
-      )
-      const data = unwrapHostData<{ jobs?: PreparedJob[] }>(response)
-      const nextJobs = data?.jobs ?? []
+      const preparedGroups = await Promise.all(validFiles.map(async (file) => {
+        const overrideConfig = overrideConfigs[file.path]
+        const finalConfig = overrideConfig ?? globalConfig
+        const response = await host.call(
+          'prepareJobs',
+          [file.path],
+          normalizeOptionsForHost(finalConfig)
+        )
+        const data = unwrapHostData<{ jobs?: PreparedJob[] }>(response)
+        return (data?.jobs ?? []).map((job) => ({
+          ...job,
+          configSource: overrideConfig ? 'override' as const : 'global' as const
+        }))
+      }))
+      const nextJobs = preparedGroups.flat()
       setJobs(nextJobs.map((job) => ({ ...job, status: 'ready' as const, error: undefined })))
       notification.show(`已生成 ${nextJobs.length} 个任务`, nextJobs.length > 0 ? 'success' : 'warning')
     } catch (error) {
@@ -761,6 +816,12 @@ export default function App() {
     if (isRunning) return
     setFiles((previous) => previous.filter((file) => file.path !== filePath))
     setJobs((previous) => previous.filter((job) => job.sourcePath !== filePath))
+    setOverrideConfigs((previous) => {
+      if (!previous[filePath]) return previous
+      const next = { ...previous }
+      delete next[filePath]
+      return next
+    })
     if (selectedPath === filePath) {
       setSelectedPath('')
     }
@@ -771,6 +832,7 @@ export default function App() {
     setFiles([])
     setJobs([])
     setSelectedPath('')
+    setOverrideConfigs({})
   }
 
   const stopQueue = () => {
@@ -901,11 +963,13 @@ export default function App() {
           message: ffmpegMessage,
           path: ffmpegPath
         },
-        options: {
-          ...options,
-          outputDirectory: options.outputDirectory || null,
-          watermarkText: options.watermarkText.trim() || null
+        configScope,
+        globalConfig: {
+          ...globalConfig,
+          outputDirectory: globalConfig.outputDirectory || null,
+          watermarkText: globalConfig.watermarkText.trim() || null
         },
+        overrideConfigs,
         summary,
         files,
         jobs
@@ -920,13 +984,11 @@ export default function App() {
 
   const updateNumberOption = (key: keyof Pick<JobOptions, 'trimStartSeconds' | 'trimDurationSeconds' | 'removeStartSeconds' | 'cropX' | 'cropY' | 'cropWidth' | 'cropHeight' | 'width' | 'height' | 'videoBitrateKbps' | 'crf'>, value: string) => {
     const numeric = value === '' ? 0 : Number(value)
-    setOptions((previous) => ({ ...previous, [key]: Number.isFinite(numeric) ? numeric : 0 }))
-    setJobs([])
+    updateOptions((previous) => ({ ...previous, [key]: Number.isFinite(numeric) ? numeric : 0 }))
   }
 
   const updateOption = <T extends keyof JobOptions>(key: T, value: JobOptions[T]) => {
-    setOptions((previous) => ({ ...previous, [key]: value }))
-    setJobs([])
+    updateOptions((previous) => ({ ...previous, [key]: value }))
   }
 
   const applyTimeRange = (start: number, end: number) => {
@@ -934,13 +996,12 @@ export default function App() {
     const minGap = duration >= 0.1 ? 0.1 : duration
     const nextStart = clampValue(start, 0, Math.max(0, duration - minGap))
     const nextEnd = clampValue(end, nextStart + minGap, duration)
-    setOptions((previous) => ({
+    updateOptions((previous) => ({
       ...previous,
       timeMode: 'range',
       trimStartSeconds: Number(nextStart.toFixed(2)),
       trimDurationSeconds: Number(Math.max(minGap, nextEnd - nextStart).toFixed(2))
     }))
-    setJobs([])
   }
 
   const captureScreenshot = async () => {
@@ -1099,13 +1160,23 @@ export default function App() {
   }
 
   const ffmpegClassName = `status-pill ${ffmpegStatus}`
+  const ffmpegTooltip = [
+    ffmpegStatus === 'available' ? '安装状态：可用' : ffmpegStatus === 'missing' ? '安装状态：未安装' : `安装状态：${ffmpegMessage}`,
+    `版本：${ffmpegMessage}`,
+    `路径：${ffmpegPath || '未读取'}`
+  ].join('\n')
 
   return (
     <div className="app-shell" onDragOver={onDragOver} onDrop={onDrop}>
       <header className="runtime-bar">
-        <div className={ffmpegClassName}>
+        <div className="toolbar-title">
+          <FileVideo2 size={18} />
+          <span>视频批量编辑</span>
+        </div>
+        <div className="toolbar-actions">
+        <div className={ffmpegClassName} title={ffmpegTooltip}>
           {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
-          <span title={ffmpegMessage}>{ffmpegMessage}</span>
+          <span>{ffmpegStatus === 'available' ? 'FFmpeg 可用' : ffmpegStatus === 'missing' ? 'FFmpeg 未安装' : ffmpegMessage}</span>
         </div>
         {(downloadProgress || runProgress) && (
           <div className="runtime-inline-progress" aria-hidden>
@@ -1121,6 +1192,10 @@ export default function App() {
             下载 FFmpeg
           </button>
         )}
+        <button type="button" className="icon-button" aria-label="设置">
+          <Settings2 size={18} />
+        </button>
+        </div>
       </header>
 
       <main className="workspace">
@@ -1166,6 +1241,9 @@ export default function App() {
                 <span className={`queue-state ${file.ok ? 'state-ok' : 'state-error'}`} title={`状态：${file.ok ? '就绪' : file.error ?? '异常'}`}>
                   {file.ok ? '就绪' : file.error ?? '异常'}
                 </span>
+                {overrideConfigs[file.path] && (
+                  <span className="override-badge" title="该视频使用单独配置">已单独配置</span>
+                )}
                 <button type="button" className="icon-button subtle" onClick={() => removeFile(file.path)} aria-label={`移除 ${file.name}`}>
                   <Trash2 size={16} />
                 </button>
@@ -1209,7 +1287,7 @@ export default function App() {
                       setCurrentTime(video.currentTime)
                       setPreviewMessage(`${video.videoWidth} x ${video.videoHeight} / ${formatSeconds(duration)}`)
                       if (duration > 0 && options.timeMode === 'full') {
-                        setOptions((previous) => ({
+                        updateOptions((previous) => ({
                           ...previous,
                           trimStartSeconds: 0,
                           trimDurationSeconds: Number(duration.toFixed(2))
@@ -1336,23 +1414,118 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          <section className="jobs-panel">
+            <div className="panel-head jobs-head">
+              <div>
+                <h2>任务预览</h2>
+                <p>{jobs.length > 0 ? `${jobs.length} 条命令 / ${failedJobs.length} 条可重试` : '未生成命令'}</p>
+              </div>
+              <div className="head-actions">
+                <button type="button" className="secondary-button compact-button" onClick={retryFailedJobs} disabled={!canRetryJobs}>
+                  <RefreshCw size={16} />
+                  重试失败
+                </button>
+                <button type="button" className="secondary-button compact-button" onClick={exportRunLog} disabled={(!files.length && !jobs.length) || busy}>
+                  <FileDown size={16} />
+                  导出日志
+                </button>
+              </div>
+            </div>
+
+            <div className="job-list">
+              {jobs.length === 0 ? (
+                <div className="empty-state compact-empty">
+                  <ClipboardList size={24} />
+                  <span>暂无任务</span>
+                </div>
+              ) : jobs.map((job) => (
+                <article className="job-row" key={job.id}>
+                  <div className="job-title">
+                    <strong>{job.sourceName}</strong>
+                    <div className="job-badges">
+                      <em className={`config-source ${job.configSource ?? 'global'}`}>
+                        {job.configSource === 'override' ? '单独配置' : '全局配置'}
+                      </em>
+                      <span>{presetLabel(job.preset)}</span>
+                      <em className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</em>
+                    </div>
+                  </div>
+                  <code>{job.commandPreview}</code>
+                  {activeJobId === job.id && (
+                    <div className="job-progress">{formatProgress(runProgress)}</div>
+                  )}
+                  {job.error && <div className="job-error" title={job.error}>{job.error}</div>}
+                  <div className="job-output-row">
+                    <small title={job.outputPath}>{job.outputPath}</small>
+                    <button
+                      type="button"
+                      className="icon-button subtle"
+                      onClick={() => void revealOutput(job)}
+                      disabled={job.status !== 'done' || isRunning}
+                      aria-label={`定位输出 ${job.sourceName}`}
+                    >
+                      <FolderOpen size={16} />
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
         </section>
 
         <aside className="config-panel">
           <div className="panel-head compact">
             <div>
-              <h2>处理配置</h2>
-              <p>{activeJobName ? `正在处理 ${activeJobName}` : jobs.length > 0 ? `${jobs.length} 个命令已生成` : '等待生成任务'}</p>
+              <h2>{configPanelTitle}</h2>
+              <p title={configPanelHint}>{activeJobName ? `正在处理 ${activeJobName}` : configPanelHint}</p>
             </div>
             <Settings2 size={20} />
           </div>
 
-          {(downloadProgress || runProgress || ffmpegPath) && (
+          <div className="scope-panel">
+            <span>作用范围</span>
+            <div className="scope-toggle" role="radiogroup" aria-label="配置作用范围">
+              <button
+                type="button"
+                className={configScope === 'global' ? 'active' : ''}
+                onClick={() => setConfigScope('global')}
+                aria-pressed={configScope === 'global'}
+              >
+                应用到全部视频
+              </button>
+              <button
+                type="button"
+                className={configScope === 'current' ? 'active' : ''}
+                onClick={() => {
+                  if (selectedFile && !overrideConfigs[selectedFile.path]) {
+                    setOverrideConfigs((previous) => ({
+                      ...previous,
+                      [selectedFile.path]: globalConfig
+                    }))
+                  }
+                  setConfigScope('current')
+                }}
+                disabled={!selectedFile}
+                aria-pressed={configScope === 'current'}
+              >
+                仅当前选中视频
+              </button>
+            </div>
+            {configScope === 'current' && selectedFile && (
+              <p title={selectedFile.path}>
+                {hasSelectedOverride ? '正在编辑单独配置' : '将从全局配置创建单独配置'}
+              </p>
+            )}
+          </div>
+
+          <div className="config-scroll">
+          {(downloadProgress || runProgress) && (
             <div className="runtime-panel">
               <div className="runtime-row">
-                <span>{activeJobName ? '任务进度' : downloadProgress ? '下载进度' : 'FFmpeg 路径'}</span>
-                <strong title={activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ffmpegPath ?? ''}>
-                  {activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ffmpegPath}
+                <span>{activeJobName ? '任务进度' : '下载进度'}</span>
+                <strong title={activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ''}>
+                  {activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ''}
                 </strong>
               </div>
               {(downloadProgress || runProgress) && (
@@ -1625,8 +1798,9 @@ export default function App() {
               </button>
             </div>
           </label>
+          </div>
 
-          <div className="action-row">
+          <div className="config-action-bar action-row">
             <button type="button" className="primary-button wide" onClick={prepareJobs} disabled={!canPrepare}>
               <Wand2 size={18} />
               生成任务
@@ -1644,62 +1818,6 @@ export default function App() {
             )}
           </div>
         </aside>
-
-        <section className="jobs-panel">
-          <div className="panel-head">
-            <div>
-              <h2>任务预览</h2>
-              <p>{jobs.length > 0 ? `${jobs.length} 条命令 / ${failedJobs.length} 条可重试` : '未生成命令'}</p>
-            </div>
-            <div className="head-actions">
-              <button type="button" className="secondary-button compact-button" onClick={retryFailedJobs} disabled={!canRetryJobs}>
-                <RefreshCw size={16} />
-                重试失败
-              </button>
-              <button type="button" className="secondary-button compact-button" onClick={exportRunLog} disabled={(!files.length && !jobs.length) || busy}>
-                <FileDown size={16} />
-                导出日志
-              </button>
-              <ClipboardList size={20} />
-            </div>
-          </div>
-
-          <div className="job-list">
-            {jobs.length === 0 ? (
-              <div className="empty-state compact-empty">
-                <ClipboardList size={30} />
-                <span>暂无任务</span>
-              </div>
-            ) : jobs.map((job) => (
-              <article className="job-row" key={job.id}>
-                <div className="job-title">
-                  <strong>{job.sourceName}</strong>
-                  <div className="job-badges">
-                    <span>{presetLabel(job.preset)}</span>
-                    <em className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</em>
-                  </div>
-                </div>
-                <code>{job.commandPreview}</code>
-                {activeJobId === job.id && (
-                  <div className="job-progress">{formatProgress(runProgress)}</div>
-                )}
-                {job.error && <div className="job-error" title={job.error}>{job.error}</div>}
-                <div className="job-output-row">
-                  <small title={job.outputPath}>{job.outputPath}</small>
-                  <button
-                    type="button"
-                    className="icon-button subtle"
-                    onClick={() => void revealOutput(job)}
-                    disabled={job.status !== 'done' || isRunning}
-                    aria-label={`定位输出 ${job.sourceName}`}
-                  >
-                    <FolderOpen size={16} />
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
       </main>
     </div>
   )
