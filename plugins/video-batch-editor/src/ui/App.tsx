@@ -426,17 +426,17 @@ export default function App() {
   const cropStats = cropSelection
     ? `X ${options.cropX} / Y ${options.cropY} / ${options.cropWidth} x ${options.cropHeight}`
     : '未框选画面'
-  const hasPreviewModification = options.timeMode !== 'full' || options.cropMode !== 'none' || options.orientationMode !== 'keep'
   const previewHint = useMemo(() => {
     const parts: string[] = []
+    if (options.preset !== DEFAULT_OPTIONS.preset) {
+      parts.push(`导出 ${presetLabel(options.preset)}`)
+    }
     if (options.timeMode === 'range') {
       parts.push(`${formatSeconds(options.trimStartSeconds)} - ${formatSeconds(trimEndSeconds)}`)
     } else if (options.timeMode === 'first') {
       parts.push(`前 ${formatSeconds(options.trimDurationSeconds)}`)
     } else if (options.timeMode === 'remove-start') {
       parts.push(`去掉前 ${formatSeconds(options.removeStartSeconds)}`)
-    } else {
-      parts.push('完整视频')
     }
     if (options.cropMode === 'manual' && cropSelection) {
       parts.push(`裁剪 ${Math.round(cropSelection.width * 100)}% x ${Math.round(cropSelection.height * 100)}%`)
@@ -446,10 +446,25 @@ export default function App() {
     if (options.orientationMode !== 'keep') {
       parts.push(optionLabel(ORIENTATION_MODES, options.orientationMode))
     }
+    if (options.preset !== 'cover-jpg' && options.orientationMode === 'keep' && (options.width !== DEFAULT_OPTIONS.width || options.height !== DEFAULT_OPTIONS.height)) {
+      parts.push(`输出 ${options.width || '-'} x ${options.height || '-'}`)
+    }
+    if (options.preset !== 'cover-jpg' && options.videoBitrateKbps !== DEFAULT_OPTIONS.videoBitrateKbps) {
+      parts.push(`码率 ${options.videoBitrateKbps} kbps`)
+    }
+    if (options.preset !== 'cover-jpg' && options.crf !== DEFAULT_OPTIONS.crf) {
+      parts.push(`CRF ${options.crf}`)
+    }
+    if (options.preset !== 'cover-jpg' && options.watermarkText.trim()) {
+      parts.push('文字水印')
+    }
+    if ((options.outputDirectory || '').trim()) {
+      parts.push('自定义输出目录')
+    }
     return parts.join(' / ')
-  }, [cropSelection, options.cropMode, options.orientationMode, options.removeStartSeconds, options.timeMode, options.trimDurationSeconds, options.trimStartSeconds, trimEndSeconds])
+  }, [cropSelection, options.crf, options.cropMode, options.height, options.orientationMode, options.outputDirectory, options.preset, options.removeStartSeconds, options.timeMode, options.trimDurationSeconds, options.trimStartSeconds, options.videoBitrateKbps, options.watermarkText, options.width, trimEndSeconds])
   const previewChangeText = hasPreview
-    ? hasPreviewModification ? `当前修改：${previewHint}` : '默认配置'
+    ? previewHint ? `当前修改：${previewHint}` : '默认配置'
     : previewMessage
   const cropFocusFrameStyle = useMemo<CSSProperties | undefined>(() => {
     if (!focusCropPreview || !displayedSelection || !videoNaturalSize.width || !videoNaturalSize.height) return undefined
@@ -1244,19 +1259,14 @@ export default function App() {
           <FileVideo2 size={18} />
           <span>视频批量编辑</span>
         </div>
-        <div className="toolbar-actions">
-          <div className={ffmpegClassName} title={ffmpegTooltip}>
-            {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
-            <span>{ffmpegStatus === 'available' ? 'FFmpeg 可用' : ffmpegStatus === 'missing' ? 'FFmpeg 未安装' : ffmpegMessage}</span>
-          </div>
-          {(downloadProgress || runProgress) && (
-            <div className="runtime-inline-progress" aria-hidden>
-              <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
+          <div className="toolbar-actions">
+            <div className={ffmpegClassName} title={ffmpegTooltip}>
+              {ffmpegStatus === 'available' ? <CheckCircle2 size={15} /> : ffmpegStatus === 'checking' || ffmpegStatus === 'downloading' || ffmpegStatus === 'running' ? <Loader2 size={15} /> : <AlertCircle size={15} />}
+              <span>{ffmpegStatus === 'available' ? 'FFmpeg 可用' : ffmpegStatus === 'missing' ? 'FFmpeg 未安装' : ffmpegMessage}</span>
             </div>
-          )}
-          <button type="button" className="icon-button" onClick={checkFfmpeg} aria-label="重新检测 FFmpeg" title="重新检测 FFmpeg">
-            <RefreshCw size={18} />
-          </button>
+            <button type="button" className="icon-button" onClick={checkFfmpeg} aria-label="重新检测 FFmpeg" title="重新检测 FFmpeg">
+              <RefreshCw size={18} />
+            </button>
           {ffmpegStatus === 'missing' && (
             <button type="button" className="secondary-button compact-button" onClick={downloadFfmpeg} disabled={!ffmpeg || busy || isRunning} title="下载内置 FFmpeg">
               <Download size={16} />
@@ -1591,6 +1601,21 @@ export default function App() {
               </div>
             </div>
 
+            {(downloadProgress || runProgress) && (
+              <div className="job-runtime-card">
+                <div className="job-runtime-main">
+                  <span>{activeJobName ? '当前任务进度' : 'FFmpeg 下载进度'}</span>
+                  <strong title={activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ''}>
+                    {activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ''}
+                  </strong>
+                  {activeJobName && <em title={activeJobName}>{activeJobName}</em>}
+                </div>
+                <div className="progress-track" aria-hidden>
+                  <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
+                </div>
+              </div>
+            )}
+
             <div className="job-list">
               {jobs.length === 0 ? (
                 <div className="empty-state compact-empty">
@@ -1598,24 +1623,23 @@ export default function App() {
                   <span>暂无任务</span>
                 </div>
               ) : jobs.map((job) => (
-                <article className="job-row" key={job.id}>
-                  <div className="job-title">
-                    <strong>{job.sourceName}</strong>
+                <article className={`job-row ${job.status}`} key={job.id}>
+                  <div className="job-card-head">
+                    <div className="job-title">
+                      <strong title={job.sourceName}>{job.sourceName}</strong>
+                      <small title={job.outputPath}>{job.outputPath}</small>
+                    </div>
                     <div className="job-badges">
+                      <em className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</em>
                       <em className={`config-source ${job.configSource ?? 'global'}`}>
                         {job.configSource === 'override' ? '单独配置' : '全局配置'}
                       </em>
                       <span>{presetLabel(job.preset)}</span>
-                      <em className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</em>
                     </div>
                   </div>
-                  <code>{job.commandPreview}</code>
-                  {activeJobId === job.id && (
-                    <div className="job-progress">{formatProgress(runProgress)}</div>
-                  )}
-                  {job.error && <div className="job-error" title={job.error}>{job.error}</div>}
-                  <div className="job-output-row">
-                    <small title={job.outputPath}>{job.outputPath}</small>
+
+                  <div className="job-card-body">
+                    <code>{job.commandPreview}</code>
                     <button
                       type="button"
                       className="icon-button subtle"
@@ -1627,6 +1651,19 @@ export default function App() {
                       <FolderOpen size={16} />
                     </button>
                   </div>
+
+                  {activeJobId === job.id && (
+                    <div className="job-progress-block">
+                      <div className="job-progress-line">
+                        <span>处理中</span>
+                        <strong title={formatProgress(runProgress)}>{formatProgress(runProgress)}</strong>
+                      </div>
+                      <div className="progress-track" aria-hidden>
+                        <span style={{ width: `${progressPercent(runProgress)}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {job.error && <div className="job-error" title={job.error}>{job.error}</div>}
                 </article>
               ))}
             </div>
@@ -1637,7 +1674,7 @@ export default function App() {
           <div className="panel-head compact">
             <div>
               <h2>{configPanelTitle}</h2>
-              <p title={configPanelHint}>{activeJobName ? `正在处理 ${activeJobName}` : configPanelHint}</p>
+              <p className="config-panel-hint" title={configPanelHint}>{configPanelHint}</p>
             </div>
             <span className="panel-icon" aria-label="当前配置面板" title="当前配置面板">
               <Settings2 size={20} />
@@ -1673,22 +1710,6 @@ export default function App() {
           </div>
 
           <div className="config-scroll">
-          {(downloadProgress || runProgress) && (
-            <div className="runtime-panel">
-              <div className="runtime-row">
-                <span>{activeJobName ? '任务进度' : '下载进度'}</span>
-                <strong title={activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ''}>
-                  {activeJobName ? formatProgress(runProgress) : downloadProgress ? downloadProgressText(downloadProgress) : ''}
-                </strong>
-              </div>
-              {(downloadProgress || runProgress) && (
-                <div className="progress-track" aria-hidden>
-                  <span style={{ width: `${downloadProgress ? downloadProgress.percent : progressPercent(runProgress)}%` }} />
-                </div>
-              )}
-            </div>
-          )}
-
           <label className="field compact-field">
             <span>导出预设</span>
             <select
