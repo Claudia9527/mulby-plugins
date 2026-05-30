@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EEF2FF" />
+      <stop offset="100%" stop-color="#E0E7FF" />
+    </linearGradient>
+    <linearGradient id="primary" x1="0" y1="0" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5" />
+      <stop offset="100%" stop-color="#3730A3" />
+    </linearGradient>
+    <linearGradient id="secondary" x1="0" y1="0" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818CF8" />
+      <stop offset="100%" stop-color="#4F46E5" />
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="128" fill="url(#bg)" />
+
+  <!-- Back file -->
+  <g transform="translate(100, 80)">
+    <!-- Fake shadow for back file -->
+    <path d="M30 10 H190 L270 90 V330 A24 24 0 0 1 246 354 H30 A24 24 0 0 1 6 330 V34 A24 24 0 0 1 30 10 Z" fill="#312E81" opacity="0.1" />
+    <path d="M30 0 H180 L260 80 V320 A24 24 0 0 1 236 344 H30 A24 24 0 0 1 6 320 V24 A24 24 0 0 1 30 0 Z" fill="url(#secondary)" opacity="0.6" />
+    <path d="M180 0 V80 H260" fill="#C7D2FE" opacity="0.4" />
+  </g>
+
+  <!-- Front file -->
+  <g transform="translate(150, 140)">
+    <!-- Fake shadow for front file -->
+    <path d="M30 12 H212 L292 92 V332 A24 24 0 0 1 268 356 H30 A24 24 0 0 1 6 332 V36 A24 24 0 0 1 30 12 Z" fill="#312E81" opacity="0.15" />
+    <path d="M30 0 H200 L280 80 V320 A24 24 0 0 1 256 344 H30 A24 24 0 0 1 6 320 V24 A24 24 0 0 1 30 0 Z" fill="url(#primary)" />
+    <path d="M200 0 V80 H280" fill="#818CF8" opacity="0.8" />
+    
+    <!-- Lines indicating file content -->
+    <rect x="60" y="120" width="160" height="16" rx="8" fill="#E0E7FF" opacity="0.3" />
+    <rect x="60" y="160" width="120" height="16" rx="8" fill="#E0E7FF" opacity="0.3" />
+    <rect x="60" y="200" width="140" height="16" rx="8" fill="#E0E7FF" opacity="0.3" />
+  </g>
+
+  <!-- Rename Text Box Overlay -->
+  <g transform="translate(120, 260)">
+    <!-- Fake shadow for text box -->
+    <rect x="0" y="12" width="280" height="100" rx="20" fill="#312E81" opacity="0.15" />
+    <rect x="0" y="0" width="280" height="100" rx="20" fill="#FFFFFF" />
+    <!-- Formatted text inside the box -->
+    <text x="30" y="65" font-family="-apple-system, sans-serif" font-weight="700" font-size="44" fill="#9CA3AF" text-decoration="line-through">OLD</text>
+    <!-- Arrow -->
+    <path d="M 140 50 L 160 30 M 140 50 L 160 70 M 120 50 H 160" fill="none" stroke="#4F46E5" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+    <!-- New name -->
+    <text x="180" y="65" font-family="-apple-system, sans-serif" font-weight="700" font-size="44" fill="#10B981">NEW</text>
+  </g>
+
+  <!-- Sparkling / Smart stars for AI element -->
+  <g transform="translate(380, 220)">
+    <path d="M0 -20 Q0 0 20 0 Q0 0 0 20 Q0 0 -20 0 Q0 0 0 -20 Z" fill="#FBBF24" />
+    <path d="M30 20 Q30 30 40 30 Q30 30 30 40 Q30 30 20 30 Q30 30 30 20 Z" fill="#FCD34D" />
+  </g>
+</svg>
