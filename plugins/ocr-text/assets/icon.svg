@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6"/>
+      <stop offset="100%" style="stop-color:#6366F1"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Scan frame corners -->
+  <path d="M120 180 L120 140 Q120 120 140 120 L180 120" stroke="white" stroke-width="16" stroke-linecap="round" fill="none" opacity="0.9"/>
+  <path d="M332 120 L372 120 Q392 120 392 140 L392 180" stroke="white" stroke-width="16" stroke-linecap="round" fill="none" opacity="0.9"/>
+  <path d="M392 332 L392 372 Q392 392 372 392 L332 392" stroke="white" stroke-width="16" stroke-linecap="round" fill="none" opacity="0.9"/>
+  <path d="M180 392 L140 392 Q120 392 120 372 L120 332" stroke="white" stroke-width="16" stroke-linecap="round" fill="none" opacity="0.9"/>
+  <!-- Scan line -->
+  <rect x="140" y="248" width="232" height="4" rx="2" fill="white" opacity="0.6"/>
+  <!-- Text lines -->
+  <rect x="160" y="172" width="140" height="10" rx="5" fill="white" opacity="0.85"/>
+  <rect x="160" y="200" width="192" height="10" rx="5" fill="white" opacity="0.65"/>
+  <rect x="160" y="290" width="172" height="10" rx="5" fill="white" opacity="0.85"/>
+  <rect x="160" y="318" width="120" height="10" rx="5" fill="white" opacity="0.65"/>
+  <rect x="160" y="346" width="160" height="10" rx="5" fill="white" opacity="0.5"/>
+</svg>
