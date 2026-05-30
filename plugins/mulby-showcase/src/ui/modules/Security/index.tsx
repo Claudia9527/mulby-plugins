@@ -26,6 +26,7 @@ type LoadingAction =
     | 'batch'
     | 'transaction'
     | 'append'
+    | 'prefix'
     | 'remove'
     | 'security'
     | 'encrypted'
@@ -71,7 +72,12 @@ const TRANSACTION_KEY = `${STORAGE_PREFIX}transaction`
 const TRANSACTION_META_KEY = `${STORAGE_PREFIX}transaction-meta`
 const AUDIT_KEY = `${STORAGE_PREFIX}audit`
 const SECRET_KEY = `${STORAGE_PREFIX}secret`
-const ATTACHMENT_ID = `${STORAGE_PREFIX}snapshot`
+const ATTACHMENT_PREFIX = 'storage-security-demo-'
+const ATTACHMENT_ID = `${ATTACHMENT_PREFIX}snapshot.json`
+const UNSAFE_ATTACHMENT_ID = `${STORAGE_PREFIX}unsafe:snapshot`
+const SPECIAL_PREFIX = `${STORAGE_PREFIX}literal:%_`
+const SPECIAL_ONE_KEY = `${SPECIAL_PREFIX}:one`
+const SPECIAL_TWO_KEY = `${SPECIAL_PREFIX}:two`
 
 function getErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error)
@@ -249,6 +255,15 @@ const bytes = new TextEncoder().encode(JSON.stringify(snapshot))
 await storage.attachment.put('storage-security-demo:snapshot', bytes, 'application/json')`,
     },
     {
+        title: '安全附件 ID 与字面量前缀',
+        code: `// attachment id 会作为文件名使用，避免 ":"、"/" 等字符
+await storage.attachment.put('storage-security-demo-snapshot.json', bytes, 'application/json')
+
+// prefix 中的 % 和 _ 会按普通字符匹配，不再被当成 SQL LIKE 通配符
+await storage.set('storage-security-demo:literal:%_:one', { ok: true })
+const listed = await storage.list({ prefix: 'storage-security-demo:literal:%_' })`,
+    },
+    {
         title: '系统级字符串加密',
         code: `const available = await security.isEncryptionAvailable()
 if (available) {
@@ -277,6 +292,7 @@ export function SecurityModule() {
     const [secretSummary, setSecretSummary] = useState<SecretSummary>({ exists: false })
     const [attachmentSummary, setAttachmentSummary] = useState<AttachmentSummary | null>(null)
     const [attachmentPreview, setAttachmentPreview] = useState('')
+    const [specialPrefixCount, setSpecialPrefixCount] = useState(0)
     const [watching, setWatching] = useState(false)
     const [watchEvents, setWatchEvents] = useState<WatchEventItem[]>([])
     const [operationLog, setOperationLog] = useState<OperationLogItem[]>([])
@@ -307,15 +323,17 @@ export function SecurityModule() {
     const refreshStorageState = useCallback(async (options: { silent?: boolean } = {}) => {
         if (!options.silent) setLoadingAction('refresh')
         try {
-            const [listResult, meta, auditValue] = await Promise.all([
+            const [listResult, meta, auditValue, specialList] = await Promise.all([
                 storage.list({ prefix: STORAGE_PREFIX, limit: 30, order: 'desc' }),
                 storage.getMeta(storageKey),
                 storage.get(AUDIT_KEY),
+                storage.list({ prefix: SPECIAL_PREFIX, limit: 10, order: 'asc' }),
             ])
 
             setStorageEntries(listResult.items)
             setSelectedMeta(meta)
             setAuditLength(Array.isArray(auditValue) ? auditValue.length : 0)
+            setSpecialPrefixCount(specialList.items.length)
 
             try {
                 const exists = await storage.encrypted.has(SECRET_KEY)
@@ -330,7 +348,7 @@ export function SecurityModule() {
             }
 
             try {
-                const attachments = await storage.attachment.list(STORAGE_PREFIX)
+                const attachments = await storage.attachment.list(ATTACHMENT_PREFIX)
                 const currentAttachment = attachments.find(item => item.id === ATTACHMENT_ID) ?? null
                 if (currentAttachment) {
                     const [bytes, mimeType] = await Promise.all([
@@ -358,7 +376,7 @@ export function SecurityModule() {
                     action: 'storage.list/getMeta',
                     status: 'success',
                     message: '已刷新存储演示数据',
-                    details: { keys: listResult.items.length, selectedKey: storageKey },
+                    details: { keys: listResult.items.length, selectedKey: storageKey, specialPrefixCount: specialList.items.length },
                 })
             }
         } catch (error) {
@@ -635,6 +653,35 @@ export function SecurityModule() {
         }
     }, [notify, pushOperation, refreshStorageState, storage, storageKey])
 
+    const handleWriteSpecialPrefix = useCallback(async () => {
+        setLoadingAction('prefix')
+        try {
+            await storage.setMany([
+                { key: SPECIAL_ONE_KEY, value: { label: 'literal percent', pattern: '%', updatedAt: Date.now() } },
+                { key: SPECIAL_TWO_KEY, value: { label: 'literal underscore', pattern: '_', updatedAt: Date.now() } },
+            ], { atomic: true })
+            const listed = await storage.list({ prefix: SPECIAL_PREFIX, limit: 10, order: 'asc' })
+            setSpecialPrefixCount(listed.items.length)
+            pushOperation({
+                action: 'storage.list literal prefix',
+                status: 'success',
+                message: `特殊前缀按字面量匹配到 ${listed.items.length} 个键`,
+                details: listed,
+            })
+            notify.success('%/_ 前缀演示已写入')
+            await refreshStorageState({ silent: true })
+        } catch (error) {
+            pushOperation({
+                action: 'storage.list literal prefix',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`特殊前缀演示失败: ${getErrorMessage(error)}`)
+        } finally {
+            setLoadingAction(null)
+        }
+    }, [notify, pushOperation, refreshStorageState, storage])
+
     const handleRemoveSelected = useCallback(async () => {
         const key = storageKey.trim()
         if (!key) {
@@ -687,6 +734,8 @@ export function SecurityModule() {
                 storage.remove(TRANSACTION_KEY),
                 storage.remove(TRANSACTION_META_KEY),
                 storage.remove(AUDIT_KEY),
+                storage.remove(SPECIAL_ONE_KEY),
+                storage.remove(SPECIAL_TWO_KEY),
                 storage.encrypted.remove(SECRET_KEY),
                 storage.attachment.remove(ATTACHMENT_ID),
             ])
@@ -694,6 +743,7 @@ export function SecurityModule() {
             setBatchResults(null)
             setTransactionResult(null)
             setAuditLength(0)
+            setSpecialPrefixCount(0)
             setSecretSummary({ exists: false })
             setAttachmentSummary(null)
             setAttachmentPreview('')
@@ -820,7 +870,7 @@ export function SecurityModule() {
             const bytes = new TextEncoder().encode(JSON.stringify(snapshot, null, 2))
             await storage.attachment.put(ATTACHMENT_ID, bytes, 'application/json')
             const [attachments, mimeType, storedBytes] = await Promise.all([
-                storage.attachment.list(STORAGE_PREFIX),
+                storage.attachment.list(ATTACHMENT_PREFIX),
                 storage.attachment.getType(ATTACHMENT_ID),
                 storage.attachment.get(ATTACHMENT_ID),
             ])
@@ -852,6 +902,32 @@ export function SecurityModule() {
             setLoadingAction(null)
         }
     }, [notify, pushOperation, refreshStorageState, storage, storageKey, storageValue])
+
+    const handleTryUnsafeAttachmentId = useCallback(async () => {
+        setLoadingAction('attachment')
+        try {
+            const bytes = new TextEncoder().encode('unsafe attachment id demo')
+            const ok = await storage.attachment.put(UNSAFE_ATTACHMENT_ID, bytes, 'text/plain')
+            pushOperation({
+                action: 'storage.attachment.put unsafe id',
+                status: ok ? 'warning' : 'success',
+                message: ok ? '宿主接受了旧式非法 ID，请检查 Storage 实现' : '宿主已拒绝包含冒号的附件 ID',
+                details: { id: UNSAFE_ATTACHMENT_ID, ok },
+            })
+            if (ok) notify.warning('非法附件 ID 被接受，请检查宿主版本')
+            else notify.success('非法附件 ID 已被拒绝')
+            await refreshStorageState({ silent: true })
+        } catch (error) {
+            pushOperation({
+                action: 'storage.attachment.put unsafe id',
+                status: 'error',
+                message: getErrorMessage(error),
+            })
+            notify.error(`非法附件 ID 演示失败: ${getErrorMessage(error)}`)
+        } finally {
+            setLoadingAction(null)
+        }
+    }, [notify, pushOperation, refreshStorageState, storage])
 
     const handleRemoveAttachment = useCallback(async () => {
         setLoadingAction('attachment')
@@ -900,6 +976,7 @@ export function SecurityModule() {
             batchResults,
             transactionResult,
             auditLength,
+            specialPrefixCount,
             watchActive: watching,
             watchEvents,
         },
@@ -913,6 +990,7 @@ export function SecurityModule() {
         attachmentPreview,
         attachmentSummary,
         auditLength,
+        specialPrefixCount,
         batchResults,
         decryptedText,
         encryptedBase64,
@@ -1081,6 +1159,10 @@ export function SecurityModule() {
                                         <div className="stat-value">{auditLength}</div>
                                         <div className="stat-label">审计日志</div>
                                     </div>
+                                    <div className="stat-item">
+                                        <div className="stat-value">{specialPrefixCount}</div>
+                                        <div className="stat-label">%/_ 前缀键</div>
+                                    </div>
                                 </div>
                                 <div className="action-bar">
                                     <Button variant="secondary" onClick={() => void handleBatchWrite()} loading={loadingAction === 'batch'}>
@@ -1091,6 +1173,9 @@ export function SecurityModule() {
                                     </Button>
                                     <Button variant="secondary" onClick={() => void handleAppendAudit()} loading={loadingAction === 'append'}>
                                         追加日志
+                                    </Button>
+                                    <Button variant="secondary" onClick={() => void handleWriteSpecialPrefix()} loading={loadingAction === 'prefix'}>
+                                        %/_ 前缀
                                     </Button>
                                     <Button variant="secondary" onClick={() => void handleClearDemoData()} loading={loadingAction === 'remove'}>
                                         <Trash2 className="inline-icon" aria-hidden="true" size={14} />
@@ -1199,6 +1284,9 @@ export function SecurityModule() {
                                         <Button onClick={() => void handleSaveAttachment()} loading={loadingAction === 'attachment'}>
                                             <PackageOpen className="inline-icon" aria-hidden="true" size={14} />
                                             保存快照
+                                        </Button>
+                                        <Button variant="secondary" onClick={() => void handleTryUnsafeAttachmentId()} loading={loadingAction === 'attachment'}>
+                                            测试非法 ID
                                         </Button>
                                     </div>
                                     {attachmentPreview && (

@@ -48,6 +48,24 @@ for (const token of [
 }
 
 assert(
+  securitySource.includes("const ATTACHMENT_PREFIX = 'storage-security-demo-'") &&
+  securitySource.includes("const ATTACHMENT_ID = `${ATTACHMENT_PREFIX}snapshot.json`"),
+  'Attachment storage demo must use a filesystem-safe attachment id without ":"'
+)
+
+assert(
+  securitySource.includes('handleTryUnsafeAttachmentId') &&
+  securitySource.includes('storage.attachment.put(UNSAFE_ATTACHMENT_ID'),
+  'Attachment storage demo must show unsafe attachment id rejection'
+)
+
+assert(
+  securitySource.includes('SPECIAL_PREFIX') &&
+  securitySource.includes('storage.list({ prefix: SPECIAL_PREFIX'),
+  'Storage demo must show literal prefix matching for % and _ keys'
+)
+
+assert(
   !securitySource.includes('storage.listNamespaces') && !securitySource.includes('storage.getAllWithMeta'),
   'Storage and security module must not demonstrate host storage explorer APIs'
 )
