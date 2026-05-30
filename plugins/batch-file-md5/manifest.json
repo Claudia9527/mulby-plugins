@@ -1,7 +1,7 @@
 {
   "id": "batch-file-md5",
   "name": "batch-file-md5",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "mulby",
   "type": "utility",
   "displayName": "批量文件 MD5",
