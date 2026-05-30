@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# pre-push hook: 检查 pnpm-lock.yaml 是否与所有 package.json 同步
+# 防止推送后 CI 的 --frozen-lockfile 安装失败
+#
+
+# 只在推送包含 main 或 dev 分支时检查
+NEED_CHECK=false
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/dev)
+      NEED_CHECK=true
+      ;;
+  esac
+done
+
+if [ "$NEED_CHECK" != "true" ]; then
+  exit 0
+fi
+
+echo "🔒 检查 pnpm-lock.yaml 是否与 package.json 同步..."
+
+# 使用 pnpm install --frozen-lockfile --lockfile-only 来验证
+# --lockfile-only 只检查 lockfile 不实际安装，避免副作用
+# 如果 lockfile 过期，这个命令会失败
+OUTPUT=$(pnpm install --frozen-lockfile --lockfile-only 2>&1)
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+  echo ""
+  echo "❌ pnpm-lock.yaml 与 package.json 不同步！"
+  echo ""
+  echo "   错误信息："
+  echo "   $OUTPUT" | head -10
+  echo ""
+  echo "   请先运行以下命令更新 lockfile："
+  echo ""
+  echo "     pnpm install"
+  echo "     git add pnpm-lock.yaml"
+  echo "     git commit --amend --no-edit   # 或者新建 commit"
+  echo ""
+  echo "   然后重新推送。"
+  echo ""
+  exit 1
+fi
+
+echo "✅ lockfile 同步，继续推送。"
+exit 0
