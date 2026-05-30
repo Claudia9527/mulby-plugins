@@ -254,6 +254,11 @@ button {
   justify-content: center;
 }
 
+.drop-zone--active {
+  background: var(--glass-strong);
+  border-color: var(--accent);
+}
+
 .drop-hint {
   text-align: center;
   color: var(--text-muted);

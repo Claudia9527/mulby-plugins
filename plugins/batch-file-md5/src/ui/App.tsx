@@ -61,6 +61,7 @@ export default function App() {
   const [results, setResults] = useState<Map<string, HashFileRow>>(new Map())
   const [busy, setBusy] = useState(false)
   const [lastElapsedMs, setLastElapsedMs] = useState<number | null>(null)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
 
   const mergePaths = useCallback((paths: string[]) => {
     if (!paths.length) return
@@ -194,29 +195,122 @@ export default function App() {
     }
   }
 
-  const onDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
+  const parseDroppedPathText = (raw: string): string[] => {
+    if (!raw) return []
+    const lines = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !line.startsWith('#'))
+
+    return lines.map((line) => {
+      if (line.startsWith('file://')) {
+        try {
+          let p = decodeURIComponent(line.replace(/^file:\/\//, ''))
+          if (p.startsWith('/') && p.match(/^\/[a-zA-Z]:\//)) {
+            p = p.substring(1)
+          }
+          return p
+        } catch {
+          return line.replace(/^file:\/\//, '')
+        }
+      }
+      return line
+    })
   }
 
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const list = e.dataTransfer?.files
-    if (!list?.length) return
-    const paths: string[] = []
-    for (let i = 0; i < list.length; i++) {
-      const file = list[i] as File & { path?: string }
+  const collectFilePaths = (event: DragEvent): string[] => {
+    const dt = event.dataTransfer
+    if (!dt) return []
+
+    const candidates = new Set<string>()
+
+    // 1. 标准 File.path 属性提取
+    const fileList = dt.files
+    for (let i = 0; i < (fileList?.length || 0); i++) {
+      const file = fileList[i] as File & { path?: string }
       if (typeof file.path === 'string' && file.path.length > 0) {
-        paths.push(file.path)
+        candidates.add(file.path)
       }
     }
-    if (paths.length) {
-      mergePaths(paths)
-    } else {
-      notification.show('请从资源管理器拖入文件（浏览器内拖入可能无本地路径）', 'info')
+
+    // 2. 解码 uri-list
+    const uriList = dt.getData('text/uri-list')
+    for (const path of parseDroppedPathText(uriList)) {
+      candidates.add(path)
     }
+
+    // 3. 解码纯文本（备用）
+    const plainText = dt.getData('text/plain')
+    for (const path of parseDroppedPathText(plainText)) {
+      candidates.add(path)
+    }
+
+    return [...candidates].filter(Boolean)
   }
+
+  useEffect(() => {
+    const handleGlobalDragEnter = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setIsDraggingOver(true)
+    }
+
+    const handleGlobalDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setIsDraggingOver(true)
+    }
+
+    const handleGlobalDragLeave = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!e.relatedTarget || e.relatedTarget === document.documentElement) {
+        setIsDraggingOver(false)
+      }
+    }
+
+    const handleGlobalDrop = async (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setIsDraggingOver(false)
+
+      let filePaths = collectFilePaths(e)
+
+      const pluginApi = (window as any).mulby?.plugin
+      if (pluginApi && e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        try {
+          // 这里传入 Array.from(files)，因为 FileList 可能会被浏览器清空
+          const resolvedPaths = pluginApi.resolveDroppedFilePaths(Array.from(e.dataTransfer.files) as File[])
+          if (resolvedPaths && resolvedPaths.length > 0) {
+            filePaths = [...filePaths, ...resolvedPaths]
+          }
+        } catch (err) {
+          console.warn('resolveDroppedFilePaths error', err)
+        }
+      }
+
+      filePaths = [...new Set(filePaths)].filter(Boolean)
+
+      if (filePaths.length > 0) {
+        mergePaths(filePaths)
+      } else {
+        notification.show('请从资源管理器拖入文件（浏览器内拖入可能无本地路径）', 'info')
+      }
+    }
+
+    window.addEventListener('dragenter', handleGlobalDragEnter)
+    window.addEventListener('dragover', handleGlobalDragOver)
+    window.addEventListener('dragleave', handleGlobalDragLeave)
+    window.addEventListener('drop', handleGlobalDrop)
+
+    return () => {
+      window.removeEventListener('dragenter', handleGlobalDragEnter)
+      window.removeEventListener('dragover', handleGlobalDragOver)
+      window.removeEventListener('dragleave', handleGlobalDragLeave)
+      window.removeEventListener('drop', handleGlobalDrop)
+    }
+  }, [mergePaths, notification])
 
   const summary = useMemo(() => {
     let ok = 0
@@ -231,7 +325,7 @@ export default function App() {
   }, [files, results])
 
   return (
-    <div className="app-shell" onDragOver={onDragOver} onDrop={onDrop}>
+    <div className="app-shell">
       <header className="glass-hero neo-inset">
         <div className="hero-text">
           <span className="pill">
@@ -276,9 +370,7 @@ export default function App() {
       </section>
 
       <div
-        className={`drop-zone glass-panel neo-inset ${files.length === 0 ? 'drop-zone--empty' : ''}`}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
+        className={`drop-zone glass-panel neo-inset ${files.length === 0 ? 'drop-zone--empty' : ''} ${isDraggingOver ? 'drop-zone--active' : ''}`}
       >
         {files.length === 0 ? (
           <div className="drop-hint">

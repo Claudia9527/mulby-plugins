@@ -47,12 +47,88 @@ useEffect(() => {
 }, []);
 ```
 
-## 2. 拖拽路径提取的双保险策略
+## 2. 拖拽路径提取的三保险策略与事件回收陷阱
 
 由于部分沙盒（如 iframe）环境下直接读取 `File.path` 可能被隐藏为空字符串，因此不能单纯依赖 `event.dataTransfer.files[i].path`。应当采取多通道提取、互相降级的策略：
 
-1. **官方 API 提取法**：优先使用 `mulby.plugin.resolveDroppedFilePaths(files)`。它可以在宿主底层通过 Electron 的 `webUtils.getPathForFile` 提取真实物理路径，同时可能会附加宿主的沙盒挂载授权白名单。
-2. **底层剪贴板协议解析法**：使用 `event.dataTransfer.getData('text/uri-list')`，这在 macOS 的 Finder 和 Windows 的资源管理器中是最稳定的路径传递通道，提取后需注意手动 `decodeURIComponent` 并剔除 `file://` 前缀。
+1. **原生 File 对象属性提取法**：常规 Electron 环境下 `File.path` 是有值的。
+2. **底层剪贴板协议解析法（极度可靠）**：使用 `event.dataTransfer.getData('text/uri-list')` 或 `getData('text/plain')`。这在 macOS Finder 和 Windows 资源管理器中是最稳定的路径传递通道。提取后需注意手动 `decodeURIComponent` 还原中文/特殊字符，并剔除 `file://` 前缀。
+3. **官方宿主 API 解析法**：使用 `mulby.plugin.resolveDroppedFilePaths(files)` 通过宿主底层 API 获取物理路径。
+
+### ⚠️ 异步读取导致 dataTransfer 被清空的致命深坑
+
+如果你的 `drop` 回调是一个 `async` 函数，并且在调用 `resolveDroppedFilePaths` 时使用了 `await`：
+
+```typescript
+// ❌ 错误示范：await 让出执行权后，浏览器强制清空了 e.dataTransfer！
+const paths = await plugin.resolveDroppedFilePaths(e.dataTransfer.files);
+const fallbackPaths = e.dataTransfer.getData('text/uri-list'); // 此时取到的是空字符串！
+```
+
+**原因与解决**：
+根据 HTML5 规范，一旦事件处理函数的同步执行阶段结束（遇到 `await` 就是结束了当前 tick），浏览器出于安全和内存回收考虑，会立即清空、作废 `dataTransfer` 对象里的所有数据！
+
+因此，我们必须**在任何 await 发生之前，先把所有可能需要的数据同步读取到内存变量中**，并且如果需要将 `FileList` 传给异步 API，必须使用 `Array.from` 进行静态快照拷贝。
+
+**终极参考实现（集成了防清空与全通道解析）：**
+
+```typescript
+// 解析并清理 file:// 前缀的辅助函数
+const parseDroppedPathText = (raw: string): string[] => {
+  if (!raw) return [];
+  return raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean).filter(l => !l.startsWith('#'))
+    .map(line => {
+      if (line.startsWith('file://')) {
+        try {
+          let p = decodeURIComponent(line.replace(/^file:\/\//, ''));
+          if (p.startsWith('/') && p.match(/^\/[a-zA-Z]:\//)) p = p.substring(1); // 修复 Windows 盘符
+          return p;
+        } catch {
+          return line.replace(/^file:\/\//, '');
+        }
+      }
+      return line;
+    });
+};
+
+// 必须【同步】执行的收集函数
+const collectFilePaths = (event: DragEvent): string[] => {
+  const dt = event.dataTransfer;
+  if (!dt) return [];
+  const candidates = new Set<string>();
+
+  // 通道 1: File.path
+  for (let i = 0; i < (dt.files?.length || 0); i++) {
+    const file = dt.files[i] as File & { path?: string };
+    if (file.path) candidates.add(file.path);
+  }
+  // 通道 2 & 3: uri-list 和 plain text
+  parseDroppedPathText(dt.getData('text/uri-list')).forEach(p => candidates.add(p));
+  parseDroppedPathText(dt.getData('text/plain')).forEach(p => candidates.add(p));
+
+  return [...candidates].filter(Boolean);
+};
+
+const handleGlobalDrop = async (e: DragEvent) => {
+  e.preventDefault();
+  
+  // 1. 同步收集所有基础途径能拿到的路径（不包含 await！）
+  let filePaths = collectFilePaths(e);
+  
+  // 2. 拷贝 FileList，防止被清理
+  const staticFiles = Array.from(e.dataTransfer?.files || []) as File[];
+
+  // 3. 开始执行异步逻辑
+  const pluginApi = window.mulby?.plugin;
+  if (pluginApi && staticFiles.length > 0) {
+    const resolvedPaths = await pluginApi.resolveDroppedFilePaths(staticFiles);
+    if (resolvedPaths) filePaths = [...filePaths, ...resolvedPaths];
+  }
+  
+  filePaths = [...new Set(filePaths)];
+  // 执行后续业务...
+};
+```
 
 ## 3. UI 渲染沙盒限制与后端 RPC 绕过
 
