@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== 亮色主题 ===== */
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --border-hover: #d1d5db;
+  --text-1: #1a1a1a;
+  --text-2: #6b7280;
+  --text-3: #9ca3af;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.08);
+  --tag-bg: rgba(59, 130, 246, 0.1);
+  --tag-text: #2563eb;
+}
+
+/* ===== 暗色主题（与主进程 slate-blue 色调对齐） ===== */
+:root.dark {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --border: #334155;
+  --border-hover: #475569;
+  --text-1: #f1f5f9;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-soft: rgba(59, 130, 246, 0.1);
+  --tag-bg: rgba(59, 130, 246, 0.15);
+  --tag-text: #93c5fd;
+}
+
+@layer utilities {
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+

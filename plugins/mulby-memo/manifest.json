@@ -1,0 +1,62 @@
+{
+  "$schema": "./node_modules/.mulby/manifest-schema.json",
+  "id": "mulby-memo",
+  "name": "mulby-memo",
+  "version": "1.0.0",
+  "author": "mulby",
+  "displayName": "mulby-memo",
+  "description": "收藏常用文本、代码和图片，一键快速粘贴",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "permissions": {
+    "clipboard": true,
+    "notification": true
+  },
+  "window": {
+    "width": 800,
+    "height": 600,
+    "minWidth": 400,
+    "minHeight": 300,
+    "maxWidth": 1200,
+    "maxHeight": 900,
+    "type": "default"
+  },
+  "features": [
+    {
+      "code": "view_memos",
+      "explain": "备忘快贴 (查看与管理)",
+      "cmds": [
+        {
+          "type": "keyword",
+          "value": "备忘快贴"
+        },
+        {
+          "type": "keyword",
+          "value": "mulby-memo"
+        }
+      ]
+    },
+    {
+      "code": "save_memo",
+      "explain": "保存为备忘快贴",
+      "mode": "silent",
+      "cmds": [
+        {
+          "type": "over",
+          "label": "默默记录到备忘快贴",
+          "minLength": 1
+        },
+        {
+          "type": "regex",
+          "match": "/(?:)/",
+          "label": "保存为备忘"
+        },
+        {
+          "type": "img",
+          "label": "保存图片为备忘"
+        }
+      ]
+    }
+  ]
+}
