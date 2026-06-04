@@ -1,0 +1,33 @@
+{
+  "name": "disk-assistant",
+  "displayName": "磁盘助手",
+  "version": "1.0.0",
+  "author": "mulby",
+  "type": "utility",
+  "description": "分析和可视化磁盘空间占用情况，快速定位大文件和占用空间最多的目录。",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "pluginSetting": {
+    "single": true
+  },
+  "window": {
+    "width": 900,
+    "height": 700,
+    "minWidth": 600,
+    "minHeight": 500
+  },
+  "features": [
+    {
+      "code": "open-scanner",
+      "explain": "打开磁盘分析助手",
+      "mode": "ui",
+      "cmds": [
+        { "type": "keyword", "value": "磁盘" },
+        { "type": "keyword", "value": "disk" },
+        { "type": "keyword", "value": "空间" },
+        { "type": "keyword", "value": "space" }
+      ]
+    }
+  ]
+}
