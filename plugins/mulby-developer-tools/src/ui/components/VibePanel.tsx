@@ -1301,8 +1301,7 @@ export function VibePanel({
     <div className="flex h-full">
       {/* 左：阶段导航 + 模型 */}
       <aside className="w-56 shrink-0 border-r border-slate-200 dark:border-slate-800 overflow-auto bg-white/40 dark:bg-slate-900/30 p-3 flex flex-col">
-        <SessionSwitcher onNewSession={resetAll} />
-        <div className="flex items-center gap-2 px-1.5 mb-3 mt-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
+        <div className="flex items-center gap-2 px-1.5 mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">
           <Sparkles size={15} className="text-emerald-500" /> {vibeMode === 'edit' ? '一句话改插件' : '一句话造插件'}
         </div>
         <ol className="space-y-1">
@@ -1393,15 +1392,6 @@ export function VibePanel({
           )}
         </div>
 
-        {/* 全局对话面板：贯穿所有阶段，就绪后可直接对话修改代码 */}
-        {(stage >= 3 || (createdPath && generated)) && (
-          <ChatPanel
-            onSend={runFollowup}
-            disabled={building || expanding || repairing || rollingBack || confRepairing}
-            busy={iterating}
-          />
-        )}
-
         {/* 底部操作条 */}
         <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 dark:border-slate-800 shrink-0">
           <button className="btn-ghost" onClick={() => setStage((s) => Math.max(0, s - 1) as Stage)} disabled={stage === 0 || busy}>
@@ -1460,6 +1450,21 @@ export function VibePanel({
           )}
         </div>
       </div>
+
+      {/* 右：会话列表 + 全局对话 */}
+      <aside className="w-64 shrink-0 border-l border-slate-200 dark:border-slate-800 flex flex-col bg-white/40 dark:bg-slate-900/30">
+        <div className="p-3 border-b border-slate-200 dark:border-slate-700">
+          <SessionSwitcher onNewSession={resetAll} />
+        </div>
+        <div className="flex-1 min-h-0" />
+        {(stage >= 3 || (createdPath && generated)) && (
+          <ChatPanel
+            onSend={runFollowup}
+            disabled={building || expanding || repairing || rollingBack || confRepairing}
+            busy={iterating}
+          />
+        )}
+      </aside>
     </div>
   )
 }
