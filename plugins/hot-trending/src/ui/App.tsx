@@ -5,7 +5,7 @@ import type { HotItem, HotListResponse } from './types'
 import { CategoryTabs } from './components/CategoryTabs'
 import { PlatformTabs } from './components/PlatformTabs'
 import { HotList } from './components/HotList'
-import { ReadingView } from './components/ReadingView'
+import { WebviewReader } from './components/WebviewReader'
 import { StatusBar } from './components/StatusBar'
 
 interface AppState {
@@ -95,6 +95,19 @@ export default function App() {
     }
   }, [host])
 
+  const openInWebview = useCallback((item: HotItem) => {
+    if (!item.url) return
+    dispatch({ type: 'SET_READING', item })
+  }, [])
+
+  const closeWebview = useCallback(() => {
+    dispatch({ type: 'SET_READING', item: null })
+  }, [])
+
+  const openExternal = useCallback((url: string) => {
+    shell.openExternal(url)
+  }, [shell])
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const initialTheme = (params.get('theme') as 'light' | 'dark') || 'light'
@@ -110,7 +123,6 @@ export default function App() {
     }
   }, [currentPlatform?.id, fetchData])
 
-  // Setup subInput for attached mode
   useEffect(() => {
     const setupSubInput = async () => {
       try {
@@ -139,36 +151,21 @@ export default function App() {
     return () => {
       subInputDisposers.current.forEach((d) => d())
       subInputDisposers.current = []
+      subInput.remove?.()
     }
   }, [])
 
   const handleKeyAction = useCallback((key: string, ctrl?: boolean, shift?: boolean) => {
-    dispatch((prevAction) => prevAction) // no-op to access latest state
+    dispatch((prevAction) => prevAction)
   }, [])
 
-  // Global keyboard handler for detached mode and extra shortcuts
   useEffect(() => {
+    if (state.readingItem) return
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const { key, ctrlKey, metaKey, shiftKey } = e
       const mod = ctrlKey || metaKey
 
-      if (state.readingItem) {
-        if (key === 'Escape' || key === 'Enter') {
-          e.preventDefault()
-          dispatch({ type: 'SET_READING', item: null })
-          return
-        }
-        if (mod && key.toLowerCase() === 'o') {
-          e.preventDefault()
-          if (state.readingItem.url) {
-            shell.openExternal(state.readingItem.url)
-          }
-          return
-        }
-        return
-      }
-
-      // Tab / ← → : switch category
       if (!mod && (key === 'Tab' || key === 'ArrowLeft' || key === 'ArrowRight')) {
         e.preventDefault()
         const dir = (key === 'Tab' && shiftKey) || key === 'ArrowLeft' ? -1 : 1
@@ -176,7 +173,6 @@ export default function App() {
         return
       }
 
-      // Ctrl+Tab / Ctrl+← → : switch platform
       if (mod && (key === 'Tab' || key === 'ArrowLeft' || key === 'ArrowRight')) {
         e.preventDefault()
         const platforms = CATEGORIES[state.categoryIndex].platforms
@@ -185,7 +181,6 @@ export default function App() {
         return
       }
 
-      // ↑↓ : select item
       if (key === 'ArrowUp') {
         e.preventDefault()
         dispatch({ type: 'SET_SELECTED', index: Math.max(0, state.selectedIndex - 1) })
@@ -197,23 +192,21 @@ export default function App() {
         return
       }
 
-      // Enter: open detail
       if (key === 'Enter') {
         e.preventDefault()
         if (filteredItems[state.selectedIndex]) {
-          dispatch({ type: 'SET_READING', item: filteredItems[state.selectedIndex] })
+          openInWebview(filteredItems[state.selectedIndex])
         }
         return
       }
 
-      // Escape: close plugin
       if (key === 'Escape') {
         e.preventDefault()
+        subInput.remove?.()
         window.mulby?.plugin?.outPlugin?.()
         return
       }
 
-      // Ctrl+R: refresh
       if (mod && key.toLowerCase() === 'r') {
         e.preventDefault()
         if (currentPlatform) {
@@ -222,9 +215,9 @@ export default function App() {
         return
       }
 
-      // Ctrl+W: close
       if (mod && key.toLowerCase() === 'w') {
         e.preventDefault()
+        subInput.remove?.()
         window.mulby?.window?.close?.()
         return
       }
@@ -232,9 +225,8 @@ export default function App() {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [state.categoryIndex, state.platformIndex, state.selectedIndex, state.readingItem, filteredItems, currentPlatform, fetchData, host, shell])
+  }, [state.categoryIndex, state.platformIndex, state.selectedIndex, state.readingItem, filteredItems, currentPlatform, fetchData, host, openInWebview])
 
-  // Auto-scroll selected item into view
   useEffect(() => {
     const el = listRef.current?.querySelector(`[data-index="${state.selectedIndex}"]`)
     el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
@@ -249,15 +241,7 @@ export default function App() {
   }
 
   const handleItemClick = (item: HotItem) => {
-    dispatch({ type: 'SET_READING', item })
-  }
-
-  const handleCloseReading = () => {
-    dispatch({ type: 'SET_READING', item: null })
-  }
-
-  const handleOpenBrowser = (url: string) => {
-    shell.openExternal(url)
+    openInWebview(item)
   }
 
   const handleRefresh = () => {
@@ -268,11 +252,11 @@ export default function App() {
 
   if (state.readingItem) {
     return (
-      <ReadingView
+      <WebviewReader
         item={state.readingItem}
         platformName={currentPlatform?.name || ''}
-        onClose={handleCloseReading}
-        onOpenBrowser={handleOpenBrowser}
+        onClose={closeWebview}
+        onOpenExternal={openExternal}
       />
     )
   }

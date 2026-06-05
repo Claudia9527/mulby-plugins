@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { HotItem } from '../types'
 
 interface Props {
@@ -25,14 +26,26 @@ function getRankClass(rank: number): string {
 }
 
 export function HotItemRow({ item, rank, selected, dataIndex, onMouseEnter, onClick }: Props) {
+  const [imgError, setImgError] = useState(false)
+
   return (
     <div
-      className={`hot-item ${selected ? 'selected' : ''}`}
+      className={`hot-item ${selected ? 'selected' : ''} ${item.cover && !imgError ? 'has-cover' : ''}`}
       data-index={dataIndex}
       onMouseEnter={onMouseEnter}
       onClick={onClick}
     >
       <span className={`hot-rank ${getRankClass(rank)}`}>{rank}</span>
+      {item.cover && !imgError && (
+        <div className="hot-cover">
+          <img
+            src={item.cover}
+            alt=""
+            loading="lazy"
+            onError={() => setImgError(true)}
+          />
+        </div>
+      )}
       <div className="hot-content">
         <span className="hot-title">{item.title}</span>
         {item.desc && <span className="hot-desc">{item.desc}</span>}

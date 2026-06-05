@@ -10,17 +10,20 @@ export const CATEGORIES: Category[] = [
       { id: 'baidu', name: '百度', icon: 'search' },
       { id: 'douyin', name: '抖音', icon: 'music' },
       { id: 'toutiao', name: '头条', icon: 'newspaper' },
+      { id: 'quark', name: '夸克', icon: 'zap' },
     ],
   },
   {
-    id: 'community',
-    name: '社区',
+    id: 'social',
+    name: '社交',
     icon: 'messages-square',
     platforms: [
+      { id: 'xiaohongshu', name: '小红书', icon: 'book-open' },
       { id: 'zhihu', name: '知乎', icon: 'lightbulb' },
-      { id: 'v2ex', name: 'V2EX', icon: 'monitor' },
+      { id: 'zhihu-daily', name: '知乎日报', icon: 'lightbulb' },
+      { id: 'baidutieba', name: '贴吧', icon: 'clipboard-list' },
       { id: 'hupu', name: '虎扑', icon: 'trophy' },
-      { id: 'tieba', name: '贴吧', icon: 'clipboard-list' },
+      { id: 'kuaishou', name: '快手', icon: 'bolt' },
     ],
   },
   {
@@ -29,19 +32,25 @@ export const CATEGORIES: Category[] = [
     icon: 'zap',
     platforms: [
       { id: '36kr', name: '36氪', icon: 'rocket' },
-      { id: 'sspai', name: '少数派', icon: 'pen-tool' },
-      { id: 'ithome', name: 'IT之家', icon: 'laptop' },
       { id: 'juejin', name: '掘金', icon: 'pickaxe' },
+      { id: 'github-trending', name: 'GitHub', icon: 'globe' },
+      { id: 'hello-github', name: 'HelloGitHub', icon: 'globe' },
+      { id: 'csdn', name: 'CSDN', icon: 'laptop' },
+      { id: 'ithome', name: 'IT之家', icon: 'laptop' },
+      { id: 'huxiu', name: '虎嗅', icon: 'megaphone' },
+      { id: 'ifanr', name: '爱范儿', icon: 'megaphone' },
+      { id: 'woshipm', name: '产品经理', icon: 'pen-tool' },
     ],
   },
   {
     id: 'video',
-    name: '视频',
+    name: '影音',
     icon: 'clapperboard',
     platforms: [
       { id: 'bilibili', name: 'B站', icon: 'tv' },
-      { id: 'kuaishou', name: '快手', icon: 'bolt' },
-      { id: 'acfun', name: 'AcFun', icon: 'play-circle' },
+      { id: 'douban-movic', name: '豆瓣电影', icon: 'drama' },
+      { id: 'netease-music', name: '网易云音乐', icon: 'music' },
+      { id: 'lol', name: '英雄联盟', icon: 'trophy' },
     ],
   },
   {
@@ -49,10 +58,10 @@ export const CATEGORIES: Category[] = [
     name: '资讯',
     icon: 'megaphone',
     platforms: [
-      { id: 'thepaper', name: '澎湃', icon: 'waves' },
-      { id: 'qq-news', name: '腾讯', icon: 'bird' },
-      { id: 'netease-news', name: '网易', icon: 'mail' },
-      { id: 'sina-news', name: '新浪', icon: 'globe' },
+      { id: 'qq', name: '腾讯新闻', icon: 'bird' },
+      { id: 'netease', name: '网易新闻', icon: 'mail' },
+      { id: 'thepaper', name: '澎湃新闻', icon: 'waves' },
+      { id: 'dongchedi', name: '懂车帝', icon: 'zap' },
     ],
   },
   {
@@ -61,14 +70,13 @@ export const CATEGORIES: Category[] = [
     icon: 'rainbow',
     platforms: [
       { id: 'weread', name: '微信读书', icon: 'book-open' },
-      { id: 'douban-group', name: '豆瓣', icon: 'drama' },
-      { id: 'coolapk', name: '酷安', icon: 'apple' },
+      { id: 'history-today', name: '历史今天', icon: 'globe' },
     ],
   },
 ]
 
 export const DEFAULT_SETTINGS = {
-  apiBase: 'https://api-hot.imsyy.top',
+  apiBase: 'https://hot.baiwumm.com/api',
   autoRefreshInterval: 0,
   itemsPerPage: 50,
   defaultOpenMode: 'internal' as const,

@@ -10,7 +10,8 @@
   "ui": "ui/index.html",
   "icon": "icon.png",
   "permissions": {
-    "notification": true
+    "notification": true,
+    "webview": true
   },
   "window": {
     "width": 800,
