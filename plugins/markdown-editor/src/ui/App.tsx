@@ -20,11 +20,14 @@ import {
   Link2,
   List,
   Quote,
+  Redo2,
   Save,
   ScanText,
-  SeparatorHorizontal
+  SeparatorHorizontal,
+  Undo2
 } from 'lucide-react'
 import { useMulby } from './hooks/useMulby'
+import { useDraftStorage } from './hooks/useDraftStorage'
 import {
   createExportDocument,
   exportDocxFile,
@@ -58,11 +61,6 @@ interface PluginInitData {
   route?: string
 }
 
-interface DraftPayload {
-  content: string
-  updatedAt: number
-}
-
 interface OutlineEntry {
   id: string
   text: string
@@ -80,20 +78,6 @@ interface ToolbarButtonItem {
 }
 
 type SpellcheckSurface = HTMLElement & { spellcheck?: boolean }
-
-function normalizeDraft(value: unknown): DraftPayload | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
-  const content = 'content' in value && typeof value.content === 'string' ? value.content : null
-  const updatedAt = 'updatedAt' in value && typeof value.updatedAt === 'number' ? value.updatedAt : 0
-  if (content === null) {
-    return null
-  }
-
-  return { content, updatedAt }
-}
 
 function basename(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path
@@ -307,6 +291,7 @@ export default function App() {
   const lastPersistedRef = useRef('')
   const hasInitPayloadRef = useRef(false)
   const { clipboard, dialog, filesystem, notification, storage } = useMulby(PLUGIN_ID)
+  const draftStorage = useDraftStorage(storage, STORAGE_DRAFT_KEY)
 
   contentRef.current = content
   modeRef.current = editorMode
@@ -349,8 +334,8 @@ export default function App() {
 
     async function loadDraft() {
       try {
-        const [draftValue, collapsedValue] = await Promise.all([
-          storage.get(STORAGE_DRAFT_KEY),
+        const [draft, collapsedValue] = await Promise.all([
+          draftStorage.loadDraft(),
           storage.get(STORAGE_CHROME_KEY)
         ])
 
@@ -358,7 +343,6 @@ export default function App() {
           setChromeCollapsed(collapsedValue === true)
         }
 
-        const draft = normalizeDraft(draftValue)
         if (!cancelled && !hasInitPayloadRef.current && draft) {
           lastPersistedRef.current = draft.content
           setContent(draft.content)
@@ -377,7 +361,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [storage])
+  }, [draftStorage, storage])
 
   useEffect(() => {
     const host = hostRef.current
@@ -553,6 +537,24 @@ export default function App() {
     editor.focus()
   }, [])
 
+  const handleUndo = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+    editor.exec('undo')
+    editor.focus()
+  }, [])
+
+  const handleRedo = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+    editor.exec('redo')
+    editor.focus()
+  }, [])
+
   const toggleChrome = useCallback(() => {
     setChromeCollapsed((current) => {
       const next = !current
@@ -589,15 +591,10 @@ export default function App() {
   const persistDraft = useCallback(async (showToast: boolean) => {
     setSaving(true)
     try {
-      const now = Date.now()
       const current = editorRef.current?.getMarkdown() ?? contentRef.current
-      if (current.trim()) {
-        await storage.set(STORAGE_DRAFT_KEY, { content: current, updatedAt: now })
-      } else {
-        await storage.remove(STORAGE_DRAFT_KEY)
-      }
+      const payload = await draftStorage.saveDraft(current)
       lastPersistedRef.current = current
-      setSavedAt(now)
+      setSavedAt(payload?.updatedAt ?? Date.now())
       setContent(current)
       if (showToast) {
         notification.show(current.trim() ? '草稿已保存' : '空草稿已清除', 'success')
@@ -609,7 +606,7 @@ export default function App() {
       setSaving(false)
       focusEditor()
     }
-  }, [focusEditor, notification, storage])
+  }, [draftStorage, focusEditor, notification])
 
   useEffect(() => {
     if (!hydrated || !isDirty) {
@@ -627,9 +624,38 @@ export default function App() {
 
   useEffect(() => {
     const handleKeydown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+      if (!(event.metaKey || event.ctrlKey)) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      if (key === 's') {
         event.preventDefault()
         void persistDraft(true)
+        return
+      }
+
+      // Toast UI handles undo/redo natively when its editing surface is focused;
+      // only intercept when focus is elsewhere (toolbar, outline, dialogs).
+      const host = hostRef.current
+      const focusInsideEditor = host?.contains(document.activeElement)
+      if (focusInsideEditor) {
+        return
+      }
+
+      if (key === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) {
+          handleRedo()
+        } else {
+          handleUndo()
+        }
+        return
+      }
+
+      if (key === 'y') {
+        event.preventDefault()
+        handleRedo()
       }
     }
 
@@ -637,7 +663,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeydown)
     }
-  }, [persistDraft])
+  }, [handleRedo, handleUndo, persistDraft])
 
   const handleOpenFile = useCallback(async () => {
     try {
@@ -914,6 +940,20 @@ export default function App() {
   ]
 
   const toolbarGroups: ToolbarButtonItem[][] = [
+    [
+      {
+        key: 'undo',
+        title: '撤销 (Ctrl/Cmd+Z)',
+        icon: Undo2,
+        onClick: handleUndo
+      },
+      {
+        key: 'redo',
+        title: '重做 (Ctrl/Cmd+Shift+Z)',
+        icon: Redo2,
+        onClick: handleRedo
+      }
+    ],
     [
       {
         key: 'open',
