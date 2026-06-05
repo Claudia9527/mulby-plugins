@@ -16,11 +16,17 @@
 - **四态覆盖**：`loading`（骨架 + spinner）、`error`（全局错误条 + 行内错误详情）、`empty`（创建/导入/添加引导）、`success`（toast + 状态徽标转绿）。
 
 ### Vibe Coding 面板
-按 `docs/superpowers/specs/2026-06-02-vibe-coding-workflow.md` 的 **8 阶段分步向导**逐步推进，每个阶段有 Gate 校验，未达成不可跳跃：
+**4 阶段分步向导**，可在已抵达的步骤间自由跳转：
 
-0. 需求澄清 → 1. 模板选择 → 2. 脚手架 → 3. 契约锁定 → 4. 最小闭环 → 5. 增量完善 → 6. 图标与 README → 7. 验证与交付
+0. 描述（一句话需求 / 选插件改造）→ 1. 契约（结构化 manifest，可编辑）→ 2. 生成（AI agent 自主写码）→ 3. 交付（构建·载入·验证·迭代）
 
-向导直接调用宿主：`createPlugin`（阶段 2）/ `validatePlugin`（阶段 3-4）/ `buildPlugin`（阶段 4、7）/ `packPlugin`（阶段 7）/ `addPluginProject`。
+**「能编译」≠「能跑」——两道真实验证门禁：**
+- **契约一致性校验（静态、自动）**：后端 `check_conformance` 比对 manifest 与真实文件/源码（UI 形态是否自洽、声明的功能码是否有处理分支、`manifest.tools` 是否都 `register()`、`preload` 路径是否存在…）。AI 在生成结束前必须自检并据 error 修复；交付页也会展示问题并提供「AI 修复一致性问题」。这把 `develop-mulby-plugin` 技能 Handoff Checklist 的关键项变成了可机械执行的门禁。
+- **运行验证（动态、手动）**：「运行验证」按钮用契约里的示例输入（regex/over 的 `sample`、或关键词的空输入）真实调用 `plugin.run` 跑一遍每个功能，验证「确实能执行」而非仅「能编译载入」。有副作用（可能写剪贴板/弹通知/开窗口），故由用户手动触发。
+
+**知识单一真相源**：生成阶段优先挂载宿主维护的 `develop-mulby-plugin` 技能（`ai.call({ skills })`），工具仍由本 harness 提供；探测不到则优雅回退。避免把技能知识冻结成插件内的副本而逐渐漂移。
+
+向导直接调用宿主：`createPlugin`（阶段 2）/ `validatePlugin` · `buildPlugin` · `check_conformance` · `plugin.run`（阶段 3）/ `packPlugin` / `addPluginProject`。
 
 ---
 

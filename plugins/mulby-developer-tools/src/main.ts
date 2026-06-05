@@ -443,6 +443,117 @@ export const rpc = {
   },
 
   /**
+   * 契约一致性静态校验：把 develop-mulby-plugin 技能 Handoff Checklist 里
+   * 「manifest 必须与真实文件/代码对得上」那一类检查变成可机械执行的门禁，
+   * 取代以往只靠 prompt 散文叮嘱 + 人工核对。纯只读，可在构建前后反复调用。
+   *
+   * 返回 issues（error 会阻断「就绪」判定，warn/info 仅提示）。AI 在生成结束前应
+   * 调用本工具并据 error 自行修复；交付页也会自动展示并提供「AI 修复一致性问题」。
+   */
+  check_conformance(input: { root?: string }) {
+    const root = resolve(String(input?.root || sessionRoot || '').trim())
+    type Issue = { level: 'error' | 'warn' | 'info'; code: string; message: string; hint?: string }
+    const issues: Issue[] = []
+    if (!root || !existsSync(root)) {
+      return { ok: false, ran: false, issues: [{ level: 'error', code: 'no-root', message: '目标目录不存在' }] as Issue[] }
+    }
+    const mfPath = join(root, 'manifest.json')
+    if (!existsSync(mfPath)) {
+      return { ok: false, ran: true, issues: [{ level: 'error', code: 'no-manifest', message: '缺少 manifest.json' }] as Issue[] }
+    }
+    let mf: any
+    try {
+      mf = JSON.parse(readFileSync(mfPath, 'utf-8'))
+    } catch {
+      return { ok: false, ran: true, issues: [{ level: 'error', code: 'manifest-parse', message: 'manifest.json 无法解析（JSON 语法错误）' }] as Issue[] }
+    }
+
+    // 收集源码文本（src/** 与根级脚本），用于「功能码被引用 / 工具已注册」的启发式检查
+    const srcFiles: string[] = []
+    const srcDir = join(root, 'src')
+    if (existsSync(srcDir)) walk(srcDir, root, srcFiles)
+    let combined = ''
+    for (const rel of srcFiles) {
+      if (!/\.(ts|tsx|js|jsx|mjs|cjs|html)$/.test(rel)) continue
+      try { combined += '\n' + readFileSync(join(root, rel), 'utf-8') } catch { /* ignore */ }
+    }
+    const has = (s: string) => combined.includes(s)
+
+    const features: any[] = Array.isArray(mf.features) ? mf.features : []
+    if (features.length === 0) {
+      issues.push({ level: 'error', code: 'no-features', message: 'manifest.features 为空，插件没有任何可触发的功能' })
+    }
+    features.forEach((f, i) => {
+      if (!f || !String(f.code || '').trim()) {
+        issues.push({ level: 'error', code: 'feature-no-code', message: `features[${i}] 缺少 code` })
+      }
+    })
+
+    // —— UI 形态一致性：声明 ui 入口 ⟺ 有 ui/detached 功能 ⟺ 有界面源码 ——
+    const declaresUi = typeof mf.ui === 'string' && mf.ui.trim().length > 0
+    const hasUiFeature = features.some((f) => f && (f.mode === 'ui' || f.mode === 'detached'))
+    const uiSrcExists = srcFiles.some((r) => r.startsWith('src/ui/') && /\.(tsx|jsx|html)$/.test(r))
+    if (declaresUi && !uiSrcExists) {
+      issues.push({ level: 'error', code: 'ui-declared-no-source', message: 'manifest 声明了 ui 入口，但 src/ui 下没有界面源码', hint: '要么补齐 src/ui 入口与组件，要么从 manifest 去掉 ui（无界面插件）' })
+    }
+    if (!declaresUi && hasUiFeature) {
+      issues.push({ level: 'error', code: 'ui-feature-no-entry', message: '存在 ui/detached 功能，但 manifest 未声明 ui 入口，窗口将无法打开', hint: '给 manifest 加 ui 入口并实现界面，或把该功能改为 silent' })
+    }
+    if (declaresUi && !hasUiFeature) {
+      issues.push({ level: 'warn', code: 'ui-entry-no-feature', message: 'manifest 声明了 ui 入口，但没有任何 ui/detached 功能会用到它' })
+    }
+    if (!declaresUi && uiSrcExists) {
+      issues.push({ level: 'info', code: 'ui-source-unused', message: 'src/ui 存在界面源码，但 manifest 未声明 ui 入口（可能是多余的脚手架残留）' })
+    }
+
+    // —— 每个 feature.code 应在源码中被处理（多功能时才查，单功能常不分支，避免误报）——
+    if (features.length > 1) {
+      for (const f of features) {
+        const code = String(f?.code || '').trim()
+        if (code && !has(code)) {
+          issues.push({ level: 'warn', code: 'feature-unhandled', message: `功能「${code}」在源码中未被引用，可能没有对应的处理分支`, hint: '后端在 run(context) 中用 context.featureCode 区分，前端按功能码路由/渲染' })
+        }
+      }
+    }
+
+    // —— manifest.tools 必须在 host-worker 内 register ——
+    const tools: any[] = Array.isArray(mf.tools) ? mf.tools : []
+    if (tools.length) {
+      const hasRegisterCall = /\.tools\.register\s*\(/.test(combined)
+      if (!hasRegisterCall) {
+        issues.push({ level: 'error', code: 'tools-not-registered', message: 'manifest.tools 已声明，但源码中找不到任何 tools.register(...) 调用', hint: '在 onLoad 里用 mulby.tools.register(name, handler) / context.api.tools.register 注册每个工具' })
+      } else {
+        for (const t of tools) {
+          const name = String(t?.name || '').trim()
+          if (name && !has(name)) {
+            issues.push({ level: 'error', code: 'tool-handler-missing', message: `声明的工具「${name}」未在源码中注册 handler` })
+          }
+        }
+      }
+    }
+
+    // —— preload 路径必须存在 ——
+    if (typeof mf.preload === 'string' && mf.preload.trim()) {
+      if (!existsSync(join(root, mf.preload))) {
+        issues.push({ level: 'error', code: 'preload-missing', message: `manifest.preload 指向的文件不存在：${mf.preload}` })
+      }
+    }
+
+    // —— 后端源码与构建产物（产物缺失只提示，因为可能尚未构建）——
+    if (!srcFiles.includes('src/main.ts') && !has('export') ) {
+      issues.push({ level: 'warn', code: 'no-backend-src', message: '未找到后端源码 src/main.ts' })
+    }
+    if (typeof mf.main === 'string' && mf.main.trim() && !existsSync(join(root, mf.main))) {
+      issues.push({ level: 'info', code: 'not-built', message: `构建产物尚未生成：${mf.main}（构建后出现）` })
+    }
+
+    const ok = !issues.some((i) => i.level === 'error')
+    const errors = issues.filter((i) => i.level === 'error').length
+    const warns = issues.filter((i) => i.level === 'warn').length
+    return { ok, ran: true, issues, summary: ok ? (warns ? `通过（${warns} 处提示）` : '通过') : `${errors} 处需修复` }
+  },
+
+  /**
    * 列出本次会话相对开始时的改动（新增/修改），供交付页 diff 展示。
    * @param input.root 目标根目录（一般是 createdPath）
    */

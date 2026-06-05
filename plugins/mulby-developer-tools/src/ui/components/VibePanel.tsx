@@ -45,6 +45,31 @@ export interface VibeChange {
   truncated?: boolean
 }
 
+/** 契约一致性校验的单条问题（来自后端 check_conformance） */
+export interface ConformanceIssue {
+  level: 'error' | 'warn' | 'info'
+  code: string
+  message: string
+  hint?: string
+}
+export interface ConformanceResult {
+  ok: boolean
+  ran: boolean
+  issues: ConformanceIssue[]
+  summary?: string
+}
+
+/** 用示例输入真实跑一次某功能的结果（运行验证 smoke） */
+export interface SmokeResult {
+  code: string
+  label: string
+  input: string
+  status: 'pass' | 'fail' | 'skipped'
+  hasUI?: boolean
+  error?: string
+  note?: string
+}
+
 interface Props {
   dev: UseDeveloperResult
   addLog: (level: LogLevel, text: string) => void
@@ -155,6 +180,14 @@ const VIBE_TOOLS = [
       description: '查询 Mulby 宿主 API 权威文档。不传参→返回全部命名空间索引（可用 query 过滤）；传 namespace（如 "clipboard"/"notification"/"ai"）→返回该 API 的完整签名与示例。使用任何 window.mulby.* 能力前，务必先用它确认 API 真实存在与用法，不要凭记忆臆造。',
       parameters: { type: 'object', properties: { namespace: { type: 'string' }, query: { type: 'string' } }, additionalProperties: false }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_conformance',
+      description: '静态校验 manifest.json 与真实文件/源码是否一致（UI 形态、功能码处理分支、工具注册、preload 路径等）。完成实现、停止之前必须调用一次，并据返回的 error 级问题自行修复，直到 ok:true。这是「插件能正确装载运行」的硬门禁，不要跳过。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false }
+    }
   }
 ] as const
 
@@ -264,6 +297,13 @@ export function VibePanel({
   const [rollingBack, setRollingBack] = useState(false)
   const [coreVerified, setCoreVerified] = useState(false)
 
+  // 契约一致性（构建后自动静态校验）+ 一致性问题的 AI 修复
+  const [conformance, setConformance] = useState<ConformanceResult | null>(null)
+  const [confRepairing, setConfRepairing] = useState(false)
+  // 运行验证 smoke（用示例输入真实跑一次；有副作用，手动触发）
+  const [smoke, setSmoke] = useState<SmokeResult[]>([])
+  const [smoking, setSmoking] = useState(false)
+
   // 交付后对话式继续修改：迭代历史（用户每次的反馈/需求）
   const [iterations, setIterations] = useState<string[]>([])
   const [iterating, setIterating] = useState(false)
@@ -359,6 +399,7 @@ export function VibePanel({
       else if (name === 'grep') pushEvent(currentPhaseRef.current, 'read', `搜索代码${typeof args.query === 'string' ? `：${String(args.query).slice(0, 40)}` : ''}`)
       else if (name === 'build_check') pushEvent(currentPhaseRef.current, 'build', '自检构建 npm run build…')
       else if (name === 'mulby_api') pushEvent(currentPhaseRef.current, 'read', `查 Mulby API${typeof args.namespace === 'string' && args.namespace ? `：${args.namespace}` : '（命名空间索引）'}`)
+      else if (name === 'check_conformance') pushEvent(currentPhaseRef.current, 'note', '校验契约一致性…')
       else pushEvent(currentPhaseRef.current, 'note', `调用工具 ${name}`)
     } else if (ct === 'tool-result' && chunk.tool_result) {
       const name = chunk.tool_result.name
@@ -374,6 +415,10 @@ export function VibePanel({
       } else if (name === 'mulby_api') {
         const detail = result?.found && result?.namespace ? `已读 ${result.namespace} 文档` : Array.isArray(result?.namespaces) ? `${result.namespaces.length} 个命名空间` : undefined
         pushEvent(currentPhaseRef.current, 'read', '查询 Mulby API 完成', detail)
+      } else if (name === 'check_conformance') {
+        const r = chunk.tool_result.result as { ok?: boolean; issues?: Array<{ level?: string }> } | undefined
+        const errs = Array.isArray(r?.issues) ? r!.issues!.filter((i) => i?.level === 'error').length : 0
+        pushEvent(currentPhaseRef.current, r?.ok ? 'note' : 'error', r?.ok ? '契约一致性校验通过' : `契约校验：${errs} 处需修复`)
       }
     } else if (ct === 'text' || typeof chunk?.content === 'string') {
       const piece = ct === 'text' && typeof chunk?.text === 'string'
@@ -505,7 +550,7 @@ export function VibePanel({
     '你是资深 Mulby 插件工程师，正在为一个已脚手架、且 manifest.json 已写好的插件目录实现代码。',
     `插件根目录：${root}`,
     '重要：manifest.json 已由工具按用户确认的「契约」写好，请勿修改 manifest.json。',
-    '工作方式（必须用工具自主完成，无需向用户提问）：先 list_dir 看结构、read_file 读 package.json 与现有 src/*（可用 grep 快速定位代码）；新文件用 write_file 写完整内容，小改动用 edit_file 增量替换；调用任何 window.mulby.* 能力前先用 mulby_api 查证签名与用法；关键改动写完后用 build_check 自检构建并据报错自行修复，直到通过；最后用一两句话总结并停止。',
+    '工作方式（必须用工具自主完成，无需向用户提问）：先 list_dir 看结构、read_file 读 package.json 与现有 src/*（可用 grep 快速定位代码）；新文件用 write_file 写完整内容，小改动用 edit_file 增量替换；调用任何 window.mulby.* 能力前先用 mulby_api 查证签名与用法；关键改动写完后用 build_check 自检构建并据报错自行修复，直到通过；停止前必须调用 check_conformance 校验 manifest 与代码是否一致，按其 error 级问题修复直到 ok:true；最后用一两句话总结并停止。',
     'Mulby 约定：后端 src/main.ts 导出 onLoad/onUnload/onEnable/onDisable/run；前端用全局 window.mulby.*（clipboard/notification/filesystem/http/ai/sharp 等），不要臆造不存在的 API；React 模板用现成 react/react-dom，入口 src/ui/main.tsx 挂载 App，UI 在 src/ui/App.tsx；保持 TypeScript 可编译；不要创建 node_modules/dist，不要改构建脚本与依赖清单。',
     '输入获取：silent/无界面功能在 run(context) 中通过 context.input（字符串）拿到用户输入文本——当功能由 regex/over 触发时，context.input 就是被匹配到的那段文本；用 context.featureCode 区分功能。处理结果可写回剪贴板（window.mulby.clipboard）或用系统通知（window.mulby.notification）反馈；有界面功能则在 UI 里读取/展示。',
     `契约：${contractSummary(c)}`,
@@ -522,7 +567,7 @@ export function VibePanel({
     '你是资深 Mulby 插件工程师，正在**修改一个已存在且可正常构建**的插件。务必最小化改动，不要破坏现有功能。',
     `插件根目录：${root}`,
     'manifest.json 已按用户确认的契约写好，请勿修改它——尤其严禁改动插件形态：不要给静默/无界面插件新增 ui、window 或把功能 mode 改成 detached/ui（即不要把无界面插件改造成有界面插件），除非用户在本次需求里明确要求"加界面/做个窗口"。若用户确实要加界面，必须同时创建 src/ui 入口与 UI 代码，使产物与 manifest 一致，不能只在 manifest 写 ui 却没有界面文件。',
-    '工作方式：先 list_dir 看结构、grep/read_file 通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；尽量用 edit_file 做最小增量改动（仅大改才整文件 write_file）；用到 window.mulby.* 前先 mulby_api 查证；改完用 build_check 自检并据报错修复。完成后用一两句话说明改动并停止。',
+    '工作方式：先 list_dir 看结构、grep/read_file 通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；尽量用 edit_file 做最小增量改动（仅大改才整文件 write_file）；用到 window.mulby.* 前先 mulby_api 查证；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码仍然一致（按 error 修复）。完成后用一两句话说明改动并停止。',
     '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_api 核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist。',
     `契约：${contractSummary(c)}`,
     phase === 'minimal'
@@ -560,6 +605,31 @@ export function VibePanel({
   // 运行时自省的 Mulby API 清单（挂载时取一次；window.mulby 是当前宿主真实对象，最准确）
   const apiSurfaceRef = useRef<string>('')
   useEffect(() => { apiSurfaceRef.current = collectMulbyApiSurface() }, [])
+
+  // 接入宿主维护的 develop-mulby-plugin 技能：把「插件开发知识」交还给单一真相源（技能），
+  // 而工具仍由本 harness 的 VIBE_TOOLS 提供（enableInternalTools:false + mcp:off，技能不会引入额外工具）。
+  // 探测不到（未安装/旧宿主）则优雅回退到 skills:off，行为不变。挂载时探测一次。
+  const devSkillIdRef = useRef<string>('')
+  useEffect(() => {
+    let mounted = true
+    void (async () => {
+      try {
+        const skills = ai()?.skills
+        const list: any[] = (await (skills?.listEnabled?.() ?? skills?.list?.())) || []
+        const hit = (Array.isArray(list) ? list : []).find((s) => {
+          const id = String(s?.id || '').toLowerCase()
+          const name = String(s?.name || '').toLowerCase()
+          return id.includes('develop-mulby-plugin') || name.includes('develop-mulby-plugin') || name.includes('mulby plugin')
+        })
+        if (mounted && hit?.id) devSkillIdRef.current = String(hit.id)
+      } catch { /* 优雅降级 */ }
+    })()
+    return () => { mounted = false }
+  }, [])
+
+  /** 生成阶段的技能选择：探测到宿主技能则手动挂载，否则关闭 */
+  const skillSelection = (): { mode: 'off' } | { mode: 'manual'; skillIds: string[] } =>
+    devSkillIdRef.current ? { mode: 'manual', skillIds: [devSkillIdRef.current] } : { mode: 'off' }
 
   // 把「当前宿主真实可用的 Mulby API 清单」追加到 system prompt，杜绝臆造不存在的 API
   const withApiSurface = (sys: string): string => {
@@ -612,7 +682,7 @@ export function VibePanel({
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
         tools: VIBE_TOOLS,
         maxToolSteps: 60,
-        mcp: { mode: 'off' }, skills: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
+        mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
       },
       onAgentChunk
     )
@@ -754,10 +824,33 @@ export function VibePanel({
     }
   }
 
+  // 构建后静态校验契约一致性（只读，自动跑）。返回结果同时存入状态供交付页展示。
+  const runConformance = async (): Promise<ConformanceResult | null> => {
+    if (!createdPath) return null
+    try {
+      const r = await dev.hostCall<ConformanceResult>('check_conformance', { root: createdPath })
+      const result: ConformanceResult = {
+        ok: !!r?.ok, ran: r?.ran !== false,
+        issues: Array.isArray(r?.issues) ? r!.issues : [], summary: r?.summary
+      }
+      setConformance(result)
+      const errs = result.issues.filter((i) => i.level === 'error')
+      if (errs.length) {
+        pushEvent('build', 'error', `契约校验未通过：${errs.length} 处需修复`, errs[0]?.message)
+        addLog('warn', `⚠ [Vibe] 契约一致性：${errs.length} 处需修复 — ${errs.map((e) => e.message).join('；').slice(0, 200)}`)
+      } else {
+        pushEvent('build', 'note', '契约一致性校验通过', result.summary)
+      }
+      return result
+    } catch { return null }
+  }
+
   const runBuildAndLoad = async () => {
     if (!createdPath) return
     setBuilding(true)
     setBuildLog('')
+    setSmoke([])          // 代码已变，旧的运行验证结果失效
+    setConformance(null)  // 重新校验
     try {
       pushEvent('build', 'build', '构建 npm run build…')
       addLog('info', `▶ [Vibe] 构建：${createdPath}`)
@@ -777,6 +870,7 @@ export function VibePanel({
       setLoadedId(res.id)
       pushEvent('load', 'load', res.success ? `已载入 Mulby：${res.id || ''}` : `自动载入失败：${res.error || ''}`)
       await onSyncWorkbench?.()
+      void runConformance()
       void autoCommit()
       void detectDevtools()
       void tryGenerateIcon()
@@ -919,7 +1013,7 @@ export function VibePanel({
   const followupSystemPrompt = (c: VibeContract, root: string) => [
     '你是资深 Mulby 插件工程师，正在根据用户的后续反馈，对一个**已存在且可正常构建**的插件做迭代修改。务必最小化改动，不要破坏现有功能。',
     `插件根目录：${root}`,
-    '工作方式：先 grep/list_dir/read_file 定位并通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；优先用 edit_file 做最小增量改动；用到 window.mulby.* 前先 mulby_api 查证；改完用 build_check 自检并据报错修复。完成后用一两句说明改动并停止。',
+    '工作方式：先 grep/list_dir/read_file 定位并通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；优先用 edit_file 做最小增量改动；用到 window.mulby.* 前先 mulby_api 查证；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码一致（按 error 修复）。完成后用一两句说明改动并停止。',
     '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_api 核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist；manifest.json 一般无需改动。',
     'esbuild 打包注意：不要新增无法被打包的原生依赖；图像处理用 window.mulby.sharp 等宿主能力。',
     `契约：${contractSummary(c)}`,
@@ -981,6 +1075,84 @@ export function VibePanel({
     } finally {
       setRepairing(false)
       void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // 让 AI 修复「契约一致性校验」报出的 error 级问题（优先改代码去满足 manifest），完成后重新构建载入
+  const conformancePrompt = (issues: ConformanceIssue[]) => [
+    '刚生成/修改的插件未通过「契约一致性校验」。请逐条修复下列问题，使 manifest.json 与真实文件/代码保持一致：',
+    ...issues.filter((i) => i.level === 'error').map((i, idx) => `${idx + 1}. [${i.code}] ${i.message}${i.hint ? `（建议：${i.hint}）` : ''}`),
+    '原则：manifest 是用户确认的契约，能不改就不改——优先让代码去满足 manifest（补齐缺失的 ui 入口与界面源码、未实现的功能分支、未注册的工具等）。',
+    '修复后用 build_check 自检，再用 check_conformance 确认 ok:true，然后用一句话说明并停止。'
+  ].join('\n')
+
+  const repairConformance = async () => {
+    const errs = (conformance?.issues || []).filter((i) => i.level === 'error')
+    if (!contract || !createdPath || confRepairing || !errs.length) return
+    setConfRepairing(true)
+    try {
+      pushEvent('repair', 'ai', 'AI 修复契约一致性问题…', `${errs.length} 处`)
+      addLog('info', `▶ [Vibe] AI 修复契约一致性问题（${errs.length} 处）`)
+      let sys = contract.isEdit ? editSystemPrompt(contract, createdPath, 'minimal') : createSystemPrompt(contract, createdPath, 'minimal')
+      sys = withApiSurface(sys)
+      await runAgent(sys, conformancePrompt(conformance!.issues), createdPath, 'repair')
+      if (abortedRef.current) return
+      pendingCommitMsgRef.current = '修复契约一致性'
+      await runBuildAndLoad()
+    } catch (e) {
+      if (!abortedRef.current) pushToast('error', e instanceof Error ? e.message : '修复失败')
+    } finally {
+      setConfRepairing(false)
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // 为某功能挑选一个可用于「运行验证」的示例输入
+  const pickSmokeInput = (f: VibeContract['features'][number]): { input: string; skip?: string } => {
+    const ts = f.triggers || []
+    const sampled = ts.find((t) => (t.type === 'regex' || t.type === 'over') && t.sample?.trim())
+    if (sampled?.sample) return { input: sampled.sample.trim() }
+    if (f.mode === 'ui' || f.mode === 'detached') return { input: '' } // 打开窗口即视为通过
+    const kw = ts.find((t) => t.type === 'keyword' && t.value?.trim())
+    if (kw) return { input: '' }
+    if (ts.some((t) => t.type === 'regex' || t.type === 'over')) {
+      return { input: '', skip: '该功能需特定格式输入，契约未提供 sample，跳过自动验证' }
+    }
+    return { input: '' }
+  }
+
+  // 运行验证（smoke）：用示例输入真实调用 plugin.run 跑一遍每个功能，验证「真的能执行」而不只是「能编译」。
+  // 有副作用（可能写剪贴板/弹通知/开窗口），所以由用户手动触发。
+  const runFeatureSmoke = async () => {
+    if (!contract || smoking) return
+    const p = pluginApi()
+    const pid = loadedId || contract.pluginId || contract.name
+    if (!p?.run || !pid) { pushToast('info', '当前环境无法自动运行验证，请用触发词手动打开'); return }
+    setSmoking(true)
+    try {
+      const results: SmokeResult[] = []
+      for (const f of contract.features) {
+        const label = f.explain || f.code
+        const { input, skip } = pickSmokeInput(f)
+        if (skip) { results.push({ code: f.code, label, input, status: 'skipped', note: skip }); continue }
+        pushEvent('debug', 'load', `运行验证 ${f.code}${input ? `（输入：${input.slice(0, 24)}）` : ''}…`)
+        try {
+          const r = await p.run(pid, f.code, input)
+          results.push({ code: f.code, label, input, status: r?.success ? 'pass' : 'fail', hasUI: r?.hasUI, error: r?.error })
+          pushEvent('debug', r?.success ? 'note' : 'error', r?.success ? `运行通过 ${f.code}` : `运行失败 ${f.code}`, r?.error)
+        } catch (e) {
+          results.push({ code: f.code, label, input, status: 'fail', error: e instanceof Error ? e.message : '运行异常' })
+          pushEvent('debug', 'error', `运行异常 ${f.code}`, e instanceof Error ? e.message : undefined)
+        }
+      }
+      setSmoke(results)
+      const passed = results.filter((r) => r.status === 'pass').length
+      const failed = results.filter((r) => r.status === 'fail').length
+      setCoreVerified(passed > 0 && failed === 0)
+      if (failed) { pushToast('error', `运行验证：${passed} 通过 / ${failed} 失败`); addLog('warn', `⚠ [Vibe] 运行验证：${failed} 个功能执行失败`) }
+      else { pushToast('success', `运行验证：${passed} 个功能均已执行`); addLog('success', `✔ [Vibe] 运行验证：${passed} 个功能均已执行`) }
+    } finally {
+      setSmoking(false)
     }
   }
 
@@ -1065,6 +1237,7 @@ export function VibePanel({
     setIconDone(false); setPacked(false); setDevtoolsOn(null); setOpened(false)
     setGenerating(false); setBuilding(false); setRepairing(false)
     setChanges([]); setRollingBack(false); setCoreVerified(false)
+    setConformance(null); setConfRepairing(false); setSmoke([]); setSmoking(false)
     setIterations([]); setIterating(false)
     setVersions([]); setRestoringHash(null); setVcsAvailable(true)
     pendingCommitMsgRef.current = ''
@@ -1072,7 +1245,7 @@ export function VibePanel({
   }
   const resetAll = () => { resetState(); setVibeMode('create'); setEditPath(''); setSentence('') }
 
-  const busy = planning || generating || expanding || building || repairing || iconBusy
+  const busy = planning || generating || expanding || building || repairing || iconBusy || confRepairing || smoking
   const canPlan = vibeMode === 'edit' ? (!!editPath.trim() && !!sentence.trim()) : (!!sentence.trim() && !!targetDir.trim())
 
   return (
@@ -1158,6 +1331,8 @@ export function VibePanel({
               events={events}
               changes={changes} rollingBack={rollingBack} onRollback={doRollback}
               coreVerified={coreVerified} onToggleCoreVerified={() => setCoreVerified((v) => !v)}
+              conformance={conformance} confRepairing={confRepairing} onRepairConformance={repairConformance}
+              smoke={smoke} smoking={smoking} onRunSmoke={runFeatureSmoke}
               iterations={iterations} iterating={iterating} onFollowup={runFollowup}
               versions={versions} vcsAvailable={vcsAvailable} restoringHash={restoringHash}
               onRefreshVersions={loadVersions} onVersionDiff={loadVersionDiff} onRestoreVersion={doRestoreVersion}
@@ -1428,6 +1603,7 @@ function DeliverStage({
   repairing, expanding, expanded, iconBusy, iconDone, packing, packed,
   devtoolsOn, devtoolsBusy, opened, events,
   changes, rollingBack, onRollback, coreVerified, onToggleCoreVerified,
+  conformance, confRepairing, onRepairConformance, smoke, smoking, onRunSmoke,
   iterations, iterating, onFollowup,
   versions, vcsAvailable, restoringHash, onRefreshVersions, onVersionDiff, onRestoreVersion,
   onRebuild, onRepair, onExpand, onPack, onOpenDir, onTryIt, onEnableDevtools, onOpenPlugin
@@ -1441,6 +1617,8 @@ function DeliverStage({
   events: TimelineEvent[]
   changes: VibeChange[]; rollingBack: boolean; onRollback: () => void
   coreVerified: boolean; onToggleCoreVerified: () => void
+  conformance: ConformanceResult | null; confRepairing: boolean; onRepairConformance: () => void
+  smoke: SmokeResult[]; smoking: boolean; onRunSmoke: () => void
   iterations: string[]; iterating: boolean; onFollowup: (text: string) => void
   versions: VcsCommit[]; vcsAvailable: boolean; restoringHash: string | null
   onRefreshVersions: () => void; onVersionDiff: (hash: string) => Promise<string>; onRestoreVersion: (hash: string) => void
@@ -1450,6 +1628,7 @@ function DeliverStage({
   const buildFailed = !building && !built && !!buildLog
   const isEdit = !!contract.isEdit
   const trigger = primaryTrigger(contract)
+  const confErrors = (conformance?.issues || []).filter((i) => i.level === 'error')
   return (
     <div className="w-full space-y-5">
       <div className="flex items-center gap-3">
@@ -1458,21 +1637,38 @@ function DeliverStage({
         </div>
         <div>
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-            {building ? '构建并载入中…' : loaded ? (isEdit ? '改造已生效 🎉' : '插件已就绪 🎉') : buildFailed ? '构建失败' : '构建与交付'}
+            {building ? '构建并载入中…'
+              : buildFailed ? '构建失败'
+              : loaded && confErrors.length ? '已载入，但契约校验未通过'
+              : loaded ? (isEdit ? '改造已生效 🎉' : '插件已就绪 🎉')
+              : '构建与交付'}
           </h2>
           <p className="text-[11px] text-slate-400 dark:text-slate-500 mono truncate">{createdPath}</p>
         </div>
       </div>
 
-      {/* 人工验收清单 */}
+      {/* 验收清单：构建/载入是「能编译能装载」，契约一致 + 运行验证才是「真的能跑」 */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-2.5">
         <div className="text-[12px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><ListChecks size={14} /> 验收清单</div>
         <StatusRow ok={built} busy={building} label="构建通过（npm run build）" />
         <StatusRow ok={loaded} busy={building} label={`载入 Mulby${loadedId ? `（${loadedId}）` : ''}`} />
+        <StatusRow
+          ok={!!conformance?.ok} busy={building || confRepairing}
+          label={`契约一致性${conformance ? (conformance.ok ? `（${conformance.summary || '通过'}）` : `（${confErrors.length} 处需修复）`) : ''}`}
+        />
         {contract.needIcon && <StatusRow ok={iconDone} busy={iconBusy} label="图标 icon.png（SVG → 512）" optional />}
         <StatusRow ok={opened} label={`触发验证：用「${trigger}」打开并确认 UI`} manual />
-        <StatusRow ok={coreVerified} label="核心任务：用真实输入验证主流程" manual onClick={onToggleCoreVerified} />
+        <StatusRow
+          ok={coreVerified} busy={smoking}
+          label={`运行验证：${smoke.length ? smokeSummary(smoke) : '用示例输入真实跑一遍主流程'}`}
+          manual onClick={onToggleCoreVerified}
+        />
       </div>
+
+      {/* 契约一致性问题：error 级会阻断「就绪」，可一键让 AI 修复 */}
+      {conformance && conformance.issues.length > 0 && (
+        <ConformanceCard conformance={conformance} confRepairing={confRepairing} onRepair={onRepairConformance} disabled={building || expanding || repairing || rollingBack} />
+      )}
 
       {/* 本次改动（安全网）：diff 预览 + 一键回滚 */}
       <ChangesCard changes={changes} rollingBack={rollingBack} onRollback={onRollback} defaultOpen={isEdit} disabled={building || expanding || repairing} />
@@ -1488,12 +1684,16 @@ function DeliverStage({
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="btn-primary" onClick={onOpenPlugin}><ExternalLink size={15} /> 打开插件</button>
+            <button className="btn-secondary" onClick={onRunSmoke} disabled={smoking} title="用契约里的示例输入真实调用每个功能一次，验证「能执行」而不只是「能编译」">
+              {smoking ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />} 运行验证
+            </button>
             <button className="btn-secondary" onClick={onTryIt}><Play size={15} /> 复制触发词</button>
             {!expanded && <button className="btn-secondary" onClick={onExpand} disabled={expanding}>{expanding ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />} 继续完善扩展</button>}
             <button className="btn-secondary" onClick={onOpenDir}><FolderOpen size={15} /> 打开目录</button>
             <button className="btn-secondary" onClick={onPack} disabled={packing}>{packing ? <Loader2 size={15} className="animate-spin" /> : <Package size={15} />} {packed ? '已打包' : '打包'}</button>
             <button className="btn-ghost" onClick={onRebuild} disabled={building}><Hammer size={15} /> 重新构建</button>
           </div>
+          {smoke.length > 0 && <SmokeList smoke={smoke} />}
         </div>
       )}
 
@@ -1567,6 +1767,87 @@ function StatusRow({ ok, busy, label, optional, manual, onClick }: { ok: boolean
     )
   }
   return <div className="flex items-center gap-2.5 text-[13px]">{content}</div>
+}
+
+function smokeSummary(smoke: SmokeResult[]): string {
+  const pass = smoke.filter((s) => s.status === 'pass').length
+  const fail = smoke.filter((s) => s.status === 'fail').length
+  const skip = smoke.filter((s) => s.status === 'skipped').length
+  return [pass ? `${pass} 通过` : '', fail ? `${fail} 失败` : '', skip ? `${skip} 跳过` : ''].filter(Boolean).join(' / ') || '无可验证功能'
+}
+
+const CONF_META: Record<ConformanceIssue['level'], { label: string; cls: string; icon: React.ReactNode }> = {
+  error: { label: '需修复', cls: 'text-rose-600 dark:text-rose-400', icon: <AlertTriangle size={12} className="text-rose-500" /> },
+  warn: { label: '提示', cls: 'text-amber-600 dark:text-amber-400', icon: <AlertTriangle size={12} className="text-amber-500" /> },
+  info: { label: '说明', cls: 'text-slate-500 dark:text-slate-400', icon: <Check size={12} className="text-slate-400" /> }
+}
+
+/** 契约一致性问题卡片：列出 error/warn/info，error 可一键让 AI 修复 */
+function ConformanceCard({ conformance, confRepairing, onRepair, disabled }: {
+  conformance: ConformanceResult; confRepairing: boolean; onRepair: () => void; disabled?: boolean
+}) {
+  const errors = conformance.issues.filter((i) => i.level === 'error')
+  const others = conformance.issues.filter((i) => i.level !== 'error')
+  const hasError = errors.length > 0
+  return (
+    <div className={`rounded-xl border p-4 space-y-3 ${hasError ? 'border-rose-500/30 bg-rose-500/5' : 'border-amber-500/25 bg-amber-500/5'}`}>
+      <div className="flex items-center gap-2 text-sm">
+        <ShieldCheck size={15} className={hasError ? 'text-rose-500' : 'text-amber-500'} />
+        <span className={hasError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-300'}>
+          {hasError ? `契约与代码有 ${errors.length} 处不一致，插件可能无法正确装载/运行` : '契约一致性提示'}
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {[...errors, ...others].map((i, idx) => {
+          const meta = CONF_META[i.level]
+          return (
+            <li key={idx} className="flex items-start gap-2 text-[12px]">
+              <span className="mt-0.5 shrink-0">{meta.icon}</span>
+              <span className="min-w-0">
+                <span className={meta.cls}>{meta.label}</span>
+                <span className="text-slate-600 dark:text-slate-300"> · {i.message}</span>
+                {i.hint && <span className="block text-[11px] text-slate-400 dark:text-slate-500">建议：{i.hint}</span>}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+      {hasError && (
+        <button className="btn-primary" onClick={onRepair} disabled={disabled || confRepairing}>
+          {confRepairing ? <Loader2 size={15} className="animate-spin" /> : <Wrench size={15} />} {confRepairing ? 'AI 修复中…' : 'AI 修复一致性问题'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+const SMOKE_META: Record<SmokeResult['status'], { label: string; cls: string; icon: React.ReactNode }> = {
+  pass: { label: '通过', cls: 'text-emerald-600 dark:text-emerald-400', icon: <Check size={12} className="text-emerald-500" /> },
+  fail: { label: '失败', cls: 'text-rose-600 dark:text-rose-400', icon: <AlertTriangle size={12} className="text-rose-500" /> },
+  skipped: { label: '跳过', cls: 'text-slate-500 dark:text-slate-400', icon: <ChevronRight size={12} className="text-slate-400" /> }
+}
+
+/** 运行验证结果列表：逐功能显示「用示例输入真实跑一次」的结果 */
+function SmokeList({ smoke }: { smoke: SmokeResult[] }) {
+  return (
+    <ul className="space-y-1 pt-1 border-t border-emerald-500/20">
+      {smoke.map((s) => {
+        const meta = SMOKE_META[s.status]
+        return (
+          <li key={s.code} className="flex items-start gap-2 text-[12px]">
+            <span className="mt-0.5 shrink-0">{meta.icon}</span>
+            <span className="min-w-0">
+              <span className={meta.cls}>{meta.label}</span>
+              <span className="text-slate-600 dark:text-slate-300"> · {s.label}</span>
+              <span className="text-slate-400 dark:text-slate-500 mono"> {s.code}</span>
+              {s.status === 'fail' && s.error && <span className="block text-[11px] text-rose-500/90">{s.error}</span>}
+              {s.status === 'skipped' && s.note && <span className="block text-[11px] text-slate-400 dark:text-slate-500">{s.note}</span>}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
+  )
 }
 
 const CHANGE_META: Record<VibeChange['status'], { label: string; cls: string }> = {
