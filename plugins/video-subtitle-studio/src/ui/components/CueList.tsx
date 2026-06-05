@@ -1,32 +1,43 @@
-import { Trash2 } from 'lucide-react'
-import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { Play, Trash2 } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { SubtitleCue } from '../lib/subtitles'
 
 interface CueListProps {
   cues: SubtitleCue[]
   onChange: (id: string, patch: Partial<SubtitleCue>) => void
   onDelete: (id: string) => void
+  activeCueId?: string | null
+  onSeek?: (startMs: number) => void
 }
 
 interface CueRowProps {
   cue: SubtitleCue
   index: number
+  active: boolean
   onChange: (id: string, patch: Partial<SubtitleCue>) => void
   onDelete: (id: string) => void
+  onSeek?: (startMs: number) => void
 }
 
 const ESTIMATED_ROW_HEIGHT = 232
 const GAP = 12
 const OVERSCAN = 6
 
-const CueRow = memo(function CueRow({ cue, index, onChange, onDelete }: CueRowProps) {
+const CueRow = memo(function CueRow({ cue, index, active, onChange, onDelete, onSeek }: CueRowProps) {
   return (
-    <article className="cue-card">
+    <article className={`cue-card transition ${active ? 'cue-card-active' : ''}`}>
       <div className="flex items-center justify-between gap-3">
         <span className="rounded-full bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-200">#{index + 1}</span>
-        <button className="icon-button" aria-label="删除字幕" onClick={() => onDelete(cue.id)}>
-          <Trash2 size={15} />
-        </button>
+        <div className="flex items-center gap-1">
+          {onSeek && (
+            <button className="icon-button hover:text-cyan-200" aria-label="跳转到此字幕" title="跳转播放" onClick={() => onSeek(cue.startMs)}>
+              <Play size={15} />
+            </button>
+          )}
+          <button className="icon-button" aria-label="删除字幕" onClick={() => onDelete(cue.id)}>
+            <Trash2 size={15} />
+          </button>
+        </div>
       </div>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
         <label className="field compact"><span>开始</span><input type="number" value={cue.startMs} onChange={(event) => onChange(cue.id, { startMs: Number(event.target.value) })} /></label>
@@ -38,7 +49,7 @@ const CueRow = memo(function CueRow({ cue, index, onChange, onDelete }: CueRowPr
   )
 })
 
-export function CueList({ cues, onChange, onDelete }: CueListProps) {
+export function CueList({ cues, onChange, onDelete, activeCueId, onSeek }: CueListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const heightsRef = useRef<Map<string, number>>(new Map())
   const [viewportHeight, setViewportHeight] = useState(620)
@@ -87,6 +98,22 @@ export function CueList({ cues, onChange, onDelete }: CueListProps) {
     }
   }, [])
 
+  const activeIndex = activeCueId ? cues.findIndex((cue) => cue.id === activeCueId) : -1
+
+  useEffect(() => {
+    if (activeIndex < 0) return
+    const element = scrollRef.current
+    if (!element) return
+    const top = offsets[activeIndex] ?? 0
+    const bottom = top + rowHeight(cues[activeIndex].id)
+    const viewTop = element.scrollTop
+    const viewBottom = viewTop + element.clientHeight
+    if (top < viewTop || bottom > viewBottom) {
+      element.scrollTo({ top: Math.max(0, top - 16), behavior: 'smooth' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex])
+
   const visible = cues.slice(startIndex, endIndex)
 
   return (
@@ -104,7 +131,7 @@ export function CueList({ cues, onChange, onDelete }: CueListProps) {
               ref={(node) => measureRow(cue.id, node)}
               style={{ position: 'absolute', top: offsets[index], left: 0, right: 0 }}
             >
-              <CueRow cue={cue} index={index} onChange={onChange} onDelete={onDelete} />
+              <CueRow cue={cue} index={index} active={cue.id === activeCueId} onChange={onChange} onDelete={onDelete} onSeek={onSeek} />
             </div>
           )
         })}

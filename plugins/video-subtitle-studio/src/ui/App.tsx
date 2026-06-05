@@ -1,13 +1,15 @@
-import { Download, FileVideo, FolderOpen, Languages, Loader2, Play, Save, Scissors, Settings2, Wand2, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Download, FileVideo, FolderOpen, Languages, Loader2, Play, Redo2, RefreshCw, Save, Scissors, Settings2, Undo2, Wand2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { normalizeOpenAiTranscription, normalizeVolcengineTranscription, buildOpenAiTranscriptionRequest } from './lib/asr'
 import { cleanupFiles, extractAudioChunks, getMediaDurationMs } from './lib/audio'
-import { mergeChunkResults } from './lib/chunking'
+import { mergeChunkResults, type AudioChunk } from './lib/chunking'
 import { exportJson, exportSrt, exportVtt, formatVttTime, type SubtitleCue } from './lib/subtitles'
 import { translateSubtitles } from './lib/translate'
 import { PROJECT_EXTENSION, parseProject, projectFileName, serializeProject } from './lib/project'
 import { useMulby } from './hooks/useMulby'
+import { useHistoryState } from './hooks/useHistoryState'
 import { CueList } from './components/CueList'
+import { VideoPreview, type VideoPreviewHandle } from './components/VideoPreview'
 
 type ProviderId = 'openai' | 'volcengine'
 type ExportFormat = 'srt' | 'vtt' | 'json' | 'bilingual-srt'
@@ -40,6 +42,25 @@ const VOLC_QUERY_URL = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/que
 const SETTINGS_KEY = 'video-subtitle-studio.settings.v1'
 const OPENAI_KEY = 'video-subtitle-studio.openai.api-key'
 const VOLCENGINE_KEY = 'video-subtitle-studio.volcengine.access-token'
+const DRAFT_KEY = 'video-subtitle-studio.draft.v1'
+const DRAFT_DEBOUNCE_MS = 1500
+
+interface DraftSnapshot {
+  videoPath: string
+  durationMs: number
+  cues: SubtitleCue[]
+  savedAt: string
+}
+
+type ChunkStatus = 'pending' | 'running' | 'done' | 'failed'
+
+interface ChunkJob {
+  chunk: AudioChunk
+  path: string
+  status: ChunkStatus
+  error?: string
+  cues?: SubtitleCue[]
+}
 
 const TARGET_LANGUAGE_PRESETS = [
   '中文',
@@ -292,13 +313,31 @@ export default function App() {
   const [settings, setSettings] = useState<StudioSettings>(DEFAULT_SETTINGS)
   const [openAiKey, setOpenAiKey] = useState('')
   const [volcengineKey, setVolcengineKey] = useState('')
-  const [cues, setCues] = useState<SubtitleCue[]>([])
+  const cueHistory = useHistoryState<SubtitleCue[]>([])
+  const cues = cueHistory.state
+  const setCues = cueHistory.set
   const [status, setStatus] = useState('等待导入视频')
   const [busy, setBusy] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [aiModels, setAiModels] = useState<Array<{ id: string; label?: string }>>([])
+  const [draft, setDraft] = useState<DraftSnapshot | null>(null)
+  const draftReadyRef = useRef(false)
+  const [chunkJobs, setChunkJobs] = useState<ChunkJob[]>([])
+  const [retryingIndex, setRetryingIndex] = useState<number | null>(null)
+  const chunkPathsRef = useRef<string[]>([])
+  const [currentTimeMs, setCurrentTimeMs] = useState(0)
+  const videoRef = useRef<VideoPreviewHandle | null>(null)
 
   const totalText = useMemo(() => cues.map((cue) => cue.text).join('\n'), [cues])
+  const failedChunks = useMemo(() => chunkJobs.filter((job) => job.status === 'failed'), [chunkJobs])
+  const activeCue = useMemo(
+    () => cues.find((cue) => currentTimeMs >= cue.startMs && currentTimeMs < cue.endMs),
+    [cues, currentTimeMs]
+  )
+
+  const seekToCue = useCallback((startMs: number) => {
+    videoRef.current?.seek(startMs, true)
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', new URLSearchParams(window.location.search).get('theme') === 'dark')
@@ -322,13 +361,52 @@ export default function App() {
         setAiModels([])
       }
       try {
+        const rawDraft = await storage?.get?.(DRAFT_KEY)
+        if (rawDraft && typeof rawDraft === 'object' && Array.isArray((rawDraft as DraftSnapshot).cues) && (rawDraft as DraftSnapshot).cues.length) {
+          setDraft(rawDraft as DraftSnapshot)
+        }
+      } catch {
+        // Draft restore is best-effort.
+      }
+      try {
         const pending = unwrapHostData<{ paths?: string[] }>(await host?.call?.('getPendingInit'))
         if (pending?.paths?.[0]) await loadVideo(pending.paths[0])
       } catch {
         // Host RPC is optional during early startup.
       }
+      draftReadyRef.current = true
     })()
   }, [])
+
+  const clearDraft = useCallback(() => {
+    try {
+      const result = storage?.remove?.(DRAFT_KEY)
+      if (result && typeof result.then === 'function') result.catch(() => undefined)
+    } catch {
+      // best-effort
+    }
+  }, [storage])
+
+  useEffect(() => {
+    if (!draftReadyRef.current) return
+    if (!cues.length) {
+      clearDraft()
+      return
+    }
+    const timer = setTimeout(() => {
+      const snapshot: DraftSnapshot = { videoPath, durationMs, cues, savedAt: new Date().toISOString() }
+      void storage?.set?.(DRAFT_KEY, snapshot)
+    }, DRAFT_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [cues, videoPath, durationMs, clearDraft])
+
+  useEffect(() => {
+    return () => {
+      const paths = chunkPathsRef.current
+      chunkPathsRef.current = []
+      if (paths.length) void cleanupFiles(filesystem, paths)
+    }
+  }, [filesystem])
 
   useEffect(() => {
     if (!showSettings) return
@@ -339,9 +417,23 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [showSettings])
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+      event.preventDefault()
+      if (event.shiftKey) cueHistory.redo()
+      else cueHistory.undo()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [cueHistory.undo, cueHistory.redo])
+
   async function loadVideo(path: string) {
     setVideoPath(path)
-    setCues([])
+    cueHistory.reset([])
     setStatus('读取视频时长')
     try {
       const nextDuration = await getMediaDurationMs(path)
@@ -378,48 +470,125 @@ export default function App() {
     })
   }
 
+  const transcribeOneChunk = useCallback(
+    (path: string, label: (text: string) => void) =>
+      settings.provider === 'openai'
+        ? transcribeOpenAi(filesystem, path, settings, openAiKey)
+        : transcribeVolcengine(filesystem, path, settings, volcengineKey, label),
+    [filesystem, settings, openAiKey, volcengineKey]
+  )
+
+  const applyJobsToCues = useCallback(
+    (jobs: ChunkJob[], commit: boolean) => {
+      const results = jobs
+        .filter((job) => job.status === 'done' && job.cues)
+        .map((job) => ({ chunk: job.chunk, cues: job.cues as SubtitleCue[] }))
+      const merged = mergeChunkResults(results).map((cue, index) => ({ ...cue, id: `cue-${index + 1}` }))
+      if (commit) cueHistory.reset(merged)
+      else setCues(merged, { commit: false })
+      return merged
+    },
+    [cueHistory, setCues]
+  )
+
+  async function cleanupChunkFiles() {
+    const paths = chunkPathsRef.current
+    chunkPathsRef.current = []
+    if (paths.length) await cleanupFiles(filesystem, paths)
+  }
+
   async function generateSubtitles() {
     if (!videoPath) {
       notification?.show?.('请先导入视频文件', 'warning')
       return
     }
 
-    const tempPaths: string[] = []
     try {
       setBusy(true)
-      setCues([])
+      cueHistory.reset([])
+      await cleanupChunkFiles()
+      setChunkJobs([])
       const actualDuration = durationMs || (await getMediaDurationMs(videoPath))
       setDurationMs(actualDuration)
       const chunks = await extractAudioChunks({ ffmpeg, filesystem, system }, videoPath, actualDuration, setStatus)
-      tempPaths.push(...chunks.map((chunk) => chunk.path))
+      chunkPathsRef.current = chunks.map((item) => item.path)
 
-      const results = []
+      let jobs: ChunkJob[] = chunks.map((item) => ({ chunk: item.chunk, path: item.path, status: 'pending' as ChunkStatus }))
+      setChunkJobs(jobs)
+
+      const total = chunks.length
       for (const item of chunks) {
-        setStatus(`识别音频分片 ${item.chunk.index + 1}/${chunks.length}`)
-        const chunkCues =
-          settings.provider === 'openai'
-            ? await transcribeOpenAi(filesystem, item.path, settings, openAiKey)
-            : await transcribeVolcengine(filesystem, item.path, settings, volcengineKey, (label) =>
-                setStatus(`识别音频分片 ${item.chunk.index + 1}/${chunks.length} · ${label}`)
-              )
-        results.push({ chunk: item.chunk, cues: chunkCues })
-
-        const partial = mergeChunkResults(results).map((cue, index) => ({ ...cue, id: `cue-${index + 1}` }))
-        setCues(partial)
-        setStatus(`已识别分片 ${item.chunk.index + 1}/${chunks.length} · 当前 ${partial.length} 条字幕`)
+        const position = `${item.chunk.index + 1}/${total}`
+        jobs = jobs.map((job) => (job.chunk.index === item.chunk.index ? { ...job, status: 'running' as ChunkStatus } : job))
+        setChunkJobs(jobs)
+        setStatus(`识别音频分片 ${position}`)
+        try {
+          const chunkCues = await transcribeOneChunk(item.path, (label) => setStatus(`识别音频分片 ${position} · ${label}`))
+          jobs = jobs.map((job) =>
+            job.chunk.index === item.chunk.index ? { ...job, status: 'done' as ChunkStatus, cues: chunkCues, error: undefined } : job
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '分片识别失败'
+          jobs = jobs.map((job) =>
+            job.chunk.index === item.chunk.index ? { ...job, status: 'failed' as ChunkStatus, error: message } : job
+          )
+        }
+        setChunkJobs(jobs)
+        const partial = applyJobsToCues(jobs, false)
+        const failedSoFar = jobs.filter((job) => job.status === 'failed').length
+        setStatus(`已处理分片 ${position} · 当前 ${partial.length} 条字幕${failedSoFar ? ` · ${failedSoFar} 个分片失败` : ''}`)
       }
 
-      const merged = mergeChunkResults(results).map((cue, index) => ({ ...cue, id: `cue-${index + 1}` }))
-      setCues(merged)
-      setStatus(`字幕生成完成，共 ${merged.length} 条`)
-      notification?.show?.('字幕生成完成', 'success')
+      const merged = applyJobsToCues(jobs, true)
+      const failedCount = jobs.filter((job) => job.status === 'failed').length
+      if (failedCount) {
+        setStatus(`字幕生成完成（${failedCount} 个分片失败，可单独重试），共 ${merged.length} 条`)
+        notification?.show?.(`${failedCount} 个分片识别失败，可点击重试`, 'warning')
+      } else {
+        setStatus(`字幕生成完成，共 ${merged.length} 条`)
+        notification?.show?.('字幕生成完成', 'success')
+        await cleanupChunkFiles()
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : '字幕生成失败'
       setStatus(message)
       notification?.show?.(message, 'error')
     } finally {
-      await cleanupFiles(filesystem, tempPaths)
       setBusy(false)
+    }
+  }
+
+  async function retryChunk(index: number) {
+    const job = chunkJobs.find((item) => item.chunk.index === index)
+    if (!job) return
+    const total = chunkJobs.length
+    const position = `${index + 1}/${total}`
+    try {
+      setRetryingIndex(index)
+      let jobs = chunkJobs.map((item) => (item.chunk.index === index ? { ...item, status: 'running' as ChunkStatus } : item))
+      setChunkJobs(jobs)
+      setStatus(`重试分片 ${position}`)
+      const chunkCues = await transcribeOneChunk(job.path, (label) => setStatus(`重试分片 ${position} · ${label}`))
+      jobs = jobs.map((item) =>
+        item.chunk.index === index ? { ...item, status: 'done' as ChunkStatus, cues: chunkCues, error: undefined } : item
+      )
+      setChunkJobs(jobs)
+      const merged = applyJobsToCues(jobs, true)
+      const failedCount = jobs.filter((item) => item.status === 'failed').length
+      setStatus(`分片 ${position} 重试成功，共 ${merged.length} 条字幕${failedCount ? ` · 仍有 ${failedCount} 个失败` : ''}`)
+      if (!failedCount) {
+        notification?.show?.('全部分片识别完成', 'success')
+        await cleanupChunkFiles()
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '分片重试失败'
+      setChunkJobs((current) =>
+        current.map((item) => (item.chunk.index === index ? { ...item, status: 'failed' as ChunkStatus, error: message } : item))
+      )
+      setStatus(message)
+      notification?.show?.(message, 'error')
+    } finally {
+      setRetryingIndex(null)
     }
   }
 
@@ -519,7 +688,7 @@ export default function App() {
       const project = parseProject(text)
       setVideoPath(project.videoPath)
       setDurationMs(project.durationMs)
-      setCues(project.cues)
+      cueHistory.reset(project.cues)
       setStatus(
         `已导入工程：${fileName(path)}（${project.cues.length} 条字幕${
           project.savedAt ? ` · 保存于 ${new Date(project.savedAt).toLocaleString()}` : ''
@@ -531,6 +700,21 @@ export default function App() {
       setStatus(message)
       notification?.show?.(message, 'error')
     }
+  }
+
+  function restoreDraft() {
+    if (!draft) return
+    setVideoPath(draft.videoPath)
+    setDurationMs(draft.durationMs)
+    cueHistory.reset(draft.cues)
+    setStatus(`已恢复上次草稿（${draft.cues.length} 条字幕）`)
+    setDraft(null)
+    notification?.show?.('草稿已恢复', 'success')
+  }
+
+  function dismissDraft() {
+    setDraft(null)
+    clearDraft()
   }
 
   const updateCue = useCallback((id: string, patch: Partial<SubtitleCue>) => {
@@ -562,6 +746,12 @@ export default function App() {
             <h1 className="mt-0.5 truncate text-lg font-semibold sm:mt-1 sm:text-2xl">视频字幕工作台</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button className="btn-secondary" onClick={cueHistory.undo} disabled={busy || !cueHistory.canUndo} title="撤销 (Ctrl/Cmd+Z)" aria-label="撤销">
+              <Undo2 size={16} />
+            </button>
+            <button className="btn-secondary" onClick={cueHistory.redo} disabled={busy || !cueHistory.canRedo} title="重做 (Ctrl/Cmd+Shift+Z)" aria-label="重做">
+              <Redo2 size={16} />
+            </button>
             <button className="btn-secondary" onClick={loadProject} disabled={busy}>
               <FolderOpen size={16} />
               <span className="hidden sm:inline">导入工程</span>
@@ -578,8 +768,26 @@ export default function App() {
         </div>
       </header>
 
+      {draft && (
+        <div className="shrink-0 border-b border-amber-400/20 bg-amber-400/10 px-4 py-2.5 sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-amber-100">
+              检测到上次未保存的草稿（{draft.cues.length} 条字幕
+              {draft.savedAt ? ` · ${new Date(draft.savedAt).toLocaleString()}` : ''}），是否恢复？
+            </p>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary" onClick={restoreDraft}>恢复草稿</button>
+              <button className="btn-ghost" onClick={dismissDraft}>忽略</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 sm:p-5 lg:flex-row lg:overflow-hidden">
         <aside className="shrink-0 space-y-4 lg:w-[340px] lg:overflow-y-auto lg:pr-1 xl:w-[360px]">
+          {videoPath && (
+            <VideoPreview ref={videoRef} videoPath={videoPath} caption={activeCue?.text} onTimeUpdate={setCurrentTimeMs} />
+          )}
           <section className="panel">
             <div className="flex items-center gap-3">
               <div className="rounded-2xl bg-cyan-400/15 p-3 text-cyan-200">
@@ -612,6 +820,33 @@ export default function App() {
               <strong className="text-right text-slate-100">{totalText.length}</strong>
             </div>
           </section>
+
+          {failedChunks.length > 0 && (
+            <section className="panel space-y-2 border-red-400/25">
+              <h2 className="section-title text-red-200">失败分片（{failedChunks.length}）</h2>
+              <p className="text-xs leading-relaxed text-slate-400">已识别的分片已保留，可单独重试失败分片，无需重新提取音频。</p>
+              <div className="space-y-2">
+                {failedChunks.map((job) => (
+                  <div key={job.chunk.index} className="rounded-xl border border-red-400/20 bg-red-500/5 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-red-100">
+                        分片 #{job.chunk.index + 1}（{formatVttTime(job.chunk.startMs)} - {formatVttTime(job.chunk.endMs)}）
+                      </span>
+                      <button
+                        className="btn-secondary"
+                        disabled={busy || retryingIndex !== null}
+                        onClick={() => retryChunk(job.chunk.index)}
+                      >
+                        {retryingIndex === job.chunk.index ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                        重试
+                      </button>
+                    </div>
+                    {job.error && <p className="mt-1.5 line-clamp-2 text-xs text-red-300/80">{job.error}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section className="panel space-y-2">
             <h2 className="section-title">输出</h2>
@@ -648,11 +883,14 @@ export default function App() {
         </aside>
 
         <section className="panel flex min-h-[360px] flex-1 flex-col lg:min-h-0">
-          <div className="mb-4 flex shrink-0 items-center justify-between">
+          <div className="mb-4 flex shrink-0 items-center justify-between gap-3">
             <h2 className="section-title">字幕时间轴</h2>
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-              <Scissors size={15} />
-              <span className="hidden sm:inline">可直接编辑文本和时间</span>
+            <div className="flex items-center gap-3 text-sm text-slate-400">
+              {videoPath && <span className="font-mono text-xs text-cyan-200">{formatVttTime(currentTimeMs)}</span>}
+              <span className="hidden items-center gap-2 sm:flex">
+                <Scissors size={15} />
+                点击 ▶ 跳转 · 可编辑文本和时间
+              </span>
             </div>
           </div>
 
@@ -663,7 +901,7 @@ export default function App() {
               <p className="mt-2 max-w-md text-sm text-slate-400">长视频会按 8 分钟分片并保留重叠窗口，再把每段时间戳回填到全局时间轴。</p>
             </div>
           ) : (
-            <CueList cues={cues} onChange={updateCue} onDelete={deleteCue} />
+            <CueList cues={cues} onChange={updateCue} onDelete={deleteCue} activeCueId={activeCue?.id ?? null} onSeek={seekToCue} />
           )}
         </section>
       </main>
