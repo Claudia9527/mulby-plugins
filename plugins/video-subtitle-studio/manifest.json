@@ -1,0 +1,50 @@
+{
+  "id": "video-subtitle-studio",
+  "name": "video-subtitle-studio",
+  "version": "1.0.0",
+  "author": "Mulby",
+  "type": "media",
+  "displayName": "视频字幕工作台",
+  "description": "从视频提取音频，调用可配置 ASR 服务生成带时间轴字幕，并支持编辑、翻译与导出。",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": {
+    "type": "svg",
+    "value": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><defs><linearGradient id='g' x1='80' y1='40' x2='432' y2='472' gradientUnits='userSpaceOnUse'><stop stop-color='#67E8F9'/><stop offset='1' stop-color='#2563EB'/></linearGradient></defs><rect width='512' height='512' rx='112' fill='#020617'/><path d='M116 148c0-22 18-40 40-40h200c22 0 40 18 40 40v116c0 22-18 40-40 40H156c-22 0-40-18-40-40V148Z' fill='url(#g)'/><path d='m232 176 82 46-82 46v-92Z' fill='#F8FAFC'/><rect x='112' y='342' width='288' height='22' rx='11' fill='#E0F2FE'/><rect x='144' y='388' width='224' height='22' rx='11' fill='#38BDF8'/></svg>"
+  },
+  "permissions": {
+    "clipboard": true,
+    "notification": true
+  },
+  "pluginSetting": {
+    "single": true,
+    "defaultDetached": true,
+    "idleTimeoutMs": "never"
+  },
+  "window": {
+    "type": "default",
+    "titleBar": true,
+    "width": 1200,
+    "height": 780,
+    "minWidth": 900,
+    "minHeight": 620
+  },
+  "features": [
+    {
+      "code": "subtitle",
+      "explain": "视频字幕工作台",
+      "mode": "detached",
+      "cmds": [
+        { "type": "keyword", "value": "视频字幕" },
+        { "type": "keyword", "value": "字幕" },
+        { "type": "keyword", "value": "subtitle" },
+        {
+          "type": "files",
+          "label": "生成视频字幕",
+          "fileType": "file",
+          "exts": [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"]
+        }
+      ]
+    }
+  ]
+}
