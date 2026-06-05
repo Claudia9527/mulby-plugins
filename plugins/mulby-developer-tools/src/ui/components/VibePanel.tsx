@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Sparkles, Wand2, FolderSearch, Loader2, Check, ChevronRight, ChevronLeft,
   Hammer, ShieldCheck, Package, FolderOpen, Play, AlertTriangle,
@@ -13,6 +13,8 @@ import {
   type VibeContract, defaultContract, normalizeContract, manifestToContract,
   manifestJson, primaryTrigger, primaryFeatureCode, contractSummary, triggerLabel
 } from '../lib/vibeContract'
+import { useSession, SessionSwitcher, ChatPanel } from '../vibe'
+import type { VibeSessionState } from '../vibe'
 
 export interface VibeEditTarget {
   path: string
@@ -313,29 +315,80 @@ export function VibePanel({
 
   useEffect(() => { setMaxStage((m) => (stage > m ? stage : m)) }, [stage])
 
-  const storageKey = 'mulby-devtools-vibe-v4'
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey)
-      if (!raw) return
-      const s = JSON.parse(raw) as { sentence?: string; targetDir?: string; selectedModel?: string; genDepth?: 'full' | 'minimal' }
-      if (s.sentence) setSentence(s.sentence)
-      if (s.targetDir) setTargetDir(s.targetDir)
-      if (s.selectedModel) setSelectedModel(s.selectedModel)
-      if (s.genDepth === 'full' || s.genDepth === 'minimal') setGenDepth(s.genDepth)
-    } catch { /* ignore */ }
-  }, [])
-  useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify({ sentence, targetDir, selectedModel, genDepth }))
-  }, [sentence, targetDir, selectedModel, genDepth])
+  // -------- Session 集成 --------
+  const { activeSession, activeId, loaded: sessionLoaded, createSession, updateSession, findByPath, switchSession } = useSession()
+  const sessionRestoredRef = useRef(false)
 
-  // 工作台「AI 改造」带入目标
+  const stageToSessionState = (s: Stage, gen: boolean): VibeSessionState => {
+    if (gen) return 'generating'
+    if (s === 0) return 'initial'
+    if (s === 1) return 'contract'
+    if (s >= 3) return 'ready'
+    return 'contract'
+  }
+
+  // 挂载时从 activeSession 恢复状态（仅一次）
+  useEffect(() => {
+    if (!sessionLoaded || sessionRestoredRef.current) return
+    sessionRestoredRef.current = true
+    if (!activeSession) return
+    if (activeSession.sentence) setSentence(activeSession.sentence)
+    if (activeSession.vibeMode) setVibeMode(activeSession.vibeMode)
+    if (activeSession.genDepth) setGenDepth(activeSession.genDepth)
+    if (activeSession.selectedModel) setSelectedModel(activeSession.selectedModel)
+    if (activeSession.contract) setContract(activeSession.contract)
+    if (activeSession.pluginPath) {
+      if (activeSession.vibeMode === 'edit') setEditPath(activeSession.pluginPath)
+      else setTargetDir(activeSession.pluginPath.split('/').slice(0, -1).join('/') || '')
+      setCreatedPath(activeSession.pluginPath)
+    }
+    const st = activeSession.state
+    if (st === 'ready') { setStage(3); setMaxStage(3); setGenerated(true); setBuilt(true); setLoaded(true) }
+    else if (st === 'contract') { setStage(1); setMaxStage(1) }
+    else if (st === 'generating') { setStage(2); setMaxStage(2) }
+  }, [sessionLoaded, activeSession])
+
+  // 关键状态变化时同步到 session
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const syncToSession = useCallback(() => {
+    if (!activeId) return
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    syncTimerRef.current = setTimeout(() => {
+      updateSession(activeId, {
+        state: stageToSessionState(stage, generating),
+        contract,
+        sentence,
+        vibeMode,
+        genDepth,
+        selectedModel,
+        pluginPath: createdPath || (vibeMode === 'edit' ? editPath : '') || ''
+      })
+    }, 800)
+  }, [activeId, stage, generating, contract, sentence, vibeMode, genDepth, selectedModel, createdPath, editPath, updateSession])
+
+  useEffect(() => { if (sessionRestoredRef.current) syncToSession() }, [syncToSession])
+
+  // 工作台「AI 改造」带入目标：优先恢复已有 session
   useEffect(() => {
     if (!editTarget) return
-    resetState()
-    setVibeMode('edit')
-    setEditPath(editTarget.path)
-    addLog('info', `▶ [Vibe] 进入改造模式：${editTarget.displayName || editTarget.id || editTarget.path}`)
+    const existing = findByPath(editTarget.path)
+    if (existing) {
+      switchSession(existing.id)
+      if (existing.state === 'ready') { setStage(3); setMaxStage(3); setGenerated(true); setBuilt(true); setLoaded(true) }
+      if (existing.contract) setContract(existing.contract)
+      if (existing.sentence) setSentence(existing.sentence)
+      setVibeMode('edit')
+      setEditPath(editTarget.path)
+      setCreatedPath(editTarget.path)
+      addLog('info', `▶ [Vibe] 恢复已有会话：${editTarget.displayName || editTarget.id || editTarget.path}`)
+    } else {
+      resetState()
+      setVibeMode('edit')
+      setEditPath(editTarget.path)
+      const name = editTarget.displayName || editTarget.id || editTarget.path.split('/').pop() || 'plugin'
+      createSession({ pluginPath: editTarget.path, pluginName: name, vibeMode: 'edit', state: 'initial' })
+      addLog('info', `▶ [Vibe] 进入改造模式：${editTarget.displayName || editTarget.id || editTarget.path}`)
+    }
     onConsumeEditTarget?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editTarget?.token])
@@ -476,6 +529,10 @@ export function VibePanel({
   const planCreate = async () => {
     if (!sentence.trim()) { pushToast('error', '请先用一句话描述你想要的插件'); return }
     if (!targetDir.trim()) { pushToast('error', '请选择插件生成的目标目录'); return }
+    if (!activeId) {
+      const name = sentence.trim().slice(0, 20) || 'new-plugin'
+      createSession({ pluginPath: targetDir, pluginName: name, vibeMode: 'create', state: 'initial', sentence, genDepth, selectedModel })
+    }
     setPlanning(true)
     try {
       addLog('info', '▶ [Vibe] AI 正在规划契约…')
@@ -702,6 +759,9 @@ export function VibePanel({
         if (!created.success) { pushEvent('scaffold', 'error', created.error || '脚手架失败'); pushToast('error', created.error || '脚手架失败'); return }
         root = created.path || `${targetDir}/${contract.name}`
         setCreatedPath(root)
+        if (!activeId) {
+          createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel })
+        }
         onAfterCreate()
         pushEvent('scaffold', 'note', '脚手架已生成')
       }
@@ -1241,7 +1301,8 @@ export function VibePanel({
     <div className="flex h-full">
       {/* 左：阶段导航 + 模型 */}
       <aside className="w-56 shrink-0 border-r border-slate-200 dark:border-slate-800 overflow-auto bg-white/40 dark:bg-slate-900/30 p-3 flex flex-col">
-        <div className="flex items-center gap-2 px-1.5 mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">
+        <SessionSwitcher onNewSession={resetAll} />
+        <div className="flex items-center gap-2 px-1.5 mb-3 mt-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
           <Sparkles size={15} className="text-emerald-500" /> {vibeMode === 'edit' ? '一句话改插件' : '一句话造插件'}
         </div>
         <ol className="space-y-1">
@@ -1331,6 +1392,15 @@ export function VibePanel({
             />
           )}
         </div>
+
+        {/* 全局对话面板：贯穿所有阶段，就绪后可直接对话修改代码 */}
+        {(stage >= 3 || (createdPath && generated)) && (
+          <ChatPanel
+            onSend={runFollowup}
+            disabled={building || expanding || repairing || rollingBack || confRepairing}
+            busy={iterating}
+          />
+        )}
 
         {/* 底部操作条 */}
         <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 dark:border-slate-800 shrink-0">

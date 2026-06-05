@@ -1,0 +1,30 @@
+import React, { createContext, useContext } from 'react'
+import { useVibeSession } from './useVibeSession'
+import type { VibeSession, SessionStorageStats } from './types'
+
+interface SessionContextValue {
+  sessions: VibeSession[]
+  activeSession: VibeSession | null
+  activeId: string | null
+  loaded: boolean
+  createSession: (partial: Partial<VibeSession> & { pluginPath: string; pluginName: string }) => VibeSession
+  updateSession: (id: string, patch: Partial<VibeSession>) => void
+  deleteSession: (id: string) => void
+  switchSession: (id: string) => void
+  findByPath: (pluginPath: string) => VibeSession | null
+  getStats: () => SessionStorageStats
+  clearAll: () => Promise<void>
+}
+
+const SessionContext = createContext<SessionContextValue | null>(null)
+
+export function SessionProvider({ children }: { children: React.ReactNode }) {
+  const value = useVibeSession()
+  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
+}
+
+export function useSession(): SessionContextValue {
+  const ctx = useContext(SessionContext)
+  if (!ctx) throw new Error('useSession must be used within SessionProvider')
+  return ctx
+}

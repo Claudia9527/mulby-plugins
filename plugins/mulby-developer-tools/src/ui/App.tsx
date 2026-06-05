@@ -12,6 +12,7 @@ import { EmptyState } from './components/EmptyState'
 import { ToastHost, type ToastData } from './components/Toast'
 import { CreateDialog, type CreatePayload } from './components/CreateDialog'
 import { VibePanel, type VibeEditTarget, type KnownPlugin } from './components/VibePanel'
+import { SessionProvider } from './vibe'
 
 type Tab = 'workbench' | 'vibe'
 
@@ -293,17 +294,19 @@ export default function App() {
       {/* 主体 */}
       <div className="flex-1 min-h-0 relative">
         <div className={tab === 'vibe' ? 'absolute inset-0' : 'absolute inset-0 hidden'}>
-          <VibePanel
-            dev={dev}
-            addLog={addLog}
-            pushToast={pushToast}
-            onPickDir={dev.selectDirectory}
-            onAfterCreate={() => refresh(true)}
-            onSyncWorkbench={() => refresh(true)}
-            knownPlugins={knownPlugins}
-            editTarget={vibeEditTarget}
-            onConsumeEditTarget={() => setVibeEditTarget(null)}
-          />
+          <SessionProvider>
+            <VibePanel
+              dev={dev}
+              addLog={addLog}
+              pushToast={pushToast}
+              onPickDir={dev.selectDirectory}
+              onAfterCreate={() => refresh(true)}
+              onSyncWorkbench={() => refresh(true)}
+              knownPlugins={knownPlugins}
+              editTarget={vibeEditTarget}
+              onConsumeEditTarget={() => setVibeEditTarget(null)}
+            />
+          </SessionProvider>
         </div>
         <div className={tab === 'workbench' ? 'absolute inset-0' : 'absolute inset-0 hidden'}>
           <div className="flex h-full">
