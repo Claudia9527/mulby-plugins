@@ -176,14 +176,6 @@ const VIBE_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'mulby_api',
-      description: '查询 Mulby 宿主 API 权威文档。不传参→返回全部命名空间索引（可用 query 过滤）；传 namespace（如 "clipboard"/"notification"/"ai"）→返回该 API 的完整签名与示例。使用任何 window.mulby.* 能力前，务必先用它确认 API 真实存在与用法，不要凭记忆臆造。',
-      parameters: { type: 'object', properties: { namespace: { type: 'string' }, query: { type: 'string' } }, additionalProperties: false }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'check_conformance',
       description: '静态校验 manifest.json 与真实文件/源码是否一致（UI 形态、功能码处理分支、工具注册、preload 路径等）。完成实现、停止之前必须调用一次，并据返回的 error 级问题自行修复，直到 ok:true。这是「插件能正确装载运行」的硬门禁，不要跳过。',
       parameters: { type: 'object', properties: {}, additionalProperties: false }
@@ -398,7 +390,6 @@ export function VibePanel({
       else if (name === 'list_dir') pushEvent(currentPhaseRef.current, 'read', `浏览目录${typeof args.path === 'string' && args.path && args.path !== '.' ? ` ${args.path}` : '结构'}`)
       else if (name === 'grep') pushEvent(currentPhaseRef.current, 'read', `搜索代码${typeof args.query === 'string' ? `：${String(args.query).slice(0, 40)}` : ''}`)
       else if (name === 'build_check') pushEvent(currentPhaseRef.current, 'build', '自检构建 npm run build…')
-      else if (name === 'mulby_api') pushEvent(currentPhaseRef.current, 'read', `查 Mulby API${typeof args.namespace === 'string' && args.namespace ? `：${args.namespace}` : '（命名空间索引）'}`)
       else if (name === 'check_conformance') pushEvent(currentPhaseRef.current, 'note', '校验契约一致性…')
       else pushEvent(currentPhaseRef.current, 'note', `调用工具 ${name}`)
     } else if (ct === 'tool-result' && chunk.tool_result) {
@@ -412,9 +403,6 @@ export function VibePanel({
         pushEvent(currentPhaseRef.current, result?.success ? 'build' : 'error', result?.success ? '自检构建通过' : '自检构建失败')
       } else if (name === 'grep' && Array.isArray(result?.matches)) {
         pushEvent(currentPhaseRef.current, 'read', `搜索完成`, `命中 ${result.matches.length} 处`)
-      } else if (name === 'mulby_api') {
-        const detail = result?.found && result?.namespace ? `已读 ${result.namespace} 文档` : Array.isArray(result?.namespaces) ? `${result.namespaces.length} 个命名空间` : undefined
-        pushEvent(currentPhaseRef.current, 'read', '查询 Mulby API 完成', detail)
       } else if (name === 'check_conformance') {
         const r = chunk.tool_result.result as { ok?: boolean; issues?: Array<{ level?: string }> } | undefined
         const errs = Array.isArray(r?.issues) ? r!.issues!.filter((i) => i?.level === 'error').length : 0
@@ -550,7 +538,7 @@ export function VibePanel({
     '你是资深 Mulby 插件工程师，正在为一个已脚手架、且 manifest.json 已写好的插件目录实现代码。',
     `插件根目录：${root}`,
     '重要：manifest.json 已由工具按用户确认的「契约」写好，请勿修改 manifest.json。',
-    '工作方式（必须用工具自主完成，无需向用户提问）：先 list_dir 看结构、read_file 读 package.json 与现有 src/*（可用 grep 快速定位代码）；新文件用 write_file 写完整内容，小改动用 edit_file 增量替换；调用任何 window.mulby.* 能力前先用 mulby_api 查证签名与用法；关键改动写完后用 build_check 自检构建并据报错自行修复，直到通过；停止前必须调用 check_conformance 校验 manifest 与代码是否一致，按其 error 级问题修复直到 ok:true；最后用一两句话总结并停止。',
+    '工作方式（必须用工具自主完成，无需向用户提问）：先 list_dir 看结构、read_file 读 package.json 与现有 src/*（可用 grep 快速定位代码）；新文件用 write_file 写完整内容，小改动用 edit_file 增量替换；调用任何 window.mulby.* 能力前先用 mulby_read_file 查阅对应的 API 文档确认签名与用法（参见技能指导）；关键改动写完后用 build_check 自检构建并据报错自行修复，直到通过；停止前必须调用 check_conformance 校验 manifest 与代码是否一致，按其 error 级问题修复直到 ok:true；最后用一两句话总结并停止。',
     'Mulby 约定：后端 src/main.ts 导出 onLoad/onUnload/onEnable/onDisable/run；前端用全局 window.mulby.*（clipboard/notification/filesystem/http/ai/sharp 等），不要臆造不存在的 API；React 模板用现成 react/react-dom，入口 src/ui/main.tsx 挂载 App，UI 在 src/ui/App.tsx；保持 TypeScript 可编译；不要创建 node_modules/dist，不要改构建脚本与依赖清单。',
     '输入获取：silent/无界面功能在 run(context) 中通过 context.input（字符串）拿到用户输入文本——当功能由 regex/over 触发时，context.input 就是被匹配到的那段文本；用 context.featureCode 区分功能。处理结果可写回剪贴板（window.mulby.clipboard）或用系统通知（window.mulby.notification）反馈；有界面功能则在 UI 里读取/展示。',
     `契约：${contractSummary(c)}`,
@@ -567,8 +555,8 @@ export function VibePanel({
     '你是资深 Mulby 插件工程师，正在**修改一个已存在且可正常构建**的插件。务必最小化改动，不要破坏现有功能。',
     `插件根目录：${root}`,
     'manifest.json 已按用户确认的契约写好，请勿修改它——尤其严禁改动插件形态：不要给静默/无界面插件新增 ui、window 或把功能 mode 改成 detached/ui（即不要把无界面插件改造成有界面插件），除非用户在本次需求里明确要求"加界面/做个窗口"。若用户确实要加界面，必须同时创建 src/ui 入口与 UI 代码，使产物与 manifest 一致，不能只在 manifest 写 ui 却没有界面文件。',
-    '工作方式：先 list_dir 看结构、grep/read_file 通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；尽量用 edit_file 做最小增量改动（仅大改才整文件 write_file）；用到 window.mulby.* 前先 mulby_api 查证；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码仍然一致（按 error 修复）。完成后用一两句话说明改动并停止。',
-    '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_api 核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist。',
+    '工作方式：先 list_dir 看结构、grep/read_file 通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；尽量用 edit_file 做最小增量改动（仅大改才整文件 write_file）；用到 window.mulby.* 前先用 mulby_read_file 查阅 API 文档确认签名与用法；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码仍然一致（按 error 修复）。完成后用一两句话说明改动并停止。',
+    '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_read_file 查阅技能 API 文档核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist。',
     `契约：${contractSummary(c)}`,
     phase === 'minimal'
       ? `本轮目标【最小改动】：仅实现需求「${c.editSummary || sentence}」所需的最小改动。`
@@ -636,7 +624,7 @@ export function VibePanel({
     const surface = apiSurfaceRef.current
     if (!surface) return sys
     return sys + '\n\n' + [
-      '———— 当前 Mulby 宿主真实可用的 API（运行时自省，权威）：仅可使用下列命名空间下的能力，不要臆造其它 API。需要具体签名/用法时调用 mulby_api({namespace}) 查文档 ————',
+      '———— 当前 Mulby 宿主真实可用的 API（运行时自省，权威）：仅可使用下列命名空间下的能力，不要臆造其它 API。需要具体签名/用法时用 mulby_read_file 查阅技能提供的 API 文档 ————',
       surface.slice(0, 6000),
       '————'
     ].join('\n')
@@ -682,6 +670,7 @@ export function VibePanel({
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
         tools: VIBE_TOOLS,
         maxToolSteps: 60,
+        capabilities: ['fs.read'],
         mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
       },
       onAgentChunk
@@ -1013,8 +1002,8 @@ export function VibePanel({
   const followupSystemPrompt = (c: VibeContract, root: string) => [
     '你是资深 Mulby 插件工程师，正在根据用户的后续反馈，对一个**已存在且可正常构建**的插件做迭代修改。务必最小化改动，不要破坏现有功能。',
     `插件根目录：${root}`,
-    '工作方式：先 grep/list_dir/read_file 定位并通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；优先用 edit_file 做最小增量改动；用到 window.mulby.* 前先 mulby_api 查证；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码一致（按 error 修复）。完成后用一两句说明改动并停止。',
-    '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_api 核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist；manifest.json 一般无需改动。',
+    '工作方式：先 grep/list_dir/read_file 定位并通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；优先用 edit_file 做最小增量改动；用到 window.mulby.* 前先用 mulby_read_file 查阅 API 文档确认；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码一致（按 error 修复）。完成后用一两句说明改动并停止。',
+    '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_read_file 查阅技能文档核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist；manifest.json 一般无需改动。',
     'esbuild 打包注意：不要新增无法被打包的原生依赖；图像处理用 window.mulby.sharp 等宿主能力。',
     `契约：${contractSummary(c)}`,
     `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`

@@ -182,10 +182,6 @@ function globToRegExp(glob: string): RegExp | null {
   try { return new RegExp('^' + body + '$') } catch { return null }
 }
 
-/** 打包进插件 assets 的 Mulby API 文档目录（相对 dist/main.js 上一级） */
-function mulbyApiDir(): string {
-  return join(__dirname, '..', 'assets', 'mulby-apis')
-}
 
 /** 记录某路径在会话内的首次原始状态（用于回滚/diff） */
 function recordSnapshot(root: string, rel: string, abs: string): void {
@@ -410,37 +406,6 @@ export const rpc = {
     })
   },
 
-  /**
-   * 查询 Mulby 宿主 API 文档（打包进插件的权威参考）。
-   * 不传 namespace：返回全部命名空间索引（可用 query 过滤）；传 namespace：返回该命名空间完整文档。
-   */
-  mulby_api(input: { namespace?: string; query?: string }) {
-    const dir = mulbyApiDir()
-    if (!existsSync(dir)) return { available: false, reason: '插件未打包 Mulby API 文档' }
-    let files: string[] = []
-    try { files = readdirSync(dir).filter((f) => f.endsWith('.md')) } catch { return { available: false, reason: '读取 API 文档失败' } }
-    const firstHeading = (f: string): string => {
-      try {
-        const head = readFileSync(join(dir, f), 'utf-8').split('\n').find((l) => l.trim().startsWith('#'))
-        return head ? head.replace(/^#+\s*/, '').trim() : ''
-      } catch { return '' }
-    }
-    const ns = String(input?.namespace || '').trim().toLowerCase().replace(/\.md$/, '')
-    if (ns) {
-      const file = files.find((f) => f.toLowerCase() === ns + '.md')
-      if (!file) {
-        return { available: true, found: false, namespace: ns, namespaces: files.map((f) => f.replace(/\.md$/, '')) }
-      }
-      let content = readFileSync(join(dir, file), 'utf-8')
-      let truncated = false
-      if (content.length > 40_000) { content = content.slice(0, 40_000); truncated = true }
-      return { available: true, found: true, namespace: file.replace(/\.md$/, ''), content, truncated }
-    }
-    const index = files.map((f) => ({ namespace: f.replace(/\.md$/, ''), title: firstHeading(f) }))
-    const q = String(input?.query || '').trim().toLowerCase()
-    const namespaces = q ? index.filter((x) => x.namespace.toLowerCase().includes(q) || x.title.toLowerCase().includes(q)) : index
-    return { available: true, namespaces }
-  },
 
   /**
    * 契约一致性静态校验：把 develop-mulby-plugin 技能 Handoff Checklist 里
