@@ -10,10 +10,11 @@ import {
   ClipboardPaste,
   Code2,
   Copy,
-  Eraser,
   FileCode2,
   FileDown,
   FileInput,
+  FilePlus2,
+  FileUp,
   Heading1,
   Heading2,
   Italic,
@@ -289,12 +290,14 @@ export default function App() {
   const contentRef = useRef(content)
   const modeRef = useRef<EditorType>('wysiwyg')
   const lastPersistedRef = useRef('')
+  const activeFilePathRef = useRef<string | null>(null)
   const hasInitPayloadRef = useRef(false)
   const { clipboard, dialog, filesystem, notification, storage } = useMulby(PLUGIN_ID)
   const draftStorage = useDraftStorage(storage, STORAGE_DRAFT_KEY)
 
   contentRef.current = content
   modeRef.current = editorMode
+  activeFilePathRef.current = activeFilePath
   const outlineEntries = useMemo(() => parseOutline(content), [content])
 
   useEffect(() => {
@@ -613,6 +616,13 @@ export default function App() {
       return
     }
 
+    // When bound to a file, the file is the source of truth and the user saves
+    // explicitly (Ctrl/Cmd+S); skip the recovery-draft autosave so reopening
+    // never surfaces a stale draft.
+    if (activeFilePath) {
+      return
+    }
+
     const timer = window.setTimeout(() => {
       void persistDraft(false)
     }, 600)
@@ -620,7 +630,93 @@ export default function App() {
     return () => {
       window.clearTimeout(timer)
     }
-  }, [hydrated, isDirty, persistDraft])
+  }, [activeFilePath, hydrated, isDirty, persistDraft])
+
+  const handleOpenFile = useCallback(async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: '打开 Markdown 文件',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }
+        ]
+      })
+      const path = firstPathFromOpenDialog(result)
+      if (!path) {
+        return
+      }
+
+      const fileContent = await readFileAsUtf8(filesystem.readFile, path)
+      lastPersistedRef.current = fileContent
+      setActiveFilePath(path)
+      setSourceLabel(`载入 ${basename(path)}`)
+      setSavedAt(Date.now())
+      startTransition(() => {
+        setContent(fileContent)
+      })
+      switchMode('wysiwyg')
+      notification.show('文件已载入', 'success')
+      focusEditor()
+    } catch (error) {
+      console.error('[markdown-editor] handleOpenFile', error)
+      notification.show('读取文件失败', 'error')
+    }
+  }, [dialog, filesystem, focusEditor, notification, switchMode])
+
+  const writeToFile = useCallback(async (path: string) => {
+    const current = editorRef.current?.getMarkdown() ?? contentRef.current
+    await filesystem.writeFile(path, current, 'utf-8')
+    lastPersistedRef.current = current
+    setActiveFilePath(path)
+    setSavedAt(Date.now())
+    setContent(current)
+    setSourceLabel(`已保存 ${basename(path)}`)
+    // The file is now the source of truth; clear the recovery draft.
+    await draftStorage.clearDraft().catch(() => undefined)
+  }, [draftStorage, filesystem])
+
+  const promptMarkdownSavePath = useCallback(() => {
+    return dialog.showSaveDialog({
+      title: '保存 Markdown 文件',
+      defaultPath: activeFilePath ?? DEFAULT_EXPORT_NAME,
+      buttonLabel: '保存',
+      filters: [
+        { name: 'Markdown', extensions: ['md', 'markdown'] },
+        { name: 'Text', extensions: ['txt'] }
+      ]
+    })
+  }, [activeFilePath, dialog])
+
+  const handleSaveFileAs = useCallback(async () => {
+    try {
+      const target = await promptMarkdownSavePath()
+      if (!target) {
+        focusEditor()
+        return
+      }
+      await writeToFile(target)
+      notification.show(`已保存到 ${basename(target)}`, 'success')
+      focusEditor()
+    } catch (error) {
+      console.error('[markdown-editor] handleSaveFileAs', error)
+      notification.show('保存文件失败', 'error')
+    }
+  }, [focusEditor, notification, promptMarkdownSavePath, writeToFile])
+
+  const handleSaveFile = useCallback(async () => {
+    if (!activeFilePath) {
+      await handleSaveFileAs()
+      return
+    }
+    try {
+      await writeToFile(activeFilePath)
+      notification.show(`已保存到 ${basename(activeFilePath)}`, 'success')
+      focusEditor()
+    } catch (error) {
+      console.error('[markdown-editor] handleSaveFile', error)
+      notification.show('保存文件失败', 'error')
+    }
+  }, [activeFilePath, focusEditor, handleSaveFileAs, notification, writeToFile])
 
   useEffect(() => {
     const handleKeydown = (event: KeyboardEvent) => {
@@ -631,7 +727,13 @@ export default function App() {
       const key = event.key.toLowerCase()
       if (key === 's') {
         event.preventDefault()
-        void persistDraft(true)
+        if (event.shiftKey) {
+          void handleSaveFileAs()
+        } else if (activeFilePathRef.current) {
+          void handleSaveFile()
+        } else {
+          void persistDraft(true)
+        }
         return
       }
 
@@ -663,38 +765,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeydown)
     }
-  }, [handleRedo, handleUndo, persistDraft])
-
-  const handleOpenFile = useCallback(async () => {
-    try {
-      const result = await dialog.showOpenDialog({
-        title: '打开 Markdown 文件',
-        properties: ['openFile'],
-        filters: [
-          { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }
-        ]
-      })
-      const path = firstPathFromOpenDialog(result)
-      if (!path) {
-        return
-      }
-
-      const fileContent = await readFileAsUtf8(filesystem.readFile, path)
-      lastPersistedRef.current = ''
-      setActiveFilePath(path)
-      setSourceLabel(`载入 ${basename(path)}`)
-      setSavedAt(null)
-      startTransition(() => {
-        setContent(fileContent)
-      })
-      switchMode('wysiwyg')
-      notification.show('文件已载入', 'success')
-      focusEditor()
-    } catch (error) {
-      console.error('[markdown-editor] handleOpenFile', error)
-      notification.show('读取文件失败', 'error')
-    }
-  }, [dialog, filesystem, focusEditor, notification, switchMode])
+  }, [handleRedo, handleSaveFile, handleSaveFileAs, handleUndo, persistDraft])
 
   const documentName = activeFilePath ? basename(activeFilePath) : '未命名.md'
 
@@ -824,11 +895,14 @@ export default function App() {
     setContent('')
     setSourceLabel('新草稿')
     setActiveFilePath(null)
+    setSavedAt(null)
+    lastPersistedRef.current = ''
     setClearConfirmOpen(false)
+    void draftStorage.clearDraft().catch(() => undefined)
     switchMode('wysiwyg')
     focusEditor()
-    notification.show('内容已清空', 'info')
-  }, [focusEditor, notification, switchMode])
+    notification.show('已新建空白文档', 'info')
+  }, [draftStorage, focusEditor, notification, switchMode])
 
   const handleClear = useCallback(() => {
     if (isDirty) {
@@ -956,13 +1030,33 @@ export default function App() {
     ],
     [
       {
+        key: 'new',
+        title: '新建文档',
+        icon: FilePlus2,
+        onClick: handleClear
+      },
+      {
         key: 'open',
         title: '打开文件',
         icon: FileInput,
         onClick: handleOpenFile
+      }
+    ],
+    [
+      {
+        key: 'save-file',
+        title: activeFilePath ? `保存到 ${basename(activeFilePath)} (Ctrl/Cmd+S)` : '保存到文件 (Ctrl/Cmd+S)',
+        icon: FileUp,
+        onClick: () => void handleSaveFile()
       },
       {
-        key: 'save',
+        key: 'save-as',
+        title: '另存为 (Ctrl/Cmd+Shift+S)',
+        icon: Save,
+        onClick: () => void handleSaveFileAs()
+      },
+      {
+        key: 'save-draft',
         title: saving ? '保存中' : '保存草稿',
         icon: Save,
         onClick: () => void persistDraft(true),
@@ -987,13 +1081,6 @@ export default function App() {
         title: '粘贴',
         icon: ClipboardPaste,
         onClick: handlePasteClipboard
-      },
-      {
-        key: 'clear',
-        title: '清空',
-        icon: Eraser,
-        onClick: handleClear,
-        danger: true
       }
     ],
     toolbarActions.slice(0, 2).map((item) => ({
@@ -1038,10 +1125,10 @@ export default function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="confirm-dialog-header">
-              <h2 id="clear-confirm-title" className="confirm-dialog-title">确认清空内容</h2>
+              <h2 id="clear-confirm-title" className="confirm-dialog-title">新建空白文档</h2>
             </div>
             <p id="clear-confirm-desc" className="confirm-dialog-desc">
-              当前文档还有未保存改动。清空后无法撤销，建议先保存草稿。
+              当前文档还有未保存改动。新建后将清空当前内容，建议先保存到文件或草稿。
             </p>
             <div className="confirm-dialog-actions">
               <button
@@ -1058,7 +1145,7 @@ export default function App() {
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={handleConfirmClear}
               >
-                确认清空
+                确认新建
               </button>
             </div>
           </div>
@@ -1194,8 +1281,9 @@ export default function App() {
               </aside>
               <div className="editor-canvas">
                 <div className="editor-pane-header editor-canvas-header">
-                  <span className="pane-header-label">{documentName}</span>
+                  <span className="pane-header-label">{isDirty ? '• ' : ''}{documentName}</span>
                   <div className="canvas-header-meta">
+                    <span className="header-meta-text">{activeFilePath ? '文件' : '草稿'}</span>
                     <span className={`header-meta-text ${isDirty ? 'is-dirty' : ''}`}>保存时间 {formatTimestamp(savedAt)}</span>
                     <span className="header-meta-text">{lineCount} 行</span>
                     <span className="header-meta-text">{charCount} 字符</span>
