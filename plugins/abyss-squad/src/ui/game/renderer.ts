@@ -211,26 +211,53 @@ export class GameRenderer {
     const ctx = this.ctx
     for (const arc of arcs) {
       const progress = 1 - arc.timer / arc.maxTimer
-      const alpha = 1 - progress
-      const sweepAngle = Math.PI * 0.6 * (0.3 + progress * 0.7) // 扫过角度逐渐增大
+      const alpha = 1 - progress * progress // 缓慢淡出
+      const sweepAngle = Math.PI * 0.8 * (0.4 + progress * 0.6) // 更宽的弧线
       const startAngle = arc.angle - sweepAngle / 2
       const endAngle = arc.angle + sweepAngle / 2
+      const currentRadius = arc.radius * (0.6 + progress * 0.4)
 
-      // 弧光外圈
-      ctx.globalAlpha = alpha * 0.8
-      ctx.strokeStyle = arc.color
-      ctx.lineWidth = 4 * (1 - progress)
+      // 填充弧光区域（半透明渐变）
+      ctx.globalAlpha = alpha * 0.35
+      const gradient = ctx.createRadialGradient(arc.x, arc.y, 0, arc.x, arc.y, currentRadius)
+      gradient.addColorStop(0, 'transparent')
+      gradient.addColorStop(0.5, arc.color + '80')
+      gradient.addColorStop(1, arc.color)
+      ctx.fillStyle = gradient
       ctx.beginPath()
-      ctx.arc(arc.x, arc.y, arc.radius * (0.8 + progress * 0.2), startAngle, endAngle)
+      ctx.moveTo(arc.x, arc.y)
+      ctx.arc(arc.x, arc.y, currentRadius, startAngle, endAngle)
+      ctx.closePath()
+      ctx.fill()
+
+      // 弧光外圈（粗描边）
+      ctx.globalAlpha = alpha * 0.9
+      ctx.strokeStyle = arc.color
+      ctx.lineWidth = 6 * (1 - progress)
+      ctx.beginPath()
+      ctx.arc(arc.x, arc.y, currentRadius, startAngle, endAngle)
       ctx.stroke()
 
-      // 弧光内圈（白色）
-      ctx.globalAlpha = alpha * 0.5
+      // 弧光内圈（白色高亮）
+      ctx.globalAlpha = alpha * 0.7
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 3 * (1 - progress)
+      ctx.beginPath()
+      ctx.arc(arc.x, arc.y, currentRadius * 0.85, startAngle, endAngle)
+      ctx.stroke()
+
+      // 斩击线条（从英雄向外延伸）
+      ctx.globalAlpha = alpha * 0.6
       ctx.strokeStyle = '#fff'
       ctx.lineWidth = 2 * (1 - progress)
-      ctx.beginPath()
-      ctx.arc(arc.x, arc.y, arc.radius * (0.7 + progress * 0.2), startAngle, endAngle)
-      ctx.stroke()
+      const lineCount = 3
+      for (let i = 0; i < lineCount; i++) {
+        const lineAngle = startAngle + (endAngle - startAngle) * (i / (lineCount - 1))
+        ctx.beginPath()
+        ctx.moveTo(arc.x + Math.cos(lineAngle) * 10, arc.y + Math.sin(lineAngle) * 10)
+        ctx.lineTo(arc.x + Math.cos(lineAngle) * currentRadius, arc.y + Math.sin(lineAngle) * currentRadius)
+        ctx.stroke()
+      }
     }
     ctx.globalAlpha = 1
   }

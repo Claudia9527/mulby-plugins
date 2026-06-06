@@ -15,7 +15,7 @@ const WALL = 20
 const XP_PER_LEVEL = (lv: number) => 30 + lv * 20
 
 export type GameEvent =
-  | { type: 'level_up'; choices: AbilityDef[] }
+  | { type: 'level_up'; choices: AbilityDef[]; heroName: string; heroColor: string }
   | { type: 'synergy'; name: string; desc: string; color: string }
   | { type: 'floor_clear'; floor: number }
   | { type: 'run_end'; crystals: number; floor: number }
@@ -38,6 +38,7 @@ export class GameEngine {
   private portalX = 0
   private portalY = 0
   private heroRevived: Record<number, boolean> = {}
+  private levelUpHeroIndex = 0
 
   constructor(meta: MetaProgress, onEvent: (e: GameEvent) => void) {
     this.meta = meta
@@ -474,17 +475,35 @@ export class GameEngine {
 
       this.state.projectiles.push(proj)
     } else {
-      // 近战：直接伤害 + 攻击弧光
-      const attackRange = hero.def.range + target.def.size + 15
+      // 近战：直接伤害 + 攻击弧光 + 冲击粒子
+      const attackRange = hero.def.range + target.def.size + 20
       if (this.dist(hero, target) < attackRange) {
         this.damageEnemy(target, damage, isCrit, hero)
-        // 生成攻击弧光特效
+        // 生成攻击弧光特效（更醒目）
         const angle = Math.atan2(target.y - hero.y, target.x - hero.x)
+        const arcRadius = hero.def.range + 30
         this.state.attackArcs.push({
           id: uid(), x: hero.x, y: hero.y,
-          angle, radius: hero.def.range + 10,
-          color: hero.def.color, timer: 150, maxTimer: 150,
+          angle, radius: arcRadius,
+          color: hero.def.color, timer: 250, maxTimer: 250,
         })
+        // 挥刀拖尾粒子：沿弧线撒出
+        const slashCount = isCrit ? 8 : 5
+        for (let i = 0; i < slashCount; i++) {
+          const spreadAngle = angle + (Math.random() - 0.5) * 1.2 // ±34°
+          const dist = arcRadius * (0.5 + Math.random() * 0.5)
+          this.state.particles.push({
+            id: uid(),
+            x: hero.x + Math.cos(spreadAngle) * dist,
+            y: hero.y + Math.sin(spreadAngle) * dist,
+            vx: Math.cos(spreadAngle) * 2,
+            vy: Math.sin(spreadAngle) * 2,
+            color: isCrit ? '#ffd700' : '#fff',
+            size: isCrit ? 4 : 3,
+            life: 200,
+            maxLife: 200,
+          })
+        }
       }
     }
   }
@@ -976,9 +995,10 @@ export class GameEngine {
 
       // 生成3个随机能力选择
       const choices = this.generateAbilityChoices()
+      this.levelUpHeroIndex = this.state.heroes.indexOf(hero)
       this.state.isLevelUpPending = true
       this.state.levelUpChoices = choices
-      this.onEvent({ type: 'level_up', choices })
+      this.onEvent({ type: 'level_up', choices, heroName: hero.def.name, heroColor: hero.def.color })
     }
   }
 
@@ -987,7 +1007,7 @@ export class GameEngine {
     const choice = this.state.levelUpChoices[choiceIndex]
     if (!choice) return
 
-    const hero = this.state.heroes[this.state.activeHeroIndex]
+    const hero = this.state.heroes[this.levelUpHeroIndex] || this.state.heroes[this.state.activeHeroIndex]
     const existing = hero.abilities.find(a => a.def.id === choice.id)
     if (existing) {
       existing.stacks = Math.min(existing.stacks + 1, choice.maxStacks)

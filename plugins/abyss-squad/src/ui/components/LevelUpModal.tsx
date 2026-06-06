@@ -3,14 +3,20 @@ import { ABILITY_CATEGORY_COLORS } from '../game/data/abilities'
 
 interface Props {
   choices: AbilityDef[]
+  heroName?: string
+  heroColor?: string
   onSelect: (index: number) => void
 }
 
-export default function LevelUpModal({ choices, onSelect }: Props) {
+export default function LevelUpModal({ choices, heroName, heroColor, onSelect }: Props) {
   return (
     <div className="levelup-overlay">
       <div className="levelup-panel">
-        <h2 className="levelup-title">升级!</h2>
+        <h2 className="levelup-title">
+          {heroName ? (
+            <><span style={{ color: heroColor }}>{heroName}</span> 升级!</>
+          ) : '升级!'}
+        </h2>
         <p className="levelup-subtitle">选择一个能力</p>
         <div className="levelup-choices">
           {choices.map((choice, i) => (
