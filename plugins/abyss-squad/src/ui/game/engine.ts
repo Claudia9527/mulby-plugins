@@ -921,9 +921,10 @@ export class GameEngine {
           }
         }
       } else {
-        // 敌人弹道 vs 英雄
+        // 敌人弹道 vs 英雄（仅活跃英雄受伤）
         for (const hero of this.state.heroes) {
-          if (hero.isDead) continue
+          const heroIdx = this.state.heroes.indexOf(hero)
+          if (hero.isDead || heroIdx !== this.state.activeHeroIndex) continue
           if (this.dist(proj, hero) < proj.radius + hero.def.size) {
             const attacker = this.state.floor.enemies[0] ?? { isDead: true } as any
             this.damageHero(hero, proj.damage, attacker)
