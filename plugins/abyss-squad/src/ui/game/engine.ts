@@ -100,9 +100,10 @@ export class GameEngine {
   }
 
   private setupWave(floorLevel: number) {
-    const pool = FLOOR_ENEMY_POOLS[Math.min(floorLevel, 10)] || FLOOR_ENEMY_POOLS[10]
-    const isBossFloor = floorLevel % 3 === 0 && floorLevel <= 10
-    const baseCount = 3 + floorLevel * 2
+    const poolIdx = floorLevel <= 10 ? floorLevel : ((floorLevel - 1) % 5) + 6 // >10层循环5-10池
+    const pool = FLOOR_ENEMY_POOLS[poolIdx] || FLOOR_ENEMY_POOLS[10]
+    const isBossFloor = floorLevel % 3 === 0
+    const baseCount = Math.min(3 + floorLevel * 2, 25) // 最多25只
     this.enemiesKilledThisFloor = 0
     this.enemiesNeededThisFloor = isBossFloor ? baseCount + 3 : baseCount
     this.portalSpawned = false
@@ -123,7 +124,12 @@ export class GameEngine {
     // 避免重复spawn boss
     if (def.isBoss && this.state.floor.enemies.some(e => e.def.isBoss && !e.isDead)) return
 
-    const scaleMult = 1 + (floorLevel - 1) * 0.15
+    // === 全面属性成长 ===
+    const hpMult = 1 + (floorLevel - 1) * 0.18
+    const atkMult = 1 + (floorLevel - 1) * 0.12
+    const spdMult = Math.min(1 + (floorLevel - 1) * 0.05, 2.0) // 速度最多2倍
+    const atkSpdMult = Math.max(0.5, 1 - (floorLevel - 1) * 0.03) // 攻速最多快50%
+
     const side = Math.floor(Math.random() * 4)
     let x: number, y: number
     switch (side) {
@@ -133,10 +139,19 @@ export class GameEngine {
       default: x = WALL + 10; y = WALL + Math.random() * (ROOM_H - WALL * 2); break
     }
 
+    // 创建敌人，带缩放后的属性
+    const scaledDef = {
+      ...def,
+      maxHp: Math.round(def.maxHp * hpMult),
+      attack: Math.round(def.attack * atkMult),
+      speed: +(def.speed * spdMult).toFixed(2),
+      attackSpeed: Math.round(def.attackSpeed * atkSpdMult),
+    }
+
     this.state.floor.enemies.push({
-      id: uid(), def, x, y,
-      hp: Math.round(def.maxHp * scaleMult),
-      maxHp: Math.round(def.maxHp * scaleMult),
+      id: uid(), def: scaledDef, x, y,
+      hp: scaledDef.maxHp,
+      maxHp: scaledDef.maxHp,
       attackCooldown: 0,
       buffs: [], isDead: false,
       targetHeroId: 0,
@@ -1073,15 +1088,17 @@ export class GameEngine {
     // 每3秒补充敌人(直到达到本层需求)
     if (this.waveTimer > 3000 && aliveEnemies < 4 && this.enemiesKilledThisFloor < this.enemiesNeededThisFloor) {
       this.waveTimer = 0
-      const pool = FLOOR_ENEMY_POOLS[Math.min(this.state.floorLevel, 10)] || FLOOR_ENEMY_POOLS[10]
+      const floorLevel = this.state.floorLevel
+      const poolIdx = floorLevel <= 10 ? floorLevel : ((floorLevel - 1) % 5) + 6
+      const pool = FLOOR_ENEMY_POOLS[poolIdx] || FLOOR_ENEMY_POOLS[10]
       const toSpawn = Math.min(2, this.enemiesNeededThisFloor - this.enemiesKilledThisFloor - aliveEnemies)
       for (let i = 0; i < toSpawn; i++) {
-        this.spawnEnemy(pool, this.state.floorLevel)
+        this.spawnEnemy(pool, floorLevel)
       }
     }
 
     // Boss层特殊处理: 确保boss出现
-    if (this.state.floorLevel % 3 === 0 && this.state.floorLevel <= 10 && this.enemiesKilledThisFloor >= this.enemiesNeededThisFloor - 1) {
+    if (this.state.floorLevel % 3 === 0 && this.enemiesKilledThisFloor >= this.enemiesNeededThisFloor - 1) {
       const bossPool = FLOOR_ENEMY_POOLS[Math.min(this.state.floorLevel, 10)] || FLOOR_ENEMY_POOLS[10]
       const hasBoss = this.state.floor.enemies.some(e => e.def.isBoss && !e.isDead)
       const bossKilled = this.state.floor.enemies.some(e => e.def.isBoss && e.isDead)
