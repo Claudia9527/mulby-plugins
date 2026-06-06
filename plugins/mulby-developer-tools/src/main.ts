@@ -127,6 +127,22 @@ const MAX_LIST_ENTRIES = 400
 /** changes 接口里单文件 before/after 的内容上限（避免 IPC 过大） */
 const MAX_DIFF_CHARS = 60_000
 
+/** 构建失败日志是否提示「依赖缺失」（与宿主 buildPlugin 的判定保持一致），用于自动 npm install 兜底 */
+function looksLikeMissingDeps(log: string): boolean {
+  const text = (log || '').toLowerCase()
+  return (
+    text.includes('command not found') ||
+    text.includes('cannot find module') ||
+    text.includes('module not found') ||
+    text.includes('cannot find package') ||
+    text.includes('err_module_not_found') ||
+    text.includes('could not determine executable to run') ||
+    text.includes('is not recognized') ||
+    text.includes('esbuild: not found') ||
+    text.includes('vite: not found')
+  )
+}
+
 /** 把可能是相对/绝对的路径解析为指定根目录内的绝对路径，越界则抛错 */
 function resolveInside(root: string, inputPath: string): string {
   if (!root) {
@@ -386,24 +402,40 @@ export const rpc = {
   async build_check() {
     if (!sessionRoot) throw new Error('Vibe 会话未初始化：请先调用 vibe_begin({ root })')
     const cwd = sessionRoot
-    return await new Promise<{ success: boolean; code?: number; timedOut?: boolean; log: string }>((res) => {
-      let out = ''
-      let child: ReturnType<typeof spawn>
-      try {
-        child = spawn('npm run build', { cwd, shell: true, env: process.env })
-      } catch (e) {
-        res({ success: false, log: e instanceof Error ? e.message : '无法启动构建' })
-        return
-      }
-      const timer = setTimeout(() => {
-        try { child.kill() } catch { /* ignore */ }
-        res({ success: false, timedOut: true, log: (out.slice(-6000) + '\n[构建超时（>180s）被终止]') })
-      }, 180_000)
-      child.stdout?.on('data', (d) => { out += d.toString() })
-      child.stderr?.on('data', (d) => { out += d.toString() })
-      child.on('error', (e) => { clearTimeout(timer); res({ success: false, log: (out + '\n' + (e?.message || '构建进程错误')).slice(-6000) }) })
-      child.on('close', (code) => { clearTimeout(timer); res({ success: code === 0, code: code ?? undefined, log: out.slice(-6000) }) })
-    })
+    const runCmd = (cmd: string, timeoutMs = 180_000) =>
+      new Promise<{ code: number | null; timedOut?: boolean; log: string }>((res) => {
+        let out = ''
+        let child: ReturnType<typeof spawn>
+        try {
+          child = spawn(cmd, { cwd, shell: true, env: process.env })
+        } catch (e) {
+          res({ code: -1, log: e instanceof Error ? e.message : '无法启动进程' })
+          return
+        }
+        const timer = setTimeout(() => {
+          try { child.kill() } catch { /* ignore */ }
+          res({ code: -1, timedOut: true, log: (out.slice(-6000) + '\n[命令超时被终止]') })
+        }, timeoutMs)
+        child.stdout?.on('data', (d) => { out += d.toString() })
+        child.stderr?.on('data', (d) => { out += d.toString() })
+        child.on('error', (e) => { clearTimeout(timer); res({ code: -1, log: (out + '\n' + (e?.message || '进程错误')).slice(-6000) }) })
+        child.on('close', (code) => { clearTimeout(timer); res({ code, log: out.slice(-6000) }) })
+      })
+
+    const first = await runCmd('npm run build')
+    if (first.code === 0) return { success: true, code: 0, log: first.log }
+    // 兜底：新脚手架/未装依赖时 npm run build 会因 vite/esbuild 缺失而必失败。
+    // 与宿主 buildPlugin 一致——命中依赖缺失特征则自动 npm install 后重试一次，避免 AI「自检构建」每次都失败。
+    if (looksLikeMissingDeps(first.log) && !first.timedOut) {
+      const install = await runCmd('npm install --no-audit --no-fund', 300_000)
+      const retry = await runCmd('npm run build')
+      const log = (
+        `${first.log}\n\n[auto-fix] 检测到依赖缺失，已自动 npm install 后重试构建\n` +
+        `${install.log}\n\n[auto-fix] 重试构建结果\n${retry.log}`
+      ).slice(-6000)
+      return { success: retry.code === 0, code: retry.code ?? undefined, log }
+    }
+    return { success: false, code: first.code ?? undefined, timedOut: first.timedOut, log: first.log }
   },
 
 

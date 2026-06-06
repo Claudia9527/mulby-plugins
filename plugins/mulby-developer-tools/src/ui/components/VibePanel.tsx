@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Sparkles, Wand2, FolderSearch, Loader2, Check, ChevronRight, ChevronLeft,
-  Hammer, ShieldCheck, Package, FolderOpen, Play, AlertTriangle,
+  Hammer, ShieldCheck, FolderOpen, Play, AlertTriangle,
   StopCircle, RefreshCw, Image as ImageIcon, Settings2, Rocket, FileText, Lightbulb,
-  Pencil, Boxes, FileEdit, FileSearch, Terminal, Bug, ExternalLink, Wrench, ListChecks,
-  ChevronUp, ChevronDown, History, RotateCcw, GitCommit, Tag
+  Pencil, Boxes, FileEdit, FileSearch, Terminal, Bug, Wrench, ListChecks,
+  ChevronUp, ChevronDown, History, RotateCcw, GitCommit, Tag, Plus
 } from 'lucide-react'
 import type { LogLevel } from '../types'
 import type { UseDeveloperResult } from '../hooks/useDeveloper'
@@ -14,7 +14,7 @@ import {
   manifestJson, primaryTrigger, primaryFeatureCode, contractSummary, triggerLabel
 } from '../lib/vibeContract'
 import { useSession, SessionSwitcher, ChatPanel } from '../vibe'
-import type { VibeSessionState } from '../vibe'
+import type { VibeSessionState, VibeAction, BrainstormOption, VibeMessage } from '../vibe'
 
 export interface VibeEditTarget {
   path: string
@@ -185,6 +185,38 @@ const VIBE_TOOLS = [
   }
 ] as const
 
+/** 只读工具子集：用于「问答」意图，绝不包含写入/构建工具 */
+const VIBE_READ_TOOLS = VIBE_TOOLS.filter((t) => ['list_dir', 'read_file', 'grep'].includes(t.function.name))
+
+export type VibeIntent = 'ask' | 'create' | 'modify' | 'run' | 'package' | 'rollback'
+
+/**
+ * 规则优先的意图识别（零延迟、零成本）。模糊时降级为 'ask'（只读问答），杜绝擅自改代码。
+ * ctx.hasPlugin：当前会话是否已有可操作的插件目录（createdPath）。
+ */
+export function classifyIntent(text: string, ctx: { hasPlugin: boolean }): { intent: VibeIntent; confidence: number } {
+  const t = (text || '').trim()
+  if (!t) return { intent: 'ask', confidence: 0 }
+  const reRollback = /撤销|回滚|还原|退回(上一?版)?|恢复到/
+  const rePackage = /打包|发布|导出|inplugin|出包/i
+  const reRun = /运行|试一?下|试用|跑一?下|跑跑|打开插件|验证一?下|测一?下/
+  const reModify = /改|修复|修一?下|加(个|一个|上)?|增加|去掉|删掉|移除|换成|替换|支持|优化|重构|调整|美化|变成|做成|新增|实现|让它|不能|没反应|报错|bug|崩溃|不对|失效|多语言/i
+  const reAsk = /[?？]\s*$|^(为什么|为啥|怎么|如何|是不是|有没有|能不能|可不可以|什么是|啥是|解释|说明|介绍|看一?下|查一?下|现在|目前|当前|状态|结构|哪些|多少|是否|讲讲|说说)/
+
+  if (reRollback.test(t)) return { intent: 'rollback', confidence: 0.9 }
+  if (rePackage.test(t)) return { intent: 'package', confidence: 0.85 }
+  if (reRun.test(t)) return { intent: 'run', confidence: 0.8 }
+
+  if (!ctx.hasPlugin) {
+    if (reAsk.test(t) && !reModify.test(t)) return { intent: 'ask', confidence: 0.7 }
+    return { intent: 'create', confidence: 0.6 }
+  }
+  if (reAsk.test(t) && !reModify.test(t)) return { intent: 'ask', confidence: 0.75 }
+  if (reModify.test(t)) return { intent: 'modify', confidence: 0.7 }
+  // 模糊 → 只读问答兜底（决策：默认不动代码）
+  return { intent: 'ask', confidence: 0.3 }
+}
+
 function extractJsonObject(raw: string): string | null {
   const text = (raw || '').trim()
   if (text.startsWith('{') && text.endsWith('}')) return text
@@ -279,6 +311,7 @@ export function VibePanel({
 
   const [iconBusy, setIconBusy] = useState(false)
   const [iconDone, setIconDone] = useState(false)
+  const [iconDataUrl, setIconDataUrl] = useState<string | null>(null)
   const [packing, setPacking] = useState(false)
   const [packed, setPacked] = useState(false)
 
@@ -298,9 +331,15 @@ export function VibePanel({
   const [smoke, setSmoke] = useState<SmokeResult[]>([])
   const [smoking, setSmoking] = useState(false)
 
-  // 交付后对话式继续修改：迭代历史（用户每次的反馈/需求）
-  const [iterations, setIterations] = useState<string[]>([])
+  // 右侧对话式继续修改：是否正在迭代（busy 指示）。历史不再单独存字符串，
+  // 改由「对话历史上下文工程」统一注入（见 convoRef / buildHistoryMessages）。
   const [iterating, setIterating] = useState(false)
+
+  // 头脑风暴（S3）：开局让 AI 发散候选方向供小白选择
+  const [brainstorm, setBrainstorm] = useState<{ loading: boolean; options: BrainstormOption[]; seed: string } | null>(null)
+
+  // 对话内提示卡（S4）：危险操作二次确认 / 构建失败一键修复等
+  const [pendingPrompt, setPendingPrompt] = useState<{ kind: 'confirm' | 'action'; title: string; desc: string; actionLabel: string; danger?: boolean; onAction: () => void } | null>(null)
 
   // 版本管理（Git）：历史列表 + 可用性 + 回滚中标记；pendingCommit 记录下次构建成功后要提交的说明
   const [versions, setVersions] = useState<VcsCommit[]>([])
@@ -316,8 +355,10 @@ export function VibePanel({
   useEffect(() => { setMaxStage((m) => (stage > m ? stage : m)) }, [stage])
 
   // -------- Session 集成 --------
-  const { activeSession, activeId, loaded: sessionLoaded, createSession, updateSession, findByPath, switchSession } = useSession()
-  const sessionRestoredRef = useRef(false)
+  const { activeId, activeSession, loaded: sessionLoaded, sessions, createSession, updateSession, appendMessage, deselect, clearMessages, findByPath, switchSession } = useSession()
+  // 当前面板本地状态所「承载」的会话 id。仅当 activeId 切换到一个尚未承载的会话时才重新水合，
+  // 且 syncToSession 只在 liveSessionIdRef === activeId 时回写，杜绝把旧状态写进新会话造成数据污染。
+  const liveSessionIdRef = useRef<string | null>(null)
 
   const stageToSessionState = (s: Stage, gen: boolean): VibeSessionState => {
     if (gen) return 'generating'
@@ -327,31 +368,45 @@ export function VibePanel({
     return 'contract'
   }
 
-  // 挂载时从 activeSession 恢复状态（仅一次）
+  // 切换/载入会话时把会话状态水合进面板（首次挂载或下拉切换都会触发）
   useEffect(() => {
-    if (!sessionLoaded || sessionRestoredRef.current) return
-    sessionRestoredRef.current = true
-    if (!activeSession) return
-    if (activeSession.sentence) setSentence(activeSession.sentence)
-    if (activeSession.vibeMode) setVibeMode(activeSession.vibeMode)
-    if (activeSession.genDepth) setGenDepth(activeSession.genDepth)
-    if (activeSession.selectedModel) setSelectedModel(activeSession.selectedModel)
-    if (activeSession.contract) setContract(activeSession.contract)
-    if (activeSession.pluginPath) {
-      if (activeSession.vibeMode === 'edit') setEditPath(activeSession.pluginPath)
-      else setTargetDir(activeSession.pluginPath.split('/').slice(0, -1).join('/') || '')
-      setCreatedPath(activeSession.pluginPath)
+    if (!sessionLoaded) return
+    if (!activeId || activeId === liveSessionIdRef.current) return
+    const s = sessions.find((x) => x.id === activeId)
+    if (!s) return
+    liveSessionIdRef.current = activeId
+    resetState()
+    setVibeMode(s.vibeMode || 'create')
+    setSentence(s.sentence || '')
+    setGenDepth(s.genDepth || 'full')
+    if (s.selectedModel) setSelectedModel(s.selectedModel)
+    setContract(s.contract)
+    const materialized = s.state === 'ready' || s.state === 'generating'
+    if (s.pluginPath) {
+      if (s.vibeMode === 'edit') { setEditPath(s.pluginPath); setCreatedPath(s.pluginPath) }
+      else { setTargetDir(s.pluginPath.split('/').slice(0, -1).join('/') || ''); if (materialized) setCreatedPath(s.pluginPath) }
     }
-    const st = activeSession.state
-    if (st === 'ready') { setStage(3); setMaxStage(3); setGenerated(true); setBuilt(true); setLoaded(true) }
-    else if (st === 'contract') { setStage(1); setMaxStage(1) }
-    else if (st === 'generating') { setStage(2); setMaxStage(2) }
-  }, [sessionLoaded, activeSession])
+    if (s.state === 'ready') {
+      setStage(3); setMaxStage(3); setGenerated(true); setBuilt(true); setLoaded(true)
+      setLoadedId(s.contract?.pluginId || s.contract?.name || undefined)
+      // 已就绪的会话只是「恢复展示」，不要触发交付页的自动重新构建（修复每次切到本 tab 都重建）
+      deliverStartedRef.current = true
+    } else if (s.state === 'generating') {
+      setStage(2); setMaxStage(2)
+    } else if (s.state === 'contract') {
+      setStage(1); setMaxStage(1)
+    } else {
+      setStage(0); setMaxStage(0)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionLoaded, activeId, sessions])
 
   // 关键状态变化时同步到 session
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncToSession = useCallback(() => {
     if (!activeId) return
+    // 面板状态尚未水合到当前活跃会话时不回写，避免把旧会话状态覆盖到新会话
+    if (liveSessionIdRef.current !== activeId) return
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
     syncTimerRef.current = setTimeout(() => {
       updateSession(activeId, {
@@ -366,27 +421,23 @@ export function VibePanel({
     }, 800)
   }, [activeId, stage, generating, contract, sentence, vibeMode, genDepth, selectedModel, createdPath, editPath, updateSession])
 
-  useEffect(() => { if (sessionRestoredRef.current) syncToSession() }, [syncToSession])
+  useEffect(() => { syncToSession() }, [syncToSession])
 
   // 工作台「AI 改造」带入目标：优先恢复已有 session
   useEffect(() => {
     if (!editTarget) return
     const existing = findByPath(editTarget.path)
     if (existing) {
+      // 切到已有会话，由通用水合 effect 负责恢复其 stage/contract/createdPath 等状态
       switchSession(existing.id)
-      if (existing.state === 'ready') { setStage(3); setMaxStage(3); setGenerated(true); setBuilt(true); setLoaded(true) }
-      if (existing.contract) setContract(existing.contract)
-      if (existing.sentence) setSentence(existing.sentence)
-      setVibeMode('edit')
-      setEditPath(editTarget.path)
-      setCreatedPath(editTarget.path)
       addLog('info', `▶ [Vibe] 恢复已有会话：${editTarget.displayName || editTarget.id || editTarget.path}`)
     } else {
       resetState()
       setVibeMode('edit')
       setEditPath(editTarget.path)
       const name = editTarget.displayName || editTarget.id || editTarget.path.split('/').pop() || 'plugin'
-      createSession({ pluginPath: editTarget.path, pluginName: name, vibeMode: 'edit', state: 'initial' })
+      const sess = createSession({ pluginPath: editTarget.path, pluginName: name, vibeMode: 'edit', state: 'initial' })
+      liveSessionIdRef.current = sess.id
       addLog('info', `▶ [Vibe] 进入改造模式：${editTarget.displayName || editTarget.id || editTarget.path}`)
     }
     onConsumeEditTarget?.()
@@ -421,10 +472,61 @@ export function VibePanel({
   }, [addLog])
 
   // ---------------- 时间线 ----------------
+  // 本回合（一次对话）累积的事件，用于把操作明细内联到对应的 assistant 消息
+  const turnEventsRef = useRef<TimelineEvent[]>([])
   const pushEvent = (phase: EventPhase, kind: EventKind, text: string, detail?: string) => {
     eventSeq.current += 1
     const ev: TimelineEvent = { id: `e-${Date.now()}-${eventSeq.current}`, ts: Date.now(), phase, kind, text, detail }
     setEvents((prev) => [...prev.slice(-199), ev])
+    turnEventsRef.current = [...turnEventsRef.current.slice(-39), ev]
+  }
+  // 汇总本回合事件为消息内联的操作卡明细
+  const collectTurnActions = (): VibeAction[] =>
+    turnEventsRef.current.map((e) => ({ kind: e.kind, text: e.text, detail: e.detail }))
+
+  // ---------------- 对话历史上下文工程 ----------------
+  // 关键修复：此前每次 AI 调用都只发 [system, user]，没有任何历史，
+  // 导致「先问答出方案 → 再让它按方案改」时 AI 完全看不到之前的方案。
+  // 这里用一个始终反映当前会话消息的 ref，按预算把最近对话注入到 AI 的 messages，
+  // 让「按上面的方案 / 刚才说的」这类指代能被正确理解。
+  const convoRef = useRef<VibeMessage[]>([])
+  useEffect(() => { convoRef.current = activeSession?.messages || [] }, [activeSession?.messages, activeId])
+
+  const HISTORY_MAX_MSGS = 24      // 最多带入的历史消息条数
+  const HISTORY_MAX_CHARS = 9000   // 历史总字符预算（控制 token）
+  const HISTORY_PER_MSG_CAP = 4000 // 单条历史消息最大字符（超出截断）
+  type ChatMsg = { role: 'user' | 'assistant'; content: string }
+
+  /**
+   * 构造注入给 AI 的对话历史（按时间顺序，最近优先保留，受条数/字符预算约束）。
+   * @param excludeContent 需要排除的「本轮刚追加的用户输入」原文，避免与最终 user 消息重复。
+   */
+  const buildHistoryMessages = (excludeContent?: string): ChatMsg[] => {
+    const all = convoRef.current || []
+    // 规避把「刚 appendMessage 的本轮用户输入」重复带入（handleChatSend 先写消息再调执行器）
+    const src: VibeMessage[] = []
+    let skippedDup = false
+    for (let i = all.length - 1; i >= 0; i--) {
+      const m = all[i]
+      if (!skippedDup && excludeContent != null && m.role === 'user' && m.content === excludeContent) { skippedDup = true; continue }
+      src.unshift(m)
+    }
+    const mapped: ChatMsg[] = src
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && !!m.content && !!m.content.trim())
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content.length > HISTORY_PER_MSG_CAP ? `${m.content.slice(0, HISTORY_PER_MSG_CAP)}\n…（内容较长，已截断）` : m.content
+      }))
+    // 从最近往前按预算保留，保持时间先后顺序
+    const kept: ChatMsg[] = []
+    let total = 0
+    for (let i = mapped.length - 1; i >= 0 && kept.length < HISTORY_MAX_MSGS; i--) {
+      const len = mapped[i].content.length
+      if (kept.length > 0 && total + len > HISTORY_MAX_CHARS) break
+      kept.unshift(mapped[i])
+      total += len
+    }
+    return kept
   }
 
   const currentPhaseRef = useRef<EventPhase>('minimal')
@@ -526,24 +628,27 @@ export function VibePanel({
     try { return JSON.parse(json) } catch { return null }
   }
 
-  const planCreate = async () => {
-    if (!sentence.trim()) { pushToast('error', '请先用一句话描述你想要的插件'); return }
+  const planCreate = async (overrideText?: string) => {
+    const desc = (overrideText ?? sentence).trim()
+    if (!desc) { pushToast('error', '请先用一句话描述你想要的插件'); return }
     if (!targetDir.trim()) { pushToast('error', '请选择插件生成的目标目录'); return }
+    if (overrideText) setSentence(desc)
     if (!activeId) {
-      const name = sentence.trim().slice(0, 20) || 'new-plugin'
-      createSession({ pluginPath: targetDir, pluginName: name, vibeMode: 'create', state: 'initial', sentence, genDepth, selectedModel })
+      const name = desc.slice(0, 20) || 'new-plugin'
+      const sess = createSession({ pluginPath: targetDir, pluginName: name, vibeMode: 'create', state: 'initial', sentence: desc, genDepth, selectedModel })
+      liveSessionIdRef.current = sess.id
     }
     setPlanning(true)
     try {
       addLog('info', '▶ [Vibe] AI 正在规划契约…')
       let parsed: any = null
-      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planPrompt(sentence)) } catch { /* fallback */ }
-      const c = normalizeContract(parsed, sentence)
+      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planPrompt(desc)) } catch { /* fallback */ }
+      const c = normalizeContract(parsed, desc)
       setContract(c)
       setStage(1)
       addLog('success', `✔ [Vibe] 契约已生成：${contractSummary(c)}`)
     } catch (e) {
-      setContract(defaultContract(sentence))
+      setContract(defaultContract(desc))
       setStage(1)
       addLog('warn', `⚠ [Vibe] 规划失败，已用默认契约：${e instanceof Error ? e.message : ''}`)
     } finally {
@@ -551,9 +656,11 @@ export function VibePanel({
     }
   }
 
-  const planEdit = async () => {
+  const planEdit = async (overrideText?: string) => {
+    const desc = (overrideText ?? sentence).trim()
     if (!editPath.trim()) { pushToast('error', '请选择要改造的插件'); return }
-    if (!sentence.trim()) { pushToast('error', '请描述你想对这个插件做什么修改'); return }
+    if (!desc) { pushToast('error', '请描述你想对这个插件做什么修改'); return }
+    if (overrideText) setSentence(desc)
     setPlanning(true)
     try {
       const dirName = editPath.split('/').filter(Boolean).pop() || 'plugin'
@@ -571,13 +678,17 @@ export function VibePanel({
         c = { ...defaultContract(dirName), isEdit: true, pluginId: dirName, needIcon: false }
       }
       c.targetPath = editPath
-      c.editSummary = sentence
+      c.editSummary = desc
       // 轻量预测改动说明
       try {
         addLog('info', '▶ [Vibe] AI 正在分析改动…')
-        const obj = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', editSummaryPrompt(c, sentence))
+        const obj = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', editSummaryPrompt(c, desc))
         if (obj && typeof obj.summary === 'string' && obj.summary.trim()) c.editSummary = obj.summary.trim()
       } catch { /* keep sentence */ }
+      if (!activeId) {
+        const sess = createSession({ pluginPath: editPath, pluginName: c.displayName || dirName, vibeMode: 'edit', state: 'contract', contract: c, sentence: desc, genDepth, selectedModel })
+        liveSessionIdRef.current = sess.id
+      }
       setContract(c)
       setStage(1)
       addLog('success', `✔ [Vibe] 改造契约已读入：${c.displayName}（${c.pluginId}）`)
@@ -588,7 +699,7 @@ export function VibePanel({
     }
   }
 
-  const doPlan = () => (vibeMode === 'edit' ? planEdit() : planCreate())
+  const doPlan = (text?: string) => (vibeMode === 'edit' ? planEdit(text) : planCreate(text))
 
   // ---------------- AI agent ----------------
   const createSystemPrompt = (c: VibeContract, root: string, phase: 'minimal' | 'full' | 'expand') => [
@@ -601,6 +712,7 @@ export function VibePanel({
     `契约：${contractSummary(c)}`,
     `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`,
     '请确保实现与上述触发方式一致：例如 regex 触发的功能要能正确解析并处理 context.input 中匹配到的文本。',
+    '你可能会看到与用户的历史对话（头脑风暴/问答/此前讨论）作为背景，用于理解用户真实意图；但本插件的权威规格以上面的契约为准。',
     phase === 'minimal'
       ? '本轮目标【最小可运行路径】：只实现一条能被触发、能跑起来的最小 happy path（首个功能即可），保证可构建、可打开，先不要追求完整功能或花哨 UI。同时写一个简洁 README.md。'
       : phase === 'full'
@@ -614,6 +726,7 @@ export function VibePanel({
     'manifest.json 已按用户确认的契约写好，请勿修改它——尤其严禁改动插件形态：不要给静默/无界面插件新增 ui、window 或把功能 mode 改成 detached/ui（即不要把无界面插件改造成有界面插件），除非用户在本次需求里明确要求"加界面/做个窗口"。若用户确实要加界面，必须同时创建 src/ui 入口与 UI 代码，使产物与 manifest 一致，不能只在 manifest 写 ui 却没有界面文件。',
     '工作方式：先 list_dir 看结构、grep/read_file 通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；尽量用 edit_file 做最小增量改动（仅大改才整文件 write_file）；用到 window.mulby.* 前先用 mulby_read_file 查阅 API 文档确认签名与用法；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码仍然一致（按 error 修复）。完成后用一两句话说明改动并停止。',
     '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_read_file 查阅技能 API 文档核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist。',
+    '你可能会看到与用户的历史对话（问答/此前确认的方案/已做过的修改）作为背景；当用户说「按上面的方案 / 刚才说的」时，请依据对话历史执行；以契约与对话上下文共同理解需求。',
     `契约：${contractSummary(c)}`,
     phase === 'minimal'
       ? `本轮目标【最小改动】：仅实现需求「${c.editSummary || sentence}」所需的最小改动。`
@@ -713,7 +826,7 @@ export function VibePanel({
     return baseSystem
   }
 
-  const runAgent = async (system: string, user: string, root: string, phase: EventPhase) => {
+  const runAgent = async (system: string, user: string, root: string, phase: EventPhase, history: ChatMsg[] = []) => {
     const a = ai()
     if (!a?.call) throw new Error('当前环境未启用 AI API，无法生成代码')
     if (!root) throw new Error('插件根目录为空，无法开始')
@@ -724,7 +837,7 @@ export function VibePanel({
     const req = a.call(
       {
         ...(selectedModel ? { model: selectedModel } : {}),
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: user }],
         tools: VIBE_TOOLS,
         maxToolSteps: 60,
         capabilities: ['fs.read'],
@@ -738,6 +851,7 @@ export function VibePanel({
   // ---------------- 阶段 1 → 2：写契约 manifest + 生成最小可运行路径 ----------------
   const doGenerate = async () => {
     if (!contract) return
+    setBrainstorm(null)
     setGenerating(true)
     setEvents([])
     setToolCalls(0)
@@ -759,8 +873,12 @@ export function VibePanel({
         if (!created.success) { pushEvent('scaffold', 'error', created.error || '脚手架失败'); pushToast('error', created.error || '脚手架失败'); return }
         root = created.path || `${targetDir}/${contract.name}`
         setCreatedPath(root)
+        // 真实插件目录已知，修正会话的 pluginPath（planCreate 阶段只能先记父目录占位）
         if (!activeId) {
-          createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel })
+          const sess = createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel })
+          liveSessionIdRef.current = sess.id
+        } else {
+          updateSession(activeId, { pluginPath: root, pluginName: contract.displayName || contract.name, contract, state: 'generating' })
         }
         onAfterCreate()
         pushEvent('scaffold', 'note', '脚手架已生成')
@@ -789,7 +907,7 @@ export function VibePanel({
       // 改造模式：已有代码，先用知识图谱注入相关上下文，省去 AI 反复 read_file
       if (contract.isEdit) sys = await injectCgContext(root, contract.editSummary || sentence, firstPhase, sys)
       sys = withApiSurface(sys)
-      const final = await runAgent(sys, userPrompt(contract, firstPhase), root, firstPhase)
+      const final = await runAgent(sys, userPrompt(contract, firstPhase), root, firstPhase, buildHistoryMessages())
       if (abortedRef.current) { pushEvent(firstPhase, 'note', '已中止'); return }
       const summary = typeof final?.content === 'string' ? final.content : ''
       if (summary) setNarration(summary)
@@ -819,8 +937,31 @@ export function VibePanel({
   }
 
   // ---------------- 阶段 3：构建 · 载入 · 图标 · 调试 ----------------
+  // 读取已生成的 icon.png 为 dataURL，供交付页展示
+  const loadIconPreview = async () => {
+    if (!createdPath) { setIconDataUrl(null); return }
+    const fs = fsApi()
+    try {
+      if (fs?.exists && !(await fs.exists(`${createdPath}/icon.png`))) { setIconDataUrl(null); return }
+      const b64 = await fs?.readFile?.(`${createdPath}/icon.png`, 'base64')
+      if (typeof b64 === 'string' && b64) {
+        setIconDataUrl(`data:image/png;base64,${b64.replace(/^data:image\/\w+;base64,/, '')}`)
+      }
+    } catch { /* 读取失败则不展示，忽略 */ }
+  }
+
   const tryGenerateIcon = async () => {
     if (!contract?.needIcon || !createdPath) return
+    const fs0 = fsApi()
+    // 已存在 icon.png 则不再重复生成（避免每次构建/交付都重新调 AI 生成图标）
+    try {
+      if (fs0?.exists && await fs0.exists(`${createdPath}/icon.png`)) {
+        setIconDone(true)
+        void loadIconPreview()
+        pushEvent('icon', 'note', '已存在 icon.png，跳过重复生成')
+        return
+      }
+    } catch { /* 探测失败则照常尝试生成 */ }
     const a = ai()
     let produced = false
     try {
@@ -865,7 +1006,7 @@ export function VibePanel({
       } else {
         pushEvent('icon', 'note', '无 SVG/图像能力，跳过图标')
       }
-      if (produced) { await dev.ensureLoaded(createdPath); await onSyncWorkbench?.() }
+      if (produced) { void loadIconPreview(); await dev.ensureLoaded(createdPath); await onSyncWorkbench?.() }
     } catch (e) {
       pushEvent('icon', 'error', `图标跳过：${e instanceof Error ? e.message : ''}`)
     } finally {
@@ -900,6 +1041,8 @@ export function VibePanel({
     setBuildLog('')
     setSmoke([])          // 代码已变，旧的运行验证结果失效
     setConformance(null)  // 重新校验
+    setPendingPrompt(null) // 清除上一次的构建失败提示
+    turnEventsRef.current = [] // 收集本次构建的操作明细供对话内联
     try {
       pushEvent('build', 'build', '构建 npm run build…')
       addLog('info', `▶ [Vibe] 构建：${createdPath}`)
@@ -910,6 +1053,10 @@ export function VibePanel({
         setBuilt(false)
         pushEvent('build', 'error', r.error || '构建失败')
         pushToast('error', r.error || '构建失败')
+        // 小白引导：用人话说明 + 一键让 AI 修复
+        const tail = (r.log || r.error || '').slice(-280)
+        if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: `构建没通过 😕。报错大致是：\n${tail}\n\n要我自动定位并修复吗？`, timestamp: Date.now() })
+        setPendingPrompt({ kind: 'action', title: '构建未通过', desc: '我可以读取报错自动修复，直到构建通过。', actionLabel: '让 AI 修复', onAction: () => { setPendingPrompt(null); void runRepair() } })
         return
       }
       setBuilt(true)
@@ -918,6 +1065,14 @@ export function VibePanel({
       setLoaded(res.success)
       setLoadedId(res.id)
       pushEvent('load', 'load', res.success ? `已载入 Mulby：${res.id || ''}` : `自动载入失败：${res.error || ''}`)
+      // 构建结果回流右侧对话，让用户在对话流里就能看到反馈
+      if (activeId) {
+        const trig = contract ? primaryTrigger(contract) : ''
+        const msg = res.success
+          ? `构建成功 ✓，已载入 Mulby${res.id ? `（${res.id}）` : ''}。${trig ? `在主输入框输入「${trig}」即可打开，或点上方「打开/试用」。` : '可点上方「打开/试用」。'}`
+          : `构建成功 ✓，但自动载入没成功：${res.error || '未知原因'}。可点上方「打开」重试，或继续告诉我要怎么调整。`
+        appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: msg, timestamp: Date.now(), actions: collectTurnActions() })
+      }
       await onSyncWorkbench?.()
       void runConformance()
       void autoCommit()
@@ -948,9 +1103,9 @@ export function VibePanel({
     } catch { /* 忽略：改动卡片只是辅助 */ }
   }
 
-  // 进入交付页或生成/扩展/修复后刷新改动列表与版本历史
+  // 进入交付页或生成/扩展/修复后刷新改动列表与版本历史 + 图标预览
   useEffect(() => {
-    if (stage === 3 && createdPath) { void loadChanges(); void loadVersions() }
+    if (stage === 3 && createdPath) { void loadChanges(); void loadVersions(); void loadIconPreview() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, createdPath, generated, expanded, built])
 
@@ -1033,35 +1188,11 @@ export function VibePanel({
     }
   }
 
-  const runExpand = async () => {
-    if (!contract || !createdPath) return
-    setExpanding(true)
-    setStage(2)
-    try {
-      pushEvent('expand', 'ai', 'AI 完善与扩展…')
-      addLog('info', '▶ [Vibe] AI 完善与扩展…')
-      let sys = contract.isEdit ? editSystemPrompt(contract, createdPath, 'expand') : createSystemPrompt(contract, createdPath, 'expand')
-      // 完善扩展阶段：已有最小可运行代码，注入知识图谱上下文帮助 AI 精准扩展
-      sys = await injectCgContext(createdPath, contract.editSummary || sentence, 'expand', sys)
-      sys = withApiSurface(sys)
-      await runAgent(sys, userPrompt(contract, 'expand'), createdPath, 'expand')
-      if (abortedRef.current) return
-      setExpanded(true)
-      pendingCommitMsgRef.current = '完善扩展'
-      deliverStartedRef.current = false
-      setStage(3)
-    } catch (e) {
-      if (!abortedRef.current) { pushEvent('expand', 'error', e instanceof Error ? e.message : '扩展失败'); pushToast('error', e instanceof Error ? e.message : '扩展失败') }
-    } finally {
-      setExpanding(false)
-      void dev.hostCall('vibe_end').catch(() => {})
-    }
-  }
-
-  // 交付后对话式继续修改：用户输入新反馈（如运行时 bug），AI 在现有代码上做最小迭代
+  // 右侧对话式继续修改：用户输入新反馈（如运行时 bug），AI 在现有代码上做最小迭代
   const followupSystemPrompt = (c: VibeContract, root: string) => [
     '你是资深 Mulby 插件工程师，正在根据用户的后续反馈，对一个**已存在且可正常构建**的插件做迭代修改。务必最小化改动，不要破坏现有功能。',
     `插件根目录：${root}`,
+    '【重要·上下文】上面的 messages 里包含你与用户的完整历史对话（含此前的问答、你给出的方案、以及已经做过的修改）。当用户说「按上面的方案改 / 按你说的做 / 刚才提到的」等指代时，必须回到对话历史里找到对应内容并据此执行，不要忽略或另起炉灶。',
     '工作方式：先 grep/list_dir/read_file 定位并通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；优先用 edit_file 做最小增量改动；用到 window.mulby.* 前先用 mulby_read_file 查阅 API 文档确认；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码一致（按 error 修复）。完成后用一两句说明改动并停止。',
     '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_read_file 查阅技能文档核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist；manifest.json 一般无需改动。',
     'esbuild 打包注意：不要新增无法被打包的原生依赖；图像处理用 window.mulby.sharp 等宿主能力。',
@@ -1069,11 +1200,10 @@ export function VibePanel({
     `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`
   ].join('\n')
 
-  const followupUserPrompt = (instruction: string, history: string[]) => [
-    history.length ? `此前已做过的迭代（仅供参考，避免重复）：\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}\n` : '',
+  const followupUserPrompt = (instruction: string) => [
     `用户的新反馈 / 修改需求：\n${instruction}`,
-    '请先读懂当前代码与问题所在，做最小必要修改，完成后说明改动并停止。'
-  ].filter(Boolean).join('\n')
+    '请结合上面的历史对话理解意图（尤其是此前确认的方案/讨论），先读懂当前代码与问题所在，做必要修改；完成后用一两句说明改动并停止。'
+  ].join('\n')
 
   const runFollowup = async (instruction: string) => {
     const text = instruction.trim()
@@ -1081,17 +1211,21 @@ export function VibePanel({
     setIterating(true)
     setExpanding(true) // 复用：让阶段2的「停止」按钮可用
     setStage(2)
+    turnEventsRef.current = []
+    setNarration('') // 清空上一轮，供右侧对话流式展示本轮回复
     try {
       pushEvent('repair', 'ai', '按你的反馈继续修改…', text.slice(0, 60))
       addLog('info', `▶ [Vibe] 继续修改：${text}`)
       let sys = followupSystemPrompt(contract, createdPath)
       sys = await injectCgContext(createdPath, text, 'repair', sys)
       sys = withApiSurface(sys)
-      const final = await runAgent(sys, followupUserPrompt(text, iterations), createdPath, 'repair')
+      // 注入历史对话上下文：排除本轮刚追加的用户输入，避免与最终 user 消息重复
+      const final = await runAgent(sys, followupUserPrompt(text), createdPath, 'repair', buildHistoryMessages(text))
       if (abortedRef.current) { pushEvent('repair', 'note', '已中止'); return }
       const summary = typeof final?.content === 'string' ? final.content : ''
       if (summary) setNarration(summary)
-      setIterations((prev) => [...prev, text])
+      // 持久化 AI 回复到会话对话历史（含本回合操作明细；用户消息由 handleChatSend 写入）
+      if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: summary || '已按你的反馈完成修改。', timestamp: Date.now(), actions: collectTurnActions() })
       pendingCommitMsgRef.current = `迭代：${text.slice(0, 120)}`
       deliverStartedRef.current = false
       setStage(3)
@@ -1105,6 +1239,58 @@ export function VibePanel({
     }
   }
 
+  // ---------------- 只读问答（S1）：回答关于插件的问题，绝不改代码/构建 ----------------
+  const askSystemPrompt = (c: VibeContract | null, root: string) => [
+    '你是 Mulby 插件开发助手，正在回答用户关于一个插件项目的问题。',
+    root ? `插件根目录：${root}` : '当前还没有具体的插件项目。',
+    '你可以使用 list_dir / read_file / grep 这三个只读工具查看代码来回答问题。',
+    '上面的 messages 包含你与用户的历史对话，请把它当作上下文：用户可能在追问、或让你「出个方案 / 给个思路」，请连贯作答；若你给出的是「修改方案」，请尽量结构化、可执行，方便用户随后说「按这个方案改」时直接落地。',
+    '【铁律】这是「只读问答」：严禁修改、写入、删除任何文件，严禁构建或运行插件。只查看并回答（可以给出详细方案/步骤，但不要实际改动）。',
+    '请用简洁中文回答。若你判断用户其实是想让你改代码，请提示他用「帮我改…」「修复…」这类说法来触发修改，而不要直接动手。',
+    c ? `当前插件契约：${contractSummary(c)}` : ''
+  ].filter(Boolean).join('\n')
+
+  const runAsk = async (question: string) => {
+    const a = ai()
+    if (!a?.call) { pushToast('error', '当前环境未启用 AI API，无法回答'); return }
+    const root = createdPath || (vibeMode === 'edit' ? editPath : '')
+    setIterating(true) // 复用底部「停止」与 busy 指示
+    turnEventsRef.current = []
+    try {
+      pushEvent('debug', 'ai', '只读问答…', question.slice(0, 60))
+      addLog('info', `💬 [Vibe] 回答提问：${question.slice(0, 50)}`)
+      if (root) { try { await dev.hostCall('vibe_begin', { root }) } catch { /* 无 root 也可纯文本回答 */ } }
+      abortedRef.current = false
+      reqIdRef.current = null
+      setNarration('')
+      currentPhaseRef.current = 'debug'
+      const sys = withApiSurface(askSystemPrompt(contract, root))
+      const final = await a.call(
+        {
+          ...(selectedModel ? { model: selectedModel } : {}),
+          messages: [{ role: 'system', content: sys }, ...buildHistoryMessages(question), { role: 'user', content: question }],
+          tools: VIBE_READ_TOOLS,
+          maxToolSteps: 20,
+          capabilities: ['fs.read'],
+          mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
+        },
+        onAgentChunk
+      )
+      if (abortedRef.current) { pushEvent('debug', 'note', '已中止'); return }
+      const answer = typeof final?.content === 'string'
+        ? final.content
+        : (Array.isArray(final?.content) ? final.content.map((x: any) => x?.text ?? '').join('\n') : '')
+      const text = (answer || '').trim() || '（未能给出回答，请换种问法再试）'
+      if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(), actions: collectTurnActions() })
+      pushEvent('debug', 'note', '已回答')
+    } catch (e) {
+      if (!abortedRef.current) pushToast('error', e instanceof Error ? e.message : '回答失败')
+    } finally {
+      setIterating(false)
+      if (root) void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
   const runRepair = async () => {
     if (!contract || !createdPath) return
     setRepairing(true)
@@ -1115,7 +1301,7 @@ export function VibePanel({
       // 修复阶段：注入知识图谱上下文，帮助 AI 更快定位报错相关代码
       sys = await injectCgContext(createdPath, contract.editSummary || sentence, 'repair', sys)
       sys = withApiSurface(sys)
-      await runAgent(sys, repairUserPrompt(buildLog), createdPath, 'repair')
+      await runAgent(sys, repairUserPrompt(buildLog), createdPath, 'repair', buildHistoryMessages())
       if (abortedRef.current) return
       pendingCommitMsgRef.current = '修复构建错误'
       await runBuildAndLoad()
@@ -1144,7 +1330,7 @@ export function VibePanel({
       addLog('info', `▶ [Vibe] AI 修复契约一致性问题（${errs.length} 处）`)
       let sys = contract.isEdit ? editSystemPrompt(contract, createdPath, 'minimal') : createSystemPrompt(contract, createdPath, 'minimal')
       sys = withApiSurface(sys)
-      await runAgent(sys, conformancePrompt(conformance!.issues), createdPath, 'repair')
+      await runAgent(sys, conformancePrompt(conformance!.issues), createdPath, 'repair', buildHistoryMessages())
       if (abortedRef.current) return
       pendingCommitMsgRef.current = '修复契约一致性'
       await runBuildAndLoad()
@@ -1283,19 +1469,141 @@ export function VibePanel({
     setStage(0); setMaxStage(0); setContract(null); setEvents([]); setToolCalls(0); setNarration('')
     setGenerated(false); setExpanded(false); setExpanding(false)
     setCreatedPath(''); setBuilt(false); setBuildLog(''); setLoaded(false); setLoadedId(undefined)
-    setIconDone(false); setPacked(false); setDevtoolsOn(null); setOpened(false)
+    setIconDone(false); setIconDataUrl(null); setPacked(false); setDevtoolsOn(null); setOpened(false)
     setGenerating(false); setBuilding(false); setRepairing(false)
     setChanges([]); setRollingBack(false); setCoreVerified(false)
     setConformance(null); setConfRepairing(false); setSmoke([]); setSmoking(false)
-    setIterations([]); setIterating(false)
+    setIterating(false)
     setVersions([]); setRestoringHash(null); setVcsAvailable(true)
+    setBrainstorm(null)
+    setPendingPrompt(null)
     pendingCommitMsgRef.current = ''
     deliverStartedRef.current = false
   }
   const resetAll = () => { resetState(); setVibeMode('create'); setEditPath(''); setSentence('') }
+  // 新建项目：清空面板 + 脱离当前会话（下次规划会创建全新会话，不污染当前项目）
+  const startNewProject = () => { resetAll(); liveSessionIdRef.current = null; deselect() }
+
+  // 同一项目下新建一段对话线程：继承当前项目（路径/契约/状态/模型），仅清空对话历史。
+  // 因 pluginPath 不变，水合不会改变 stage/createdPath，不会触发重新构建，体验为「对话清空、项目照旧」。
+  const newConversation = () => {
+    if (generating || building || planning || iterating || repairing || confRepairing) { pushToast('info', '请等当前任务完成，再新建会话'); return }
+    const base = activeSession
+    if (!base) { startNewProject(); return }
+    liveSessionIdRef.current = null // 让水合 effect 接管新会话状态恢复
+    createSession({
+      pluginPath: base.pluginPath,
+      pluginName: base.pluginName,
+      vibeMode: base.vibeMode,
+      state: base.state,
+      contract: base.contract ? JSON.parse(JSON.stringify(base.contract)) : null,
+      sentence: base.sentence,
+      genDepth: base.genDepth,
+      selectedModel: base.selectedModel
+    }, { allowDuplicatePath: true })
+    pushToast('info', '已在当前项目下新建一段对话')
+  }
 
   const busy = planning || generating || expanding || building || repairing || iconBusy || confRepairing || smoking
-  const canPlan = vibeMode === 'edit' ? (!!editPath.trim() && !!sentence.trim()) : (!!sentence.trim() && !!targetDir.trim())
+  const chatReady = !!createdPath && generated
+  // 设定卡：契约已生成、等待用户确认开始生成代码（对话内联确认入口）
+  const contractPending = (stage === 1 && contract && !generating && !generated)
+    ? { name: contract.displayName || contract.name, summary: contractSummary(contract) }
+    : null
+  // 插件状态（S4）：对话栏顶部常驻的"它在运行/一键试用"状态条
+  const pluginStatus = (createdPath && (generated || built))
+    ? { name: contract?.displayName || contract?.name || createdPath.split('/').pop() || '插件', loaded, trigger: contract ? primaryTrigger(contract) : '' }
+    : null
+
+  // 把输入作为「需求」推进（未就绪时）：有目标→规划；否则填入描述并提示
+  const seedAsRequirement = (t: string) => {
+    const hasTarget = vibeMode === 'edit' ? !!editPath.trim() : !!targetDir.trim()
+    if (hasTarget) { void doPlan(t) }
+    else { setSentence(t); pushToast('info', vibeMode === 'edit' ? '请先在左侧选择要改造的插件' : '请先选择插件生成的目标目录') }
+  }
+
+  // ---------------- 头脑风暴（S3） ----------------
+  const brainstormPrompt = (seed: string) => [
+    '你是 Mulby 插件创意助手。根据用户的初步想法，发散出 3-4 个具体、可落地、彼此差异明显的 Mulby 桌面插件方向。',
+    '只输出 JSON：{ "options": [ { "title": "简短中文方向名", "pitch": "一句话说明能做什么/卖点", "trigger": "触发方式（如：关键词唤起 / 处理选中文本 / 拖入图片 / 正则匹配金额）" } ] }。',
+    '要求：贴近桌面效率/开发工具场景、对新手友好、避免雷同、可被一个小插件实现。',
+    `用户的初步想法：${seed}`
+  ].join('\n')
+
+  const normalizeBrainstorm = (obj: any): BrainstormOption[] => {
+    const arr = Array.isArray(obj?.options) ? obj.options : []
+    return arr.slice(0, 4).map((o: any) => ({
+      title: String(o?.title || '').slice(0, 40),
+      pitch: String(o?.pitch || '').slice(0, 120),
+      trigger: o?.trigger ? String(o.trigger).slice(0, 40) : undefined
+    })).filter((o: BrainstormOption) => o.title)
+  }
+
+  const runBrainstorm = async (seed: string) => {
+    const a = ai()
+    if (!a?.call) { seedAsRequirement(seed); return } // 无 AI 时直接进规划
+    if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: '我帮你想了几个方向，挑一个开始，或继续用自己的话描述：', timestamp: Date.now() })
+    setBrainstorm({ loading: true, options: [], seed })
+    try {
+      const obj = await aiJson('你是 Mulby 插件创意助手，只输出可解析的 JSON 对象。', brainstormPrompt(seed))
+      const options = normalizeBrainstorm(obj)
+      if (!options.length) { setBrainstorm(null); seedAsRequirement(seed); return }
+      setBrainstorm({ loading: false, options, seed })
+    } catch {
+      setBrainstorm(null); seedAsRequirement(seed)
+    }
+  }
+
+  // 采用一段「种子描述」推进到契约生成（有目标→规划；无目标→提示先选目录/插件）
+  const planFromSeed = (seed: string) => {
+    setBrainstorm(null)
+    setSentence(seed)
+    const hasTarget = vibeMode === 'edit' ? !!editPath.trim() : !!targetDir.trim()
+    if (hasTarget) { void doPlan(seed) }
+    else { setStage(0); pushToast('info', vibeMode === 'edit' ? '请先在左侧选择要改造的插件，再描述一次' : '请先选择目标目录，再在对话里描述一次') }
+  }
+
+  const pickIdea = (opt: BrainstormOption) => {
+    const seed = opt.pitch ? `${opt.title}。${opt.pitch}` : opt.title
+    if (activeId) appendMessage(activeId, { id: `m-${Date.now()}`, role: 'user', content: `选择方向：${opt.title}`, timestamp: Date.now(), intent: 'create' })
+    planFromSeed(seed)
+  }
+
+  // 跳过头脑风暴：直接用用户原始描述生成契约
+  const useBrainstormSeed = () => { if (brainstorm) planFromSeed(brainstorm.seed) }
+
+  // 全局对话：规则识别意图后分流。模糊/问答→只读回答，绝不擅自改代码（S1）
+  const handleChatSend = (text: string) => {
+    const t = text.trim()
+    if (!t || busy) return
+    const { intent } = classifyIntent(t, { hasPlugin: !!createdPath })
+    // 集中写入用户消息并打上意图标签（ChatPanel 不再自行写入）
+    if (activeId) appendMessage(activeId, { id: `m-${Date.now()}`, role: 'user', content: t, timestamp: Date.now(), intent })
+    switch (intent) {
+      case 'ask':
+        void runAsk(t); return
+      case 'run':
+        if (chatReady) void openPlugin(); else void runAsk(t); return
+      case 'package':
+        if (chatReady) void doPack(); else void runAsk(t); return
+      case 'rollback':
+        if (chatReady && changes.length) {
+          setPendingPrompt({ kind: 'confirm', title: '撤销本次会话的全部改动？', desc: '将还原改动并重新构建载入，操作不可逆。', actionLabel: '确认撤销', danger: true, onAction: () => { setPendingPrompt(null); void doRollback() } })
+        } else void runAsk(t)
+        return
+      case 'modify':
+        if (chatReady) void runFollowup(t); else seedAsRequirement(t); return
+      case 'create':
+      default:
+        if (chatReady) { void runFollowup(t); return }
+        if (vibeMode === 'create') {
+          if (!targetDir.trim()) { pushToast('info', '请先在左侧选择插件生成的目标目录，再描述一次即可'); return }
+          void runBrainstorm(t); return
+        }
+        seedAsRequirement(t)
+        return
+    }
+  }
 
   return (
     <div className="flex h-full">
@@ -1304,22 +1612,18 @@ export function VibePanel({
         <div className="flex items-center gap-2 px-1.5 mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">
           <Sparkles size={15} className="text-emerald-500" /> {vibeMode === 'edit' ? '一句话改插件' : '一句话造插件'}
         </div>
+        <div className="px-1.5 mb-1.5 text-[10px] text-slate-400 dark:text-slate-500">进度（对话驱动，无需手动切换）</div>
+        {/* 只读进度指示：阶段由对话推进，不再点击跳转 */}
         <ol className="space-y-1">
           {STAGES.map((s) => {
             const active = s.id === stage
             const done = s.id < stage
             const Icon = s.icon
-            // 只能跳到「已抵达过」的步骤；生成/构建进行中禁用跳转，避免打断
-            const reachable = s.id <= maxStage && !busy
-            const jumpable = reachable && s.id !== stage
             return (
               <li key={s.id}>
-                <button
-                  type="button"
-                  onClick={() => { if (jumpable) setStage(s.id) }}
-                  disabled={!jumpable}
-                  title={s.id > maxStage ? '尚未抵达该步骤' : busy ? '进行中，请稍候' : active ? '当前步骤' : '点击跳转'}
-                  className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${active ? 'bg-emerald-500/10 border border-emerald-500/30' : 'border border-transparent'} ${jumpable ? 'cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/60' : 'cursor-default'}`}
+                <div
+                  title={done ? '已完成' : active ? '当前阶段' : '未开始'}
+                  className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg ${active ? 'bg-emerald-500/10 border border-emerald-500/30' : 'border border-transparent'} ${active || done ? '' : 'opacity-60'}`}
                 >
                   <span className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${done ? 'bg-emerald-500 text-white' : active ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}>
                     {done ? <Check size={13} /> : <Icon size={13} />}
@@ -1328,7 +1632,7 @@ export function VibePanel({
                     <span className="block text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{s.id + 1}. {s.title}</span>
                     <span className="block text-[10px] text-slate-400 dark:text-slate-500 mono truncate">{s.sub}</span>
                   </span>
-                </button>
+                </div>
               </li>
             )
           })}
@@ -1354,7 +1658,6 @@ export function VibePanel({
           {stage === 0 && (
             <DescribeStage
               vibeMode={vibeMode} setVibeMode={setVibeMode}
-              sentence={sentence} setSentence={setSentence}
               targetDir={targetDir} setTargetDir={setTargetDir}
               editPath={editPath} setEditPath={setEditPath}
               knownPlugins={knownPlugins}
@@ -1374,20 +1677,19 @@ export function VibePanel({
               contract={contract} createdPath={createdPath}
               building={building} built={built} buildLog={buildLog}
               loaded={loaded} loadedId={loadedId}
-              repairing={repairing} expanding={expanding} expanded={expanded}
-              iconBusy={iconBusy} iconDone={iconDone} packing={packing} packed={packed}
+              repairing={repairing} expanding={expanding}
+              iconBusy={iconBusy} iconDone={iconDone} iconDataUrl={iconDataUrl}
               devtoolsOn={devtoolsOn} devtoolsBusy={devtoolsBusy} opened={opened}
               events={events}
               changes={changes} rollingBack={rollingBack} onRollback={doRollback}
               coreVerified={coreVerified} onToggleCoreVerified={() => setCoreVerified((v) => !v)}
               conformance={conformance} confRepairing={confRepairing} onRepairConformance={repairConformance}
               smoke={smoke} smoking={smoking} onRunSmoke={runFeatureSmoke}
-              iterations={iterations} iterating={iterating} onFollowup={runFollowup}
               versions={versions} vcsAvailable={vcsAvailable} restoringHash={restoringHash}
               onRefreshVersions={loadVersions} onVersionDiff={loadVersionDiff} onRestoreVersion={doRestoreVersion}
-              onRebuild={runBuildAndLoad} onRepair={runRepair} onExpand={runExpand} onPack={doPack}
-              onOpenDir={() => dev.openPluginDir(createdPath)} onTryIt={tryIt}
-              onEnableDevtools={enableDevtools} onOpenPlugin={openPlugin}
+              onRebuild={runBuildAndLoad} onRepair={runRepair}
+              onOpenDir={() => dev.openPluginDir(createdPath)}
+              onEnableDevtools={enableDevtools}
             />
           )}
         </div>
@@ -1399,19 +1701,14 @@ export function VibePanel({
           </button>
 
           {stage === 0 && (
-            (maxStage > 0 && contract) ? (
-              <div className="flex gap-2">
-                <button className="btn-ghost" onClick={doPlan} disabled={planning || !canPlan} title="按当前输入重新生成契约（会覆盖已编辑的契约）">
-                  {planning ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />} 重新规划
-                </button>
-                <button className="btn-primary" onClick={() => setStage(1)}>下一步 <ChevronRight size={15} /></button>
-              </div>
+            planning ? (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-500 dark:text-slate-400">
+                <Loader2 size={14} className="animate-spin" /> {vibeMode === 'edit' ? '分析中…' : '规划中…'}
+              </span>
+            ) : (maxStage > 0 && contract) ? (
+              <button className="btn-primary" onClick={() => setStage(1)}>下一步 <ChevronRight size={15} /></button>
             ) : (
-              <button className="btn-primary" onClick={doPlan} disabled={planning || !canPlan}>
-                {planning ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}
-                {planning ? (vibeMode === 'edit' ? '分析中…' : '规划中…') : (vibeMode === 'edit' ? '读取并生成契约' : '生成契约')}
-                {!planning && <ChevronRight size={15} />}
-              </button>
+              <span className="text-[12px] text-slate-400 dark:text-slate-500">在右侧对话框描述需求即可开始 →</span>
             )
           )}
 
@@ -1424,9 +1721,7 @@ export function VibePanel({
                 <button className="btn-primary" onClick={() => setStage((maxStage >= 3 ? 3 : 2) as Stage)}>下一步 <ChevronRight size={15} /></button>
               </div>
             ) : (
-              <button className="btn-primary" onClick={doGenerate} disabled={!contract || generating}>
-                <Play size={15} /> 确认契约，开始生成
-              </button>
+              <span className="text-[12px] text-slate-400 dark:text-slate-500">在右侧对话点「确认并生成」开始 →</span>
             )
           )}
 
@@ -1451,19 +1746,40 @@ export function VibePanel({
         </div>
       </div>
 
-      {/* 右：会话列表 + 全局对话 */}
-      <aside className="w-64 shrink-0 border-l border-slate-200 dark:border-slate-800 flex flex-col bg-white/40 dark:bg-slate-900/30">
-        <div className="p-3 border-b border-slate-200 dark:border-slate-700">
-          <SessionSwitcher onNewSession={resetAll} />
+      {/* 右：会话列表 + 全局对话主线 */}
+      <aside className="w-80 shrink-0 border-l border-slate-200 dark:border-slate-800 flex flex-col bg-white/40 dark:bg-slate-900/30">
+        <div className="p-2 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-1.5">
+          <div className="flex-1 min-w-0"><SessionSwitcher onNewSession={startNewProject} onNewConversation={newConversation} /></div>
+          <button onClick={startNewProject} disabled={busy} className="btn-primary h-7 px-2 text-[11px] shrink-0" title="新建一个全新的插件项目">
+            <Plus size={13} /> 新建项目
+          </button>
         </div>
-        <div className="flex-1 min-h-0" />
-        {(stage >= 3 || (createdPath && generated)) && (
+        <div className="flex-1 min-h-0">
           <ChatPanel
-            onSend={runFollowup}
-            disabled={building || expanding || repairing || rollingBack || confRepairing}
+            onSend={handleChatSend}
+            disabled={busy && !iterating}
             busy={iterating}
+            streamingText={iterating ? narration : ''}
+            brainstorm={brainstorm}
+            onPickIdea={pickIdea}
+            onMoreIdeas={() => { if (brainstorm) void runBrainstorm(brainstorm.seed) }}
+            onUseSeed={useBrainstormSeed}
+            onDismissBrainstorm={() => setBrainstorm(null)}
+            examples={vibeMode === 'edit' ? EDIT_EXAMPLES : EXAMPLES}
+            contractPending={contractPending}
+            onConfirmGenerate={doGenerate}
+            pendingPrompt={pendingPrompt}
+            onPromptDismiss={() => setPendingPrompt(null)}
+            status={pluginStatus}
+            statusBusy={building || packing}
+            packed={packed}
+            onOpenPlugin={openPlugin}
+            onTryIt={tryIt}
+            onPack={doPack}
+            onClearMessages={() => { if (activeId) clearMessages(activeId) }}
+            onNewConversation={newConversation}
           />
-        )}
+        </div>
       </aside>
     </div>
   )
@@ -1491,11 +1807,10 @@ function ModeBtn({ active, disabled, onClick, icon, label }: { active: boolean; 
 }
 
 function DescribeStage({
-  vibeMode, setVibeMode, sentence, setSentence, targetDir, setTargetDir,
+  vibeMode, setVibeMode, targetDir, setTargetDir,
   editPath, setEditPath, knownPlugins, showAdvanced, setShowAdvanced, genDepth, setGenDepth, onPickDir, disabled
 }: {
   vibeMode: VibeMode; setVibeMode: (m: VibeMode) => void
-  sentence: string; setSentence: (s: string) => void
   targetDir: string; setTargetDir: (s: string) => void
   editPath: string; setEditPath: (s: string) => void
   knownPlugins: KnownPlugin[]
@@ -1505,7 +1820,6 @@ function DescribeStage({
   disabled?: boolean
 }) {
   const isEdit = vibeMode === 'edit'
-  const examples = isEdit ? EDIT_EXAMPLES : EXAMPLES
   return (
     <div className="w-full space-y-5">
       <div className="inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/70">
@@ -1518,7 +1832,7 @@ function DescribeStage({
           {isEdit ? <Pencil size={20} className="text-emerald-500" /> : <Lightbulb size={20} className="text-emerald-500" />}
         </div>
         <div>
-          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{isEdit ? '选一个插件，一句话说要改什么' : '用一句话描述你想要的插件'}</h2>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{isEdit ? '选一个插件，在右侧对话说要改什么' : '设好目标，在右侧对话描述你的插件'}</h2>
           <p className="text-[11px] text-slate-400 dark:text-slate-500">{isEdit ? 'AI 会读懂现有代码，按需改写、构建并重新载入' : '先确认结构化「契约」，再由 AI 实现、构建、载入'}</p>
         </div>
       </div>
@@ -1541,19 +1855,6 @@ function DescribeStage({
         </Field>
       )}
 
-      <Field label={isEdit ? '要改什么' : '一句话需求'}>
-        <textarea className="input-base min-h-28 leading-relaxed" placeholder={isEdit ? '例如：界面改成暗色风格，并加一个复制按钮' : '例如：把剪贴板里的图片上传并返回 Markdown 链接'} value={sentence} onChange={(e) => setSentence(e.target.value)} disabled={disabled} />
-      </Field>
-
-      <div className="flex flex-wrap gap-2">
-        {examples.map((ex) => (
-          <button key={ex} onClick={() => setSentence(ex)} disabled={disabled}
-            className="text-[12px] px-2.5 py-1 rounded-full border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-emerald-400/60 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors disabled:opacity-50">
-            {ex}
-          </button>
-        ))}
-      </div>
-
       {!isEdit && (
         <Field label="目标目录" hint="将在此目录下创建插件子目录">
           <div className="flex gap-2">
@@ -1565,19 +1866,28 @@ function DescribeStage({
         </Field>
       )}
 
-      <Field label="生成方式" hint={genDepth === 'full' ? '一次性生成尽量完整、开箱即用的版本（推荐）' : '先生成能跑通的最小骨架，再按需点「继续完善扩展」补全（适合复杂/不确定需求）'}>
+      <Field label="生成方式" hint={genDepth === 'full' ? '一次性生成尽量完整、开箱即用的版本（推荐）' : '先生成能跑通的最小骨架，之后在右侧对话里说「继续完善」即可逐步补全（适合复杂/不确定需求）'}>
         <div className="inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/70">
           <ModeBtn active={genDepth === 'full'} disabled={disabled} onClick={() => setGenDepth('full')} icon={<Rocket size={14} />} label="完整实现" />
           <ModeBtn active={genDepth === 'minimal'} disabled={disabled} onClick={() => setGenDepth('minimal')} icon={<Lightbulb size={14} />} label="最小可跑" />
         </div>
       </Field>
 
+      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-[12px] text-slate-600 dark:text-slate-300 flex items-start gap-2 leading-relaxed">
+        <Sparkles size={15} className="text-emerald-500 shrink-0 mt-0.5" />
+        <span>
+          {isEdit
+            ? '选好上面的插件后，在右侧对话框直接说要改什么（例如「界面改成暗色，并加一个复制按钮」），我会读懂代码再改写。'
+            : '设好目标目录与生成方式后，在右侧对话框用一句话描述你想要的插件，我会先帮你想几个方向，挑一个就开始生成。'}
+        </span>
+      </div>
+
       <button className="text-xs text-slate-400 dark:text-slate-500 flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-300" onClick={() => setShowAdvanced(!showAdvanced)}>
         <Settings2 size={13} /> 关于流程
       </button>
       {showAdvanced && (
         <div className="text-[12px] text-slate-500 dark:text-slate-400 rounded-lg border border-slate-200 dark:border-slate-700 p-3 leading-relaxed">
-          下一步会生成一份可编辑的「契约」（功能/触发词/模式/权限），确认后由本工具确定性写出 manifest.json，再让 AI 实现代码并立即构建载入。生成方式为「完整实现」时一次性产出可用版本；「最小可跑」则先产出最小骨架，之后可一键「完善扩展」「AI 修复」「打开调试」。
+          下一步会生成一份可编辑的「契约」（功能/触发词/模式/权限），确认后由本工具确定性写出 manifest.json，再让 AI 实现代码并立即构建载入。生成方式为「完整实现」时一次性产出可用版本；「最小可跑」则先产出最小骨架，之后在右侧对话里继续描述需求即可逐步完善（构建若没通过可一键「AI 修复」，也能「打开调试」）。
         </div>
       )}
     </div>
@@ -1664,30 +1974,28 @@ function GenerateStage({ contract, events, toolCalls, narration, createdPath, bu
 
 function DeliverStage({
   contract, createdPath, building, built, buildLog, loaded, loadedId,
-  repairing, expanding, expanded, iconBusy, iconDone, packing, packed,
+  repairing, expanding, iconBusy, iconDone, iconDataUrl,
   devtoolsOn, devtoolsBusy, opened, events,
   changes, rollingBack, onRollback, coreVerified, onToggleCoreVerified,
   conformance, confRepairing, onRepairConformance, smoke, smoking, onRunSmoke,
-  iterations, iterating, onFollowup,
   versions, vcsAvailable, restoringHash, onRefreshVersions, onVersionDiff, onRestoreVersion,
-  onRebuild, onRepair, onExpand, onPack, onOpenDir, onTryIt, onEnableDevtools, onOpenPlugin
+  onRebuild, onRepair, onOpenDir, onEnableDevtools
 }: {
   contract: VibeContract; createdPath: string
   building: boolean; built: boolean; buildLog: string
   loaded: boolean; loadedId?: string
-  repairing: boolean; expanding: boolean; expanded: boolean
-  iconBusy: boolean; iconDone: boolean; packing: boolean; packed: boolean
+  repairing: boolean; expanding: boolean
+  iconBusy: boolean; iconDone: boolean; iconDataUrl: string | null
   devtoolsOn: boolean | null; devtoolsBusy: boolean; opened: boolean
   events: TimelineEvent[]
   changes: VibeChange[]; rollingBack: boolean; onRollback: () => void
   coreVerified: boolean; onToggleCoreVerified: () => void
   conformance: ConformanceResult | null; confRepairing: boolean; onRepairConformance: () => void
   smoke: SmokeResult[]; smoking: boolean; onRunSmoke: () => void
-  iterations: string[]; iterating: boolean; onFollowup: (text: string) => void
   versions: VcsCommit[]; vcsAvailable: boolean; restoringHash: string | null
   onRefreshVersions: () => void; onVersionDiff: (hash: string) => Promise<string>; onRestoreVersion: (hash: string) => void
-  onRebuild: () => void; onRepair: () => void; onExpand: () => void; onPack: () => void
-  onOpenDir: () => void; onTryIt: () => void; onEnableDevtools: () => void; onOpenPlugin: () => void
+  onRebuild: () => void; onRepair: () => void
+  onOpenDir: () => void; onEnableDevtools: () => void
 }) {
   const buildFailed = !building && !built && !!buildLog
   const isEdit = !!contract.isEdit
@@ -1696,8 +2004,10 @@ function DeliverStage({
   return (
     <div className="w-full space-y-5">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center">
-          {building ? <Loader2 size={20} className="text-emerald-500 animate-spin" /> : <Rocket size={20} className="text-emerald-500" />}
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center overflow-hidden shrink-0">
+          {building ? <Loader2 size={20} className="text-emerald-500 animate-spin" />
+            : iconDataUrl ? <img src={iconDataUrl} alt="插件图标" className="w-full h-full object-contain" />
+            : <Rocket size={20} className="text-emerald-500" />}
         </div>
         <div>
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
@@ -1747,23 +2057,15 @@ function DeliverStage({
             在 Mulby 主输入框输入 <span className="mono badge badge-green">{trigger}</span> 即可打开{isEdit ? '改造后的' : '你的'}插件。
           </div>
           <div className="flex flex-wrap gap-2">
-            <button className="btn-primary" onClick={onOpenPlugin}><ExternalLink size={15} /> 打开插件</button>
             <button className="btn-secondary" onClick={onRunSmoke} disabled={smoking} title="用契约里的示例输入真实调用每个功能一次，验证「能执行」而不只是「能编译」">
               {smoking ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />} 运行验证
             </button>
-            <button className="btn-secondary" onClick={onTryIt}><Play size={15} /> 复制触发词</button>
-            {!expanded && <button className="btn-secondary" onClick={onExpand} disabled={expanding}>{expanding ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />} 继续完善扩展</button>}
             <button className="btn-secondary" onClick={onOpenDir}><FolderOpen size={15} /> 打开目录</button>
-            <button className="btn-secondary" onClick={onPack} disabled={packing}>{packing ? <Loader2 size={15} className="animate-spin" /> : <Package size={15} />} {packed ? '已打包' : '打包'}</button>
             <button className="btn-ghost" onClick={onRebuild} disabled={building}><Hammer size={15} /> 重新构建</button>
           </div>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">「打开 / 试用 / 打包」已收进右侧对话栏顶部的状态条，可随时操作；想继续完善，直接在对话里说「帮我改…」即可。</p>
           {smoke.length > 0 && <SmokeList smoke={smoke} />}
         </div>
-      )}
-
-      {/* 交付后对话式继续修改：测试发现 bug 时，直接描述让 AI 迭代 */}
-      {(built || loaded) && (
-        <FollowupCard iterations={iterations} iterating={iterating} onFollowup={onFollowup} disabled={building || expanding || repairing || rollingBack} />
       )}
 
       {/* 实时调试回路 */}
@@ -1945,49 +2247,6 @@ function DiffView({ before, after }: { before: string | null; after: string | nu
         }>{r.sign} {r.text}</div>
       ))}
     </pre>
-  )
-}
-
-function FollowupCard({ iterations, iterating, onFollowup, disabled }: {
-  iterations: string[]; iterating: boolean; onFollowup: (text: string) => void; disabled?: boolean
-}) {
-  const [text, setText] = useState('')
-  const send = () => {
-    const t = text.trim()
-    if (!t || iterating || disabled) return
-    onFollowup(t)
-    setText('')
-  }
-  return (
-    <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4 space-y-3">
-      <div className="text-[12px] font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-        <Sparkles size={14} className="text-indigo-500" /> 继续修改（对话式）
-        <span className="text-[11px] font-normal text-slate-400 dark:text-slate-500">测试发现问题？直接描述，AI 会在现有代码上迭代修改并重新构建</span>
-      </div>
-      {iterations.length > 0 && (
-        <ul className="space-y-1">
-          {iterations.map((h, i) => (
-            <li key={i} className="text-[11px] text-slate-500 dark:text-slate-400 flex items-start gap-1.5">
-              <Check size={12} className="mt-0.5 shrink-0 text-emerald-500" /> <span className="break-words">{h}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex gap-2 items-end">
-        <textarea
-          className="input-base min-h-16 leading-relaxed flex-1"
-          placeholder="例如：点击「复制」按钮没反应，请修复；或：列表项太挤，间距调大一点"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send() } }}
-          disabled={disabled || iterating}
-        />
-        <button className="btn-primary shrink-0" onClick={send} disabled={disabled || iterating || !text.trim()}>
-          {iterating ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />} {iterating ? '修改中…' : '发送'}
-        </button>
-      </div>
-      <p className="text-[11px] text-slate-400 dark:text-slate-500">⌘/Ctrl + Enter 发送。每次修改都会记入「本次改动」，不满意可一键回滚。</p>
-    </div>
   )
 }
 

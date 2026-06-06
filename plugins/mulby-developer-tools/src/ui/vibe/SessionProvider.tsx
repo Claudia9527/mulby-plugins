@@ -1,16 +1,19 @@
 import React, { createContext, useContext } from 'react'
 import { useVibeSession } from './useVibeSession'
-import type { VibeSession, SessionStorageStats } from './types'
+import type { VibeSession, VibeMessage, SessionStorageStats } from './types'
 
 interface SessionContextValue {
   sessions: VibeSession[]
   activeSession: VibeSession | null
   activeId: string | null
   loaded: boolean
-  createSession: (partial: Partial<VibeSession> & { pluginPath: string; pluginName: string }) => VibeSession
+  createSession: (partial: Partial<VibeSession> & { pluginPath: string; pluginName: string }, opts?: { allowDuplicatePath?: boolean }) => VibeSession
   updateSession: (id: string, patch: Partial<VibeSession>) => void
+  appendMessage: (id: string, msg: VibeMessage) => void
   deleteSession: (id: string) => void
   switchSession: (id: string) => void
+  deselect: () => void
+  clearMessages: (id: string) => void
   findByPath: (pluginPath: string) => VibeSession | null
   getStats: () => SessionStorageStats
   clearAll: () => Promise<void>
