@@ -16,6 +16,8 @@ interface WindowMulby {
   clipboard?: {
     readText: () => Promise<string>
     writeText: (text: string) => Promise<void>
+    readImage?: () => Promise<ArrayBuffer | null>
+    getFormat?: () => Promise<'text' | 'image' | 'files' | 'empty'>
   }
   storage?: {
     get: (key: string, pluginId?: string) => Promise<unknown>
@@ -43,6 +45,11 @@ interface WindowMulby {
   filesystem?: {
     readFile: (path: string, encoding?: 'utf-8' | 'base64') => Promise<string | ArrayBuffer | Uint8Array>
     writeFile: (path: string, data: string | ArrayBuffer, encoding?: 'utf-8' | 'base64') => Promise<void>
+    exists?: (path: string) => Promise<boolean>
+    mkdir?: (path: string) => Promise<void>
+  }
+  system?: {
+    getPath?: (name: string) => Promise<string>
   }
   onThemeChange?: (callback: (theme: ThemeMode) => void) => void
   onPluginInit?: (callback: (data: PluginInitData) => void) => void
@@ -58,7 +65,9 @@ export function useMulby(pluginId?: string) {
   return useMemo(() => ({
     clipboard: {
       readText: () => window.mulby?.clipboard?.readText() ?? Promise.resolve(''),
-      writeText: (text: string) => window.mulby?.clipboard?.writeText(text) ?? Promise.resolve()
+      writeText: (text: string) => window.mulby?.clipboard?.writeText(text) ?? Promise.resolve(),
+      readImage: () => window.mulby?.clipboard?.readImage?.() ?? Promise.resolve(null),
+      getFormat: () => window.mulby?.clipboard?.getFormat?.() ?? Promise.resolve('empty' as const)
     },
     storage: {
       get: (key: string) => window.mulby?.storage?.get(key, pluginId) ?? Promise.resolve(undefined),
@@ -87,7 +96,12 @@ export function useMulby(pluginId?: string) {
       readFile: (path: string, encoding?: 'utf-8' | 'base64') =>
         window.mulby?.filesystem?.readFile(path, encoding) ?? Promise.resolve(''),
       writeFile: (path: string, data: string | ArrayBuffer, encoding?: 'utf-8' | 'base64') =>
-        window.mulby?.filesystem?.writeFile(path, data, encoding) ?? Promise.resolve()
+        window.mulby?.filesystem?.writeFile(path, data, encoding) ?? Promise.resolve(),
+      exists: (path: string) => window.mulby?.filesystem?.exists?.(path) ?? Promise.resolve(false),
+      mkdir: (path: string) => window.mulby?.filesystem?.mkdir?.(path) ?? Promise.resolve()
+    },
+    system: {
+      getPath: (name: string) => window.mulby?.system?.getPath?.(name) ?? Promise.resolve('')
     }
   }), [pluginId])
 }

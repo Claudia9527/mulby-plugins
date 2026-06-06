@@ -17,6 +17,8 @@ import {
   FileUp,
   Heading1,
   Heading2,
+  Image as ImageIcon,
+  Images,
   Italic,
   Link2,
   List,
@@ -31,6 +33,18 @@ import { useMulby } from './hooks/useMulby'
 import { useDraftStorage } from './hooks/useDraftStorage'
 import { FindReplaceBar, type FindReplaceMode } from './components/FindReplaceBar'
 import { findMatches, replaceAll as replaceAllInText, replaceRange, type SearchMatch } from './services/search'
+import {
+  buildDataUrl,
+  buildImageMarkdown,
+  extensionFromMime,
+  extractInlineImages,
+  getExtension,
+  hasInlineDataImage,
+  mimeFromExtension,
+  saveImageAsset,
+  saveImageToDir,
+  toFileUrl
+} from './services/image'
 import {
   createExportDocument,
   exportDocxFile,
@@ -301,7 +315,7 @@ export default function App() {
   const lastPersistedRef = useRef('')
   const activeFilePathRef = useRef<string | null>(null)
   const hasInitPayloadRef = useRef(false)
-  const { clipboard, dialog, filesystem, notification, storage } = useMulby(PLUGIN_ID)
+  const { clipboard, dialog, filesystem, notification, storage, system } = useMulby(PLUGIN_ID)
   const draftStorage = useDraftStorage(storage, STORAGE_DRAFT_KEY)
 
   contentRef.current = content
@@ -965,11 +979,104 @@ export default function App() {
     setExportMenuOpen(true)
   }, [])
 
+  // Persists raw image bytes to disk and returns the short URL to reference it
+  // by: a portable `assets/` relative path when a file is bound, otherwise a
+  // `file://` URL into the plugin data dir. Throws if the write fails so callers
+  // can decide how to fall back.
+  const saveImageData = useCallback(async (data: ArrayBuffer | Uint8Array, ext: string) => {
+    const safeExt = ext || 'png'
+    const boundPath = activeFilePathRef.current
+    if (boundPath) {
+      const result = await saveImageAsset(filesystem, boundPath, data, safeExt)
+      return result.relativePath
+    }
+    const userData = await system.getPath('userData')
+    const assetsDir = `${userData.replace(/[/\\]+$/, '')}/${PLUGIN_ID}/assets`
+    const absolutePath = await saveImageToDir(filesystem, assetsDir, data, safeExt)
+    return toFileUrl(absolutePath)
+  }, [filesystem, system])
+
+  const embedImage = useCallback(async (data: ArrayBuffer | Uint8Array, ext: string, alt = '') => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+    const safeExt = ext || 'png'
+    let imageUrl: string
+    try {
+      imageUrl = await saveImageData(data, safeExt)
+    } catch (error) {
+      console.error('[markdown-editor] embedImage', error)
+      // Last-resort fallback keeps the image usable even if disk write fails.
+      imageUrl = buildDataUrl(data, mimeFromExtension(safeExt))
+    }
+    editor.insertText(buildImageMarkdown(imageUrl, alt))
+    setContent(editor.getMarkdown())
+    editor.focus()
+  }, [saveImageData])
+
+  // Extracts every inline base64 image in the given markdown to disk, returning
+  // the rewritten markdown and how many were extracted. References that cannot
+  // be parsed or saved are left as-is so content is never lost.
+  const extractMarkdownImages = useCallback(async (markdown: string) => {
+    return extractInlineImages(markdown, async (image) => {
+      try {
+        return await saveImageData(image.bytes, image.ext)
+      } catch (error) {
+        console.error('[markdown-editor] extractMarkdownImages', error)
+        return null
+      }
+    })
+  }, [saveImageData])
+
+  // "整理图片": converts every inline base64 image in the current document to a
+  // short on-disk reference, keeping the source clean. Goes through the editor
+  // so the change is part of undo history.
+  const handleOrganizeImages = useCallback(async () => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+    const source = editor.getMarkdown()
+    if (!hasInlineDataImage(source)) {
+      notification.show('当前文档没有内联 base64 图片', 'info')
+      focusEditor()
+      return
+    }
+    try {
+      const { markdown, extracted } = await extractMarkdownImages(source)
+      if (extracted === 0) {
+        notification.show('未能整理任何图片', 'warning')
+        focusEditor()
+        return
+      }
+      editor.setMarkdown(markdown, false)
+      setContent(markdown)
+      notification.show(`已整理 ${extracted} 张内联图片为文件引用`, 'success')
+      focusEditor()
+    } catch (error) {
+      console.error('[markdown-editor] handleOrganizeImages', error)
+      notification.show('整理图片失败', 'error')
+      focusEditor()
+    }
+  }, [extractMarkdownImages, focusEditor, notification])
+
   const handlePasteClipboard = useCallback(async () => {
     try {
+      const format = await clipboard.getFormat()
+      if (format === 'image') {
+        const image = await clipboard.readImage()
+        if (image && image.byteLength > 0) {
+          await embedImage(image, 'png', '')
+          setSourceLabel('来自剪贴板')
+          notification.show('已插入剪贴板图片', 'success')
+          return
+        }
+      }
+
       const text = await clipboard.readText()
       if (!text.trim()) {
-        notification.show('剪贴板里没有可粘贴的文本', 'warning')
+        notification.show('剪贴板里没有可粘贴的内容', 'warning')
         return
       }
 
@@ -979,15 +1086,31 @@ export default function App() {
         return
       }
 
-      editor.insertText(text)
+      // If the pasted markdown carries inline base64 images, extract them to
+      // disk first so the source never gets flooded with huge data URLs.
+      let insertText = text
+      let extractedImages = 0
+      if (hasInlineDataImage(text)) {
+        const { markdown, extracted } = await extractMarkdownImages(text)
+        insertText = markdown
+        extractedImages = extracted
+      }
+
+      editor.insertText(insertText)
+      setContent(editor.getMarkdown())
       setSourceLabel('来自剪贴板')
-      notification.show('已插入剪贴板文本', 'success')
+      notification.show(
+        extractedImages > 0
+          ? `已插入剪贴板文本，并整理 ${extractedImages} 张内联图片`
+          : '已插入剪贴板文本',
+        'success'
+      )
       editor.focus()
     } catch (error) {
       console.error('[markdown-editor] handlePasteClipboard', error)
       notification.show('读取剪贴板失败', 'error')
     }
-  }, [clipboard, notification])
+  }, [clipboard, embedImage, extractMarkdownImages, notification])
 
   const handleCopyMarkdown = useCallback(async () => {
     try {
@@ -1048,6 +1171,78 @@ export default function App() {
     execCommand('addLink', { linkUrl, linkText: selectedText })
   }, [execCommand, focusEditor])
 
+  const handleInsertImage = useCallback(async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: '插入图片',
+        properties: ['openFile'],
+        filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }]
+      })
+      const path = firstPathFromOpenDialog(result)
+      if (!path) {
+        return
+      }
+      const raw = await filesystem.readFile(path, 'base64')
+      const base64 = typeof raw === 'string' ? raw : ''
+      const binary = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+      const ext = getExtension(path) || 'png'
+      const name = (path.replace(/\\/g, '/').split('/').pop() ?? '').replace(/\.[^.]+$/, '')
+      await embedImage(binary, ext, name)
+      notification.show('图片已插入', 'success')
+    } catch (error) {
+      console.error('[markdown-editor] handleInsertImage', error)
+      notification.show('插入图片失败', 'error')
+    }
+  }, [dialog, embedImage, filesystem, notification])
+
+  const embedImageFile = useCallback(async (file: File) => {
+    const buffer = await file.arrayBuffer()
+    const ext = getExtension(file.name) || extensionFromMime(file.type)
+    const alt = file.name.replace(/\.[^.]+$/, '')
+    await embedImage(new Uint8Array(buffer), ext, alt)
+  }, [embedImage])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    const handleDragOver = (event: DragEvent) => {
+      if (event.dataTransfer?.types?.includes('Files')) {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+      }
+    }
+
+    const handleDrop = (event: DragEvent) => {
+      const files = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.type.startsWith('image/'))
+      if (files.length === 0) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      void (async () => {
+        try {
+          for (const file of files) {
+            await embedImageFile(file)
+          }
+          notification.show(`已插入 ${files.length} 张图片`, 'success')
+        } catch (error) {
+          console.error('[markdown-editor] handleDrop', error)
+          notification.show('拖入图片失败', 'error')
+        }
+      })()
+    }
+
+    host.addEventListener('dragover', handleDragOver)
+    host.addEventListener('drop', handleDrop, true)
+    return () => {
+      host.removeEventListener('dragover', handleDragOver)
+      host.removeEventListener('drop', handleDrop, true)
+    }
+  }, [embedImageFile, notification])
+
   const exportMenuOptions: Array<{ format: ExportFormat; label: string; description: string }> = [
     { format: 'markdown', label: 'Markdown (.md)', description: '导出原始 Markdown 内容' },
     { format: 'html', label: 'HTML (.html)', description: '导出可在浏览器中打开的网页文档' },
@@ -1090,6 +1285,12 @@ export default function App() {
       title: '插入链接',
       icon: Link2,
       onClick: handleInsertLink
+    },
+    {
+      label: '图片',
+      title: '插入图片',
+      icon: ImageIcon,
+      onClick: () => void handleInsertImage()
     },
     {
       label: '引用',
@@ -1199,19 +1400,33 @@ export default function App() {
       icon: item.icon,
       onClick: item.onClick
     })),
-    toolbarActions.slice(2, 5).map((item) => ({
+    toolbarActions.slice(2, 4).map((item) => ({
       key: item.label,
       title: item.title,
       icon: item.icon,
       onClick: item.onClick
     })),
-    toolbarActions.slice(5, 7).map((item) => ({
+    [
+      ...toolbarActions.slice(4, 6).map((item) => ({
+        key: item.label,
+        title: item.title,
+        icon: item.icon,
+        onClick: item.onClick
+      })),
+      {
+        key: 'organize-images',
+        title: '整理图片（内联 base64 转文件引用）',
+        icon: Images,
+        onClick: () => void handleOrganizeImages()
+      }
+    ],
+    toolbarActions.slice(6, 8).map((item) => ({
       key: item.label,
       title: item.title,
       icon: item.icon,
       onClick: item.onClick
     })),
-    toolbarActions.slice(7).map((item) => ({
+    toolbarActions.slice(8).map((item) => ({
       key: item.label,
       title: item.title,
       icon: item.icon,
