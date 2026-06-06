@@ -122,8 +122,10 @@ const IGNORED = new Set(['node_modules', 'dist', 'build', '.git', '.DS_Store', '
 const MAX_READ_CHARS = 200_000
 /** 单文件写入上限（字节） */
 const MAX_WRITE_BYTES = 1_000_000
-/** list_dir 返回条目上限 */
+/** list_dir 返回条目上限（仅用于「结构概览」，配合 truncated 标记） */
 const MAX_LIST_ENTRIES = 400
+/** 内容扫描（grep / 一致性校验）遍历文件上限：远高于 list_dir，避免大项目静默漏扫文件 */
+const MAX_SCAN_ENTRIES = 5000
 /** changes 接口里单文件 before/after 的内容上限（避免 IPC 过大） */
 const MAX_DIFF_CHARS = 60_000
 
@@ -162,9 +164,9 @@ function resolveInRoot(inputPath: string): string {
   return resolveInside(sessionRoot, inputPath)
 }
 
-/** 递归列出文件（相对路径），跳过依赖/产物目录，限量返回 */
-function walk(dir: string, baseForRel: string, acc: string[]): void {
-  if (acc.length >= MAX_LIST_ENTRIES) return
+/** 递归列出文件（相对路径），跳过依赖/产物目录，限量返回。limit 默认按 list_dir 概览上限 */
+function walk(dir: string, baseForRel: string, acc: string[], limit: number = MAX_LIST_ENTRIES): void {
+  if (acc.length >= limit) return
   let entries: string[] = []
   try {
     entries = readdirSync(dir)
@@ -172,7 +174,7 @@ function walk(dir: string, baseForRel: string, acc: string[]): void {
     return
   }
   for (const name of entries) {
-    if (acc.length >= MAX_LIST_ENTRIES) return
+    if (acc.length >= limit) return
     if (IGNORED.has(name)) continue
     const full = join(dir, name)
     let isDir = false
@@ -182,7 +184,7 @@ function walk(dir: string, baseForRel: string, acc: string[]): void {
       continue
     }
     if (isDir) {
-      walk(full, baseForRel, acc)
+      walk(full, baseForRel, acc, limit)
     } else {
       acc.push(relative(baseForRel, full).split(sep).join('/'))
     }
@@ -380,7 +382,7 @@ export const rpc = {
     }
     const globRe = input?.glob ? globToRegExp(input.glob) : null
     const files: string[] = []
-    walk(sessionRoot, sessionRoot, files)
+    walk(sessionRoot, sessionRoot, files, MAX_SCAN_ENTRIES)
     const max = Math.min(typeof input?.maxResults === 'number' ? input.maxResults : 100, 500)
     const matches: Array<{ path: string; line: number; text: string }> = []
     for (const rel of files) {
@@ -468,7 +470,7 @@ export const rpc = {
     // 收集源码文本（src/** 与根级脚本），用于「功能码被引用 / 工具已注册」的启发式检查
     const srcFiles: string[] = []
     const srcDir = join(root, 'src')
-    if (existsSync(srcDir)) walk(srcDir, root, srcFiles)
+    if (existsSync(srcDir)) walk(srcDir, root, srcFiles, MAX_SCAN_ENTRIES)
     let combined = ''
     for (const rel of srcFiles) {
       if (!/\.(ts|tsx|js|jsx|mjs|cjs|html)$/.test(rel)) continue
@@ -765,13 +767,21 @@ export const rpc = {
     const hash = String(input?.hash || '').trim()
     if (!gitAvailable() || !root || !isGitRepo(root)) return { ok: false, available: false, reason: 'git 不可用或非仓库' }
     if (!hash) return { ok: false, reason: '缺少目标版本 hash' }
+    // 先把当前（含未跟踪）改动整体存为一个提交，保证回滚可逆、不丢任何东西
     git(root, ['add', '-A'])
     const status = git(root, ['status', '--porcelain'])
     if (status.ok && status.out.trim()) {
       git(root, ['commit', '-m', '自动保存：回滚前的当前状态'])
     }
-    const co = git(root, ['checkout', hash, '--', '.'])
-    if (!co.ok) return { ok: false, available: true, reason: co.err || '回滚失败' }
+    // 用目标提交的整棵树覆盖索引与工作区：会删除该版本之后新增的文件，确保「忠实回滚」。
+    // HEAD 不动（仍指向自动保存的提交），回滚后工作区为相对 HEAD 的未提交改动，
+    // 交由前端重新构建载入并提交一条「回滚」记录；历史保留，可再前进。
+    const rt = git(root, ['read-tree', '-u', '--reset', hash])
+    if (!rt.ok) {
+      // 兜底：read-tree 失败时退回旧行为（至少还原已跟踪文件，但不删新增文件）
+      const co = git(root, ['checkout', hash, '--', '.'])
+      if (!co.ok) return { ok: false, available: true, reason: rt.err || co.err || '回滚失败' }
+    }
     return { ok: true, hash }
   }
 }

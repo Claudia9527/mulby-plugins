@@ -6,6 +6,19 @@ import React from 'react'
  * 不引入第三方依赖，避免插件打包体积膨胀。流式输出时即使语法尚未闭合也能容错渲染。
  */
 
+/**
+ * 链接 href 安全过滤：只放行 http(s)/mailto/tel 与相对路径/锚点，
+ * 拦截 javascript:/data:/vbscript:/file: 等可执行或危险协议（AI 生成内容可能含恶意链接，
+ * 在插件渲染进程里点击可触达 window.mulby.* 能力，故必须白名单）。返回 null 表示不安全。
+ */
+function safeHref(url: string): string | null {
+  const u = (url || '').trim()
+  if (!u) return null
+  if (/^(https?:|mailto:|tel:)/i.test(u)) return u          // 显式放行的安全协议
+  if (/^[#/?]/.test(u) || /^\.{1,2}\//.test(u)) return u    // 相对路径 / 锚点 / 查询
+  return null                                               // 其它（含 javascript:/data: 或可疑形态）一律拒绝
+}
+
 // 行内：行内代码、粗体、斜体、链接
 function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
@@ -23,7 +36,9 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
       nodes.push(<strong key={k} className="font-semibold">{token.slice(2, -2)}</strong>)
     } else if (token.startsWith('[')) {
       const mm = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
-      if (mm) nodes.push(<a key={k} href={mm[2]} target="_blank" rel="noreferrer" className="text-sky-600 dark:text-sky-400 underline break-all">{mm[1]}</a>)
+      const href = mm ? safeHref(mm[2]) : null
+      if (mm && href) nodes.push(<a key={k} href={href} target="_blank" rel="noreferrer" className="text-sky-600 dark:text-sky-400 underline break-all">{mm[1]}</a>)
+      else if (mm) nodes.push(mm[1]) // 不安全链接：只渲染链接文字，丢弃危险 URL
       else nodes.push(token)
     } else {
       nodes.push(<em key={k} className="italic">{token.slice(1, -1)}</em>)
