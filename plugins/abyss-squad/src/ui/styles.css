@@ -1,0 +1,292 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0a0a1a;
+  color: #e0e0e0;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.game-root {
+  width: 800px;
+  height: 600px;
+  position: relative;
+  overflow: hidden;
+  background: #0a0a1a;
+  -webkit-app-region: drag;
+}
+.game-root * { -webkit-app-region: no-drag; }
+
+/* ========== 通用按钮 ========== */
+.btn {
+  padding: 10px 24px;
+  border: 2px solid #333;
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 600;
+  background: transparent;
+  color: #e0e0e0;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn-primary { background: #533483; border-color: #7c4dba; color: #fff; }
+.btn-primary:hover { background: #6a3fa8; }
+.btn-secondary { border-color: #555; }
+.btn-secondary:hover { border-color: #888; background: rgba(255,255,255,0.05); }
+.btn-ghost { border-color: transparent; color: #888; }
+.btn-ghost:hover { color: #ccc; }
+.btn-large { padding: 14px 40px; font-size: 18px; }
+.btn-small { padding: 6px 12px; font-size: 12px; border-color: #9b59b6; color: #9b59b6; }
+.btn-back { padding: 6px 14px; font-size: 13px; border-color: #555; }
+
+/* ========== 主菜单 ========== */
+.main-menu {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.menu-bg {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, #1a1a3e 0%, #0a0a1a 70%);
+}
+.menu-content { position: relative; text-align: center; z-index: 1; }
+.game-title { margin-bottom: 16px; }
+.title-glow {
+  display: block; font-size: 48px; font-weight: 900;
+  background: linear-gradient(135deg, #e74c3c, #9b59b6, #3498db);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  text-shadow: none; filter: drop-shadow(0 0 20px rgba(155, 89, 182, 0.5));
+}
+.title-sub { display: block; font-size: 14px; color: #666; letter-spacing: 8px; margin-top: 4px; }
+.game-desc { color: #888; font-size: 14px; line-height: 1.6; margin-bottom: 32px; }
+.menu-buttons { display: flex; flex-direction: column; gap: 12px; align-items: center; margin-bottom: 32px; }
+.controls-hint { display: flex; gap: 20px; justify-content: center; color: #555; font-size: 12px; }
+.controls-hint span { padding: 4px 10px; border: 1px solid #333; border-radius: 4px; }
+
+/* ========== 营地 (Hub) ========== */
+.hub { width: 100%; height: 100%; display: flex; flex-direction: column; background: #0d0d1f; }
+.hub-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 20px; border-bottom: 1px solid #1a1a3e;
+}
+.hub-title { font-size: 20px; flex: 1; color: #ccc; }
+.crystal-display {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 16px; color: #e1bee7; font-weight: 700;
+}
+.crystal-icon { color: #9b59b6; font-size: 18px; }
+.hub-tabs {
+  display: flex; gap: 2px; padding: 8px 20px;
+  border-bottom: 1px solid #1a1a3e;
+}
+.tab-btn {
+  padding: 8px 16px; border: none; background: transparent;
+  color: #666; font-size: 13px; cursor: pointer; border-radius: 6px 6px 0 0;
+  transition: all 0.2s;
+}
+.tab-btn:hover { color: #aaa; }
+.tab-btn.active { color: #fff; background: #1a1a3e; }
+.hub-content { flex: 1; overflow-y: auto; padding: 16px 20px; }
+.upgrade-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.upgrade-card {
+  background: #111128; border: 1px solid #222; border-radius: 10px;
+  padding: 14px; transition: border-color 0.2s;
+}
+.upgrade-card:hover { border-color: #444; }
+.card-header { display: flex; justify-content: space-between; align-items: center; border-left: 3px solid; padding-left: 10px; margin-bottom: 8px; }
+.card-header h3 { font-size: 15px; }
+.card-level { font-size: 12px; color: #888; }
+.card-desc { font-size: 12px; color: #888; margin-bottom: 8px; }
+.card-bar { height: 4px; background: #222; border-radius: 2px; margin-bottom: 10px; overflow: hidden; }
+.card-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+.btn-upgrade { width: 100%; padding: 8px; font-size: 13px; border-color: #9b59b6; color: #9b59b6; }
+.btn-upgrade:hover:not(:disabled) { background: rgba(155, 89, 182, 0.15); }
+.max-badge { display: block; text-align: center; color: #f39c12; font-size: 12px; }
+
+/* 英雄列表 */
+.hero-grid { display: flex; flex-direction: column; gap: 10px; }
+.hero-card {
+  display: flex; align-items: center; gap: 12px;
+  background: #111128; border: 1px solid #222; border-radius: 8px;
+  padding: 10px 14px;
+}
+.hero-card.locked { opacity: 0.6; }
+.hero-avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.hero-info { flex: 1; }
+.hero-info h4 { font-size: 14px; margin-bottom: 2px; }
+.hero-info p { font-size: 11px; color: #888; }
+.hero-skill { color: #aaa !important; }
+.badge-unlocked { color: #2ecc71; font-size: 11px; }
+.info-panel { padding: 20px; text-align: center; color: #888; }
+.info-panel .stat { margin-top: 12px; font-size: 16px; color: #ccc; }
+.info-panel .hint { font-size: 13px; color: #9b59b6; }
+.hub-stats {
+  display: flex; justify-content: center; gap: 24px;
+  padding: 8px; font-size: 12px; color: #555;
+  border-top: 1px solid #1a1a3e;
+}
+
+/* ========== 游戏画布 ========== */
+.game-container {
+  width: 800px; height: 600px;
+  position: relative; overflow: hidden;
+}
+.game-canvas { display: block; outline: none; }
+
+/* ========== HUD ========== */
+.hud-overlay { position: absolute; inset: 0; pointer-events: none; }
+.hud-overlay * { pointer-events: auto; }
+.hud-top {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; background: rgba(0,0,0,0.6);
+}
+.hud-floor { display: flex; align-items: center; gap: 8px; font-size: 13px; flex: 1; }
+.progress-bar { width: 80px; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: #9b59b6; transition: width 0.3s; }
+.kill-count { color: #888; font-size: 11px; }
+.hud-crystals { display: flex; align-items: center; gap: 4px; color: #e1bee7; font-weight: 700; }
+.btn-quit {
+  background: none; border: none; color: #888; font-size: 18px;
+  cursor: pointer; padding: 2px 6px;
+}
+.btn-quit:hover { color: #e74c3c; }
+
+.hud-bottom {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  display: flex; gap: 8px; padding: 8px 14px;
+  background: rgba(0,0,0,0.6);
+}
+.hud-hero {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 8px;
+  border: 1px solid #333; background: rgba(20,20,40,0.8);
+  flex: 1; position: relative;
+}
+.hud-hero.active { border-color: #9b59b6; }
+.hud-hero.dead { opacity: 0.4; }
+.hero-portrait {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.hero-bars { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.hp-bar, .xp-bar { height: 8px; background: #222; border-radius: 4px; overflow: hidden; position: relative; }
+.hp-fill { height: 100%; background: #2ecc71; transition: width 0.2s; }
+.xp-fill { height: 100%; background: #3498db; transition: width 0.2s; }
+.hp-text, .lv-text {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  font-size: 8px; color: #fff; text-shadow: 0 0 3px #000;
+}
+.hero-items { display: flex; gap: 2px; }
+.item-slot {
+  width: 22px; height: 22px; border: 1px solid #333; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; color: #888; background: rgba(0,0,0,0.4);
+}
+.item-slot.filled { color: #fff; }
+.hero-key {
+  position: absolute; top: -6px; right: -4px;
+  background: #333; color: #aaa; font-size: 9px;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.hud-synergies {
+  position: absolute; top: 42px; right: 10px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.synergy-badge {
+  padding: 3px 8px; border-radius: 4px; font-size: 11px;
+  color: #fff; font-weight: 600;
+}
+.portal-hint {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -80px);
+  color: #9b59b6; font-size: 14px; font-weight: 700;
+  text-shadow: 0 0 10px rgba(155, 89, 182, 0.8);
+  animation: pulse 1s infinite;
+}
+
+/* ========== 升级弹窗 ========== */
+.levelup-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+}
+.levelup-panel {
+  background: #111128; border: 2px solid #533483;
+  border-radius: 14px; padding: 24px; width: 680px;
+}
+.levelup-title { font-size: 24px; text-align: center; color: #f1c40f; margin-bottom: 4px; }
+.levelup-subtitle { text-align: center; color: #888; font-size: 13px; margin-bottom: 16px; }
+.levelup-choices { display: flex; gap: 10px; }
+.ability-card {
+  flex: 1; display: flex; gap: 10px; padding: 14px;
+  background: #1a1a3e; border: 2px solid #333;
+  border-radius: 10px; cursor: pointer; transition: all 0.2s;
+  text-align: left; color: #e0e0e0;
+}
+.ability-card:hover { border-color: #9b59b6; transform: translateY(-4px); background: #222248; }
+.ability-icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.ability-info h4 { font-size: 14px; margin-bottom: 2px; }
+.ability-category { font-size: 11px; }
+.ability-desc { font-size: 11px; color: #aaa; margin-top: 4px; }
+.ability-stacks { font-size: 10px; color: #666; margin-top: 4px; }
+
+/* ========== 协同弹窗 ========== */
+.synergy-popup {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+  background: rgba(17, 17, 40, 0.95); border: 2px solid;
+  border-radius: 10px; padding: 12px 24px;
+  text-align: center; animation: synergyIn 0.3s ease-out;
+}
+.synergy-flash {
+  position: absolute; inset: 0; border-radius: 8px;
+  opacity: 0.15; animation: flash 0.5s;
+}
+.synergy-popup h3 { font-size: 18px; margin-bottom: 4px; }
+.synergy-popup p { font-size: 12px; color: #ccc; }
+
+/* ========== 游戏结束 ========== */
+.gameover {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, #1a1a3e 0%, #0a0a1a 70%);
+}
+.gameover-panel { text-align: center; }
+.gameover-title { font-size: 36px; margin-bottom: 24px; }
+.gameover-title.victory { color: #f1c40f; }
+.gameover-title.defeat { color: #e74c3c; }
+.gameover-stats { margin-bottom: 32px; }
+.stat-row {
+  display: flex; justify-content: space-between;
+  padding: 10px 40px; font-size: 16px;
+  border-bottom: 1px solid #1a1a3e;
+}
+.stat-value { font-weight: 700; }
+.stat-value.crystal { color: #e1bee7; }
+.gameover-buttons { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+
+/* ========== 动画 ========== */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes synergyIn {
+  from { transform: translateX(-50%) translateY(-20px); opacity: 0; }
+  to { transform: translateX(-50%) translateY(0); opacity: 1; }
+}
+@keyframes flash {
+  0% { opacity: 0.4; }
+  100% { opacity: 0.15; }
+}

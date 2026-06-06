@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Background -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#1a1a3e"/>
+      <stop offset="100%" stop-color="#0a0a1a"/>
+    </radialGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e74c3c"/>
+      <stop offset="50%" stop-color="#9b59b6"/>
+      <stop offset="100%" stop-color="#3498db"/>
+    </linearGradient>
+  </defs>
+  
+  <rect width="512" height="512" rx="80" fill="url(#bg)"/>
+  
+  <!-- Dungeon grid lines -->
+  <g stroke="#16213e" stroke-width="1" opacity="0.5">
+    <line x1="128" y1="80" x2="128" y2="432"/>
+    <line x1="256" y1="80" x2="256" y2="432"/>
+    <line x1="384" y1="80" x2="384" y2="432"/>
+    <line x1="80" y1="128" x2="432" y2="128"/>
+    <line x1="80" y1="256" x2="432" y2="256"/>
+    <line x1="80" y1="384" x2="432" y2="384"/>
+  </g>
+  
+  <!-- Portal ring -->
+  <circle cx="256" cy="256" r="120" fill="none" stroke="#9b59b6" stroke-width="4" opacity="0.4"/>
+  <circle cx="256" cy="256" r="90" fill="none" stroke="#3498db" stroke-width="3" opacity="0.3"/>
+  
+  <!-- Hero 1 - Warrior (red) -->
+  <circle cx="200" cy="230" r="30" fill="#e74c3c"/>
+  <circle cx="200" cy="230" r="34" fill="none" stroke="#fff" stroke-width="3" opacity="0.8"/>
+  <text x="200" y="238" text-anchor="middle" fill="#fff" font-size="24" font-weight="bold" font-family="sans-serif">战</text>
+  
+  <!-- Hero 2 - Mage (blue) -->
+  <circle cx="290" cy="280" r="26" fill="#3498db"/>
+  <text x="290" y="287" text-anchor="middle" fill="#fff" font-size="20" font-weight="bold" font-family="sans-serif">法</text>
+  
+  <!-- Hero 3 - Ranger (green) -->
+  <circle cx="230" cy="310" r="26" fill="#2ecc71"/>
+  <text x="230" y="317" text-anchor="middle" fill="#fff" font-size="20" font-weight="bold" font-family="sans-serif">游</text>
+  
+  <!-- Enemies -->
+  <rect x="340" y="160" width="28" height="28" fill="#27ae60" rx="4"/>
+  <rect x="380" y="200" width="24" height="24" fill="#bdc3c7" rx="4"/>
+  <rect x="360" y="240" width="20" height="20" fill="#8e44ad" rx="4"/>
+  
+  <!-- Boss (diamond shape) -->
+  <g transform="translate(370, 340) rotate(45)">
+    <rect x="-22" y="-22" width="44" height="44" fill="#c0392b" rx="4"/>
+  </g>
+  
+  <!-- Crystal -->
+  <g transform="translate(160, 370) rotate(45)">
+    <rect x="-8" y="-8" width="16" height="16" fill="#e1bee7"/>
+  </g>
+  <g transform="translate(310, 170) rotate(45)">
+    <rect x="-6" y="-6" width="12" height="12" fill="#e1bee7" opacity="0.7"/>
+  </g>
+  
+  <!-- Title glow text -->
+  <text x="256" y="445" text-anchor="middle" fill="url(#glow)" font-size="42" font-weight="900" font-family="sans-serif" letter-spacing="4">深渊小队</text>
+  <text x="256" y="472" text-anchor="middle" fill="#666" font-size="14" font-family="monospace" letter-spacing="6">ABYSS SQUAD</text>
+</svg>

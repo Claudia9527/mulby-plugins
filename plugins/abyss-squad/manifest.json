@@ -1,0 +1,33 @@
+{
+  "id": "abyss-squad",
+  "name": "abyss-squad",
+  "displayName": "深渊小队",
+  "version": "1.0.0",
+  "author": "Mulby",
+  "description": "上帝视角肉鸽小游戏 - 随机能力、意想不到的组合、永久升级",
+  "main": "dist/main.js",
+  "ui": "ui/index.html",
+  "icon": "icon.png",
+  "pluginSetting": {
+    "single": true
+  },
+  "window": {
+    "type": "borderless",
+    "width": 800,
+    "height": 600,
+    "minWidth": 800,
+    "minHeight": 600
+  },
+  "features": [
+    {
+      "code": "play",
+      "explain": "开始深渊冒险",
+      "mode": "detached",
+      "cmds": [
+        { "type": "keyword", "value": "abyss" },
+        { "type": "keyword", "value": "深渊小队" },
+        { "type": "keyword", "value": "肉鸽" }
+      ]
+    }
+  ]
+}

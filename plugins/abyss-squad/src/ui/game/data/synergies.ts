@@ -1,0 +1,86 @@
+import type { SynergyDef } from '../types'
+
+export const SYNERGIES: SynergyDef[] = [
+  {
+    id: 'inferno_storm',
+    name: '烈焰风暴',
+    desc: '火焰附魔 + 油瓶 = 全屏火焰伤害!',
+    tags: ['fire', 'oil'],
+    color: '#ff5722',
+    effect: { type: 'aoe_burn', value: 50, duration: 5000 },
+  },
+  {
+    id: 'bullet_hell',
+    name: '弹幕风暴',
+    desc: '多重射击 + 弹射匕首 = 弹射无限次!',
+    tags: ['multi', 'bounce'],
+    color: '#ff9800',
+    effect: { type: 'infinite_bounce', value: 99 },
+  },
+  {
+    id: 'blood_fortress',
+    name: '血之壁垒',
+    desc: '吸血攻击 + 荆棘盾 = 受伤回血且反弹!',
+    tags: ['lifesteal', 'thorns'],
+    color: '#4caf50',
+    effect: { type: 'thorns_lifesteal', value: 0.5 },
+  },
+  {
+    id: 'thunder_god',
+    name: '雷神降临',
+    desc: '连锁闪电 + 导电护符 = 闪电链不限目标!',
+    tags: ['lightning', 'conductive'],
+    color: '#ffc107',
+    effect: { type: 'chain_lightning', value: 99 },
+  },
+  {
+    id: 'time_stop',
+    name: '时停领域',
+    desc: '时间减速 + 迅捷之靴 = 敌人完全静止3秒!',
+    tags: ['time', 'speed'],
+    color: '#00bcd4',
+    effect: { type: 'time_stop', value: 3000, duration: 3000 },
+  },
+  {
+    id: 'nuclear_blast',
+    name: '核爆',
+    desc: '分裂弹 + 爆炸宝石 = 分裂弹全部爆炸!',
+    tags: ['split', 'explosion'],
+    color: '#f44336',
+    effect: { type: 'split_explosion', value: 80 },
+  },
+  {
+    id: 'damage_overload',
+    name: '超载',
+    desc: '双刃剑 + 狂暴 = 低血量时伤害翻3倍!',
+    tags: ['risk', 'berserk'],
+    color: '#e91e63',
+    effect: { type: 'damage_mult', value: 3 },
+  },
+  {
+    id: 'eternal_shield',
+    name: '永恒护盾',
+    desc: '护盾爆发 + 铁皮 = 护盾值翻倍且永久存在!',
+    tags: ['shield', 'defense'],
+    color: '#2196f3',
+    effect: { type: 'shield_burst', value: 2 },
+  },
+  {
+    id: 'plague_spread',
+    name: '瘟疫扩散',
+    desc: '火焰附魔 + 时间减速 = 燃烧+减速双重效果!',
+    tags: ['fire', 'slow'],
+    color: '#8bc34a',
+    effect: { type: 'poison_cloud', value: 30, duration: 4000 },
+  },
+  {
+    id: 'absolute_zero',
+    name: '绝对零度',
+    desc: '冰霜弓 + 时间减速 = 冻结所有敌人5秒!',
+    tags: ['ice', 'time'],
+    color: '#03a9f4',
+    effect: { type: 'freeze_field', value: 5000, duration: 5000 },
+  },
+]
+
+export const SYNERGY_UNLOCK_COST = 60
