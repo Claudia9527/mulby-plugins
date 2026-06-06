@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus } from 'lucide-react'
+import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus, Image as ImageIcon } from 'lucide-react'
 import { useSession } from './SessionProvider'
 import { Markdown } from './Markdown'
 import type { VibeMessage, VibeSessionState, BrainstormOption } from './types'
@@ -13,7 +13,7 @@ const PLACEHOLDER: Record<VibeSessionState, string> = {
 }
 
 const INTENT_LABEL: Record<string, string> = {
-  ask: '问答', create: '新建', modify: '修改', run: '运行', package: '打包', rollback: '撤销'
+  ask: '问答', create: '新建', modify: '修改', run: '运行', package: '打包', rollback: '撤销', icon: '图标'
 }
 const INTENT_CLASS: Record<string, string> = {
   ask: 'bg-sky-100 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300',
@@ -21,7 +21,8 @@ const INTENT_CLASS: Record<string, string> = {
   modify: 'bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300',
   run: 'bg-violet-100 text-violet-600 dark:bg-violet-950/40 dark:text-violet-300',
   package: 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-  rollback: 'bg-rose-100 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300'
+  rollback: 'bg-rose-100 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300',
+  icon: 'bg-fuchsia-100 text-fuchsia-600 dark:bg-fuchsia-950/40 dark:text-fuchsia-300'
 }
 const KIND_DOT: Record<string, string> = {
   write: 'bg-emerald-400', read: 'bg-sky-400', build: 'bg-amber-400',
@@ -44,12 +45,14 @@ interface Props {
   onConfirmGenerate?: () => void
   pendingPrompt?: { kind: 'confirm' | 'action'; title: string; desc: string; actionLabel: string; danger?: boolean; onAction: () => void } | null
   onPromptDismiss?: () => void
-  status?: { name: string; loaded: boolean; trigger: string } | null
+  status?: { name: string; loaded: boolean; trigger: string; icon?: string | null } | null
   statusBusy?: boolean
+  iconBusy?: boolean
   packed?: boolean
   onOpenPlugin?: () => void
   onTryIt?: () => void
   onPack?: () => void
+  onRegenIcon?: () => void
   onClearMessages?: () => void
   onNewConversation?: () => void
 }
@@ -59,7 +62,7 @@ export function ChatPanel({
   brainstorm, onPickIdea, onMoreIdeas, onUseSeed, onDismissBrainstorm, examples,
   contractPending, onConfirmGenerate,
   pendingPrompt, onPromptDismiss,
-  status, statusBusy, packed, onOpenPlugin, onTryIt, onPack, onClearMessages, onNewConversation
+  status, statusBusy, iconBusy, packed, onOpenPlugin, onTryIt, onPack, onRegenIcon, onClearMessages, onNewConversation
 }: Props) {
   const { activeSession } = useSession()
   const [text, setText] = useState('')
@@ -127,15 +130,19 @@ export function ChatPanel({
       {status && (
         <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 shrink-0">
           <div className="flex items-center gap-1.5 text-[11px]">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${status.loaded ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+            <span className="relative w-5 h-5 rounded-md overflow-hidden shrink-0 border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-800/60 flex items-center justify-center">
+              {status.icon ? <img src={status.icon} alt="图标" className="w-full h-full object-contain" /> : <span className={`w-2 h-2 rounded-full ${status.loaded ? 'bg-emerald-400' : 'bg-amber-400'}`} />}
+              {iconBusy && <span className="absolute inset-0 bg-slate-900/40 flex items-center justify-center"><Loader2 size={10} className="text-white animate-spin" /></span>}
+            </span>
             <span className="font-medium text-slate-700 dark:text-slate-200 truncate flex-1">{status.name}</span>
             <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">{status.loaded ? '已载入' : '已构建'}</span>
           </div>
           {status.trigger && <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 truncate">触发词：{status.trigger}</div>}
-          <div className="mt-1.5 flex items-center gap-1.5">
+          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
             <button onClick={onOpenPlugin} disabled={statusBusy} className="btn-ghost h-6 px-2 text-[10px]" title="打开插件窗口"><Rocket size={11} /> 打开</button>
             <button onClick={onTryIt} disabled={statusBusy} className="btn-ghost h-6 px-2 text-[10px]" title="复制触发词去主输入框试用"><ExternalLink size={11} /> 试用</button>
             <button onClick={onPack} disabled={statusBusy} className="btn-ghost h-6 px-2 text-[10px]" title="打包为 .inplugin"><Package size={11} /> {packed ? '已打包' : '打包'}</button>
+            {onRegenIcon && <button onClick={onRegenIcon} disabled={statusBusy || iconBusy} className="btn-ghost h-6 px-2 text-[10px]" title="让 AI 按插件主题与功能重新生成图标">{iconBusy ? <Loader2 size={11} className="animate-spin" /> : <ImageIcon size={11} />} 图标</button>}
           </div>
         </div>
       )}

@@ -188,7 +188,7 @@ const VIBE_TOOLS = [
 /** 只读工具子集：用于「问答」意图，绝不包含写入/构建工具 */
 const VIBE_READ_TOOLS = VIBE_TOOLS.filter((t) => ['list_dir', 'read_file', 'grep'].includes(t.function.name))
 
-export type VibeIntent = 'ask' | 'create' | 'modify' | 'run' | 'package' | 'rollback'
+export type VibeIntent = 'ask' | 'create' | 'modify' | 'run' | 'package' | 'rollback' | 'icon'
 
 /**
  * 规则优先的意图识别（零延迟、零成本）。模糊时降级为 'ask'（只读问答），杜绝擅自改代码。
@@ -202,9 +202,17 @@ export function classifyIntent(text: string, ctx: { hasPlugin: boolean }): { int
   const reRun = /运行|试一?下|试用|跑一?下|跑跑|打开插件|验证一?下|测一?下/
   const reModify = /改|修复|修一?下|加(个|一个|上)?|增加|去掉|删掉|移除|换成|替换|支持|优化|重构|调整|美化|变成|做成|新增|实现|让它|不能|没反应|报错|bug|崩溃|不对|失效|多语言/i
   const reAsk = /[?？]\s*$|^(为什么|为啥|怎么|如何|是不是|有没有|能不能|可不可以|什么是|啥是|解释|说明|介绍|看一?下|查一?下|现在|目前|当前|状态|结构|哪些|多少|是否|讲讲|说说)/
+  // 图标意图：含「图标/icon/logo」名词 + 重做/更换/美化等诉求，且不是在问问题。需已有插件项目。
+  const reIcon = /图标|icon|logo|标志|图案/i
+  const reIconWant = /重新|重做|重画|重绘|再(来|画|做|生成|搞)|换|更换|换个|换成|生成|设计|做个|画个|画一|做一|美化|优化|调整|改成?|变(成|得)?|搞个|来个|换掉|重置|不好看|难看|太丑|丑|不满意|不喜欢/
+  const reIconAsk = /[?？]\s*$|怎么|如何|为什么|为啥|是不是|能不能|可不可以|什么|啥|哪里|在哪/
 
   if (reRollback.test(t)) return { intent: 'rollback', confidence: 0.9 }
   if (rePackage.test(t)) return { intent: 'package', confidence: 0.85 }
+  // 图标须在 run/modify 之前判定：避免「美化/优化图标」被 reModify 误判为代码修改、走重型代码 agent
+  if (ctx.hasPlugin && reIcon.test(t) && reIconWant.test(t) && !reIconAsk.test(t)) {
+    return { intent: 'icon', confidence: 0.85 }
+  }
   if (reRun.test(t)) return { intent: 'run', confidence: 0.8 }
 
   if (!ctx.hasPlugin) {
@@ -529,6 +537,22 @@ export function VibePanel({
     return kept
   }
 
+  // 对话消息记录：会话尚未创建时（新项目的首条需求 / 头脑风暴 / 方向选择都发生在 activeId 为 null 时）
+  // 先缓冲到 pendingMsgsRef，待 createSession 时通过 drainPendingMsgs 一并落入会话，
+  // 确保「每一步发送与回复」都进入对话历史，而不是等到构建成功才出现第一条。
+  const pendingMsgsRef = useRef<VibeMessage[]>([])
+  const recordMessage = (msg: VibeMessage) => {
+    if (activeId) appendMessage(activeId, msg)
+    else pendingMsgsRef.current.push(msg)
+  }
+  const drainPendingMsgs = (): VibeMessage[] => {
+    const arr = pendingMsgsRef.current
+    pendingMsgsRef.current = []
+    return arr
+  }
+  const mkMsg = (role: 'user' | 'assistant', content: string, extra?: Partial<VibeMessage>): VibeMessage =>
+    ({ id: `${role === 'user' ? 'm' : 'a'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role, content, timestamp: Date.now(), ...extra })
+
   const currentPhaseRef = useRef<EventPhase>('minimal')
   const onAgentChunk = (chunk: any) => {
     if (chunk?.__requestId) { reqIdRef.current = chunk.__requestId; return }
@@ -633,10 +657,14 @@ export function VibePanel({
     if (!desc) { pushToast('error', '请先用一句话描述你想要的插件'); return }
     if (!targetDir.trim()) { pushToast('error', '请选择插件生成的目标目录'); return }
     if (overrideText) setSentence(desc)
-    if (!activeId) {
+    let sid = activeId
+    if (!sid) {
       const name = desc.slice(0, 20) || 'new-plugin'
-      const sess = createSession({ pluginPath: targetDir, pluginName: name, vibeMode: 'create', state: 'initial', sentence: desc, genDepth, selectedModel })
+      const sess = createSession({ pluginPath: targetDir, pluginName: name, vibeMode: 'create', state: 'initial', sentence: desc, genDepth, selectedModel, messages: drainPendingMsgs() })
       liveSessionIdRef.current = sess.id
+      sid = sess.id
+    } else {
+      for (const m of drainPendingMsgs()) appendMessage(sid, m)
     }
     setPlanning(true)
     try {
@@ -646,10 +674,13 @@ export function VibePanel({
       const c = normalizeContract(parsed, desc)
       setContract(c)
       setStage(1)
+      if (sid) appendMessage(sid, mkMsg('assistant', `插件设定（契约）已就绪：${c.displayName}——${contractSummary(c)}。在右侧点「确认并生成」我就开始写代码；想改设定可在中间面板编辑。`))
       addLog('success', `✔ [Vibe] 契约已生成：${contractSummary(c)}`)
     } catch (e) {
-      setContract(defaultContract(desc))
+      const c = defaultContract(desc)
+      setContract(c)
       setStage(1)
+      if (sid) appendMessage(sid, mkMsg('assistant', '规划没成功，我先用了一份默认设定，你可以在中间面板编辑后点「确认并生成」。'))
       addLog('warn', `⚠ [Vibe] 规划失败，已用默认契约：${e instanceof Error ? e.message : ''}`)
     } finally {
       setPlanning(false)
@@ -685,12 +716,17 @@ export function VibePanel({
         const obj = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', editSummaryPrompt(c, desc))
         if (obj && typeof obj.summary === 'string' && obj.summary.trim()) c.editSummary = obj.summary.trim()
       } catch { /* keep sentence */ }
-      if (!activeId) {
-        const sess = createSession({ pluginPath: editPath, pluginName: c.displayName || dirName, vibeMode: 'edit', state: 'contract', contract: c, sentence: desc, genDepth, selectedModel })
+      let sid = activeId
+      if (!sid) {
+        const sess = createSession({ pluginPath: editPath, pluginName: c.displayName || dirName, vibeMode: 'edit', state: 'contract', contract: c, sentence: desc, genDepth, selectedModel, messages: drainPendingMsgs() })
         liveSessionIdRef.current = sess.id
+        sid = sess.id
+      } else {
+        for (const m of drainPendingMsgs()) appendMessage(sid, m)
       }
       setContract(c)
       setStage(1)
+      if (sid) appendMessage(sid, mkMsg('assistant', `已读取「${c.displayName}」的现状。改动设定：${c.editSummary || desc}。在右侧点「确认并生成」我就开始改。`))
       addLog('success', `✔ [Vibe] 改造契约已读入：${c.displayName}（${c.pluginId}）`)
     } catch (e) {
       pushToast('error', e instanceof Error ? e.message : '分析失败')
@@ -852,10 +888,13 @@ export function VibePanel({
   const doGenerate = async () => {
     if (!contract) return
     setBrainstorm(null)
+    recordMessage(mkMsg('user', contract.isEdit ? '确认设定，开始改造' : '确认设定，开始生成', { intent: 'create' }))
+    let sid = activeId
     setGenerating(true)
     setEvents([])
     setToolCalls(0)
     setNarration('')
+    turnEventsRef.current = [] // 收集本轮生成的操作明细，供对话内联
     setExpanded(false)
     setStage(2)
     try {
@@ -875,8 +914,9 @@ export function VibePanel({
         setCreatedPath(root)
         // 真实插件目录已知，修正会话的 pluginPath（planCreate 阶段只能先记父目录占位）
         if (!activeId) {
-          const sess = createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel })
+          const sess = createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel, messages: drainPendingMsgs() })
           liveSessionIdRef.current = sess.id
+          sid = sess.id
         } else {
           updateSession(activeId, { pluginPath: root, pluginName: contract.displayName || contract.name, contract, state: 'generating' })
         }
@@ -911,6 +951,8 @@ export function VibePanel({
       if (abortedRef.current) { pushEvent(firstPhase, 'note', '已中止'); return }
       const summary = typeof final?.content === 'string' ? final.content : ''
       if (summary) setNarration(summary)
+      // 把生成总结作为一条 AI 回复落入对话历史（不再等到构建成功才有第一条回复）
+      if (sid && summary) appendMessage(sid, mkMsg('assistant', summary, { actions: collectTurnActions() }))
       setGenerated(true)
       pushEvent(firstPhase, 'note', `${phaseName}完成`)
       addLog('success', `✔ [Vibe] ${phaseName}完成`)
@@ -950,69 +992,135 @@ export function VibePanel({
     } catch { /* 读取失败则不展示，忽略 */ }
   }
 
-  const tryGenerateIcon = async () => {
-    if (!contract?.needIcon || !createdPath) return
-    const fs0 = fsApi()
-    // 已存在 icon.png 则不再重复生成（避免每次构建/交付都重新调 AI 生成图标）
-    try {
-      if (fs0?.exists && await fs0.exists(`${createdPath}/icon.png`)) {
-        setIconDone(true)
-        void loadIconPreview()
-        pushEvent('icon', 'note', '已存在 icon.png，跳过重复生成')
-        return
-      }
-    } catch { /* 探测失败则照常尝试生成 */ }
-    const a = ai()
-    let produced = false
-    try {
-      setIconBusy(true)
-      pushEvent('icon', 'ai', '生成图标 SVG…')
-      let svg: string | null = null
-      if (a?.call) {
+  // 依据插件的主题/功能/触发方式（以及用户可选的风格补充）构造图标设计提示词
+  const buildIconPrompt = (c: VibeContract, styleHint?: string): string => {
+    const feats = c.features
+      .map((f) => `- ${(f.explain || f.code || '').trim()}`)
+      .filter((l) => l !== '- ')
+      .slice(0, 6)
+      .join('\n')
+    const trig = primaryTrigger(c)
+    const hint = (styleHint || '').trim()
+    return [
+      '为一款 Mulby 桌面效率插件设计一枚应用图标（icon）。请先理解它的主题与功能，再让图形「一眼能联想到它做什么」。',
+      `插件名称：${c.displayName}`,
+      `一句话用途：${c.description}`,
+      c.type ? `所属分类：${c.type}` : '',
+      feats ? `主要功能：\n${feats}` : '',
+      trig ? `典型使用方式：${trig}` : '',
+      hint ? `用户的原话（据此理解期望的风格/主题/配色，但忽略其中「重新生成 / 换一个 / 重做」等指令性词语）：${hint}` : '',
+      '设计要求：512x512 的 viewBox；居中单一主图形（可含简洁辅助元素）；扁平、现代、极简且有质感；配色鲜明且和谐，贴合功能氛围（可用渐变）；圆角方形背景；不要任何文字、字母或数字；在 32px 小尺寸下依然清晰可辨。'
+    ].filter(Boolean).join('\n')
+  }
+
+  // 让 AI 产出一段可解析的 SVG（失败再严格重试一次），拿不到返回 null
+  const requestIconSvg = async (a: any, c: VibeContract, styleHint?: string): Promise<string | null> => {
+    if (!a?.call) return null
+    const base = buildIconPrompt(c, styleHint)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
         const res = await a.call({
           ...(selectedModel ? { model: selectedModel } : {}),
           messages: [
-            { role: 'system', content: '你是图标设计师，只输出 SVG 源码（以 <svg 开头、</svg> 结尾），不要解释、不要 Markdown。' },
-            { role: 'user', content: `为 Mulby 桌面插件「${contract.displayName}」设计图标。用途：${contract.description}。要求：512x512 viewBox，居中单一主图形，扁平现代极简，鲜明渐变，圆角方形背景，无文字，小尺寸可辨识。` }
+            { role: 'system', content: '你是资深图标设计师，只输出一段完整 SVG 源码（必须以 <svg 开头、以 </svg> 结尾），不要解释、不要 Markdown 代码块、不要任何额外文字。' },
+            { role: 'user', content: attempt === 0 ? base : `${base}\n\n上次没有给出可用的 SVG。请严格只返回 SVG 源码本身。` }
           ],
           skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
         })
         const content = typeof res?.content === 'string' ? res.content : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
-        svg = extractSvg(content)
-      }
+        const svg = extractSvg(content)
+        if (svg) return svg
+      } catch { /* 重试 */ }
+    }
+    return null
+  }
 
-      const sharp = sharpApi()
-      const fs = fsApi()
-      if (svg && typeof sharp === 'function') {
-        try { await fs?.writeFile?.(`${createdPath}/assets/icon.svg`, svg) } catch { /* 可选 */ }
-        const bytes = new TextEncoder().encode(svg)
-        await sharp(bytes).resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(`${createdPath}/icon.png`)
-        setIconDone(true); produced = true
-        pushEvent('icon', 'write', '已渲染 icon.png（SVG → 512 PNG）')
-      } else if (a?.images?.generate && a?.allModels && fs?.writeFile) {
-        // 回退：栅格图像模型
-        const models = await a.allModels({ endpointType: 'image-generation' })
-        if (Array.isArray(models) && models.length) {
-          const r = await a.images.generate({ model: models[0].id, prompt: `App icon for "${contract.displayName}". ${contract.description}. Flat modern minimal vector, single centered glyph, vibrant gradient, rounded square, no text.`, size: '1024x1024', count: 1 })
-          const b64: string | undefined = r?.images?.[0]
-          if (b64) {
-            await fs.writeFile(`${createdPath}/icon.png`, b64.replace(/^data:image\/\w+;base64,/, ''), 'base64')
-            setIconDone(true); produced = true
-            pushEvent('icon', 'write', '已生成 icon.png（图像模型回退）')
-          }
-        } else {
-          pushEvent('icon', 'note', '无图标能力，跳过')
+  // 回退：用图像生成模型出一张栅格图，写入 icon.png
+  const generateIconViaImageModel = async (a: any, fs: any, c: VibeContract, styleHint?: string): Promise<boolean> => {
+    if (!(a?.images?.generate && a?.allModels && fs?.writeFile)) return false
+    try {
+      const models = await a.allModels({ endpointType: 'image-generation' })
+      if (!Array.isArray(models) || !models.length) return false
+      const hint = (styleHint || '').trim()
+      const prompt = `App icon for "${c.displayName}". Purpose: ${c.description}.${hint ? ` Style preference: ${hint}.` : ''} Flat modern minimal vector, single centered glyph that clearly reflects the function, vibrant harmonious gradient, rounded square background, no text, crisp at small sizes.`
+      const r = await a.images.generate({ model: models[0].id, prompt, size: '1024x1024', count: 1 })
+      const b64: string | undefined = r?.images?.[0]
+      if (!b64) return false
+      await fs.writeFile(`${createdPath}/icon.png`, b64.replace(/^data:image\/\w+;base64,/, ''), 'base64')
+      pushEvent('icon', 'write', '已生成 icon.png（图像模型）')
+      return true
+    } catch { return false }
+  }
+
+  /**
+   * 生成/重新生成插件图标。
+   * - force=false（自动路径）：尊重 needIcon，已存在 icon.png 则跳过，避免每次构建都重画。
+   * - force=true（交付页按钮 / 对话「重做图标」）：忽略已存在的图标，按主题+功能（+风格补充）重画并覆盖。
+   * - announce=true：把开始/结果回流到右侧对话，让用户在对话里看到这一步。
+   */
+  const generateIcon = async (opts: { force?: boolean; styleHint?: string; announce?: boolean } = {}) => {
+    const { force = false, styleHint, announce = false } = opts
+    if (!createdPath) { if (announce) pushToast('info', '还没有插件项目，无法生成图标'); return }
+    if (!contract) { if (announce) pushToast('info', '插件设定还没就绪，无法生成图标'); return }
+    const fs = fsApi()
+    if (!force) {
+      if (!contract.needIcon) return
+      // 自动路径：已存在则跳过（避免每次构建/交付都重新调 AI）
+      try {
+        if (fs?.exists && await fs.exists(`${createdPath}/icon.png`)) {
+          setIconDone(true); void loadIconPreview()
+          pushEvent('icon', 'note', '已存在 icon.png，跳过重复生成')
+          return
         }
-      } else {
-        pushEvent('icon', 'note', '无 SVG/图像能力，跳过图标')
+      } catch { /* 探测失败则照常尝试生成 */ }
+    }
+    const a = ai()
+    let produced = false
+    if (announce) turnEventsRef.current = []
+    try {
+      setIconBusy(true)
+      pushEvent('icon', 'ai', force ? '按主题与功能重新设计图标…' : '生成图标 SVG…', (styleHint || '').slice(0, 40) || undefined)
+      const svg = await requestIconSvg(a, contract, styleHint)
+      const sharp = sharpApi()
+      if (svg && typeof sharp === 'function') {
+        try {
+          try { await fs?.writeFile?.(`${createdPath}/assets/icon.svg`, svg) } catch { /* 可选 */ }
+          const bytes = new TextEncoder().encode(svg)
+          await sharp(bytes).resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(`${createdPath}/icon.png`)
+          produced = true
+          pushEvent('icon', 'write', '已渲染 icon.png（SVG → 512 PNG）')
+        } catch {
+          pushEvent('icon', 'note', 'SVG 渲染失败，改用图像模型…')
+        }
       }
-      if (produced) { void loadIconPreview(); await dev.ensureLoaded(createdPath); await onSyncWorkbench?.() }
+      if (!produced) produced = await generateIconViaImageModel(a, fs, contract, styleHint)
+
+      if (produced) {
+        setIconDone(true)
+        void loadIconPreview()
+        try { await dev.ensureLoaded(createdPath) } catch { /* 重载失败不影响图标已写入 */ }
+        await onSyncWorkbench?.()
+        if (announce && activeId) {
+          appendMessage(activeId, mkMsg('assistant', '图标已重新生成 ✓，并已应用到插件（顶部状态条与交付页都能看到新图标）。不满意可以再说一句，比如「换成蓝色科技风」「再简洁一点」。', { actions: collectTurnActions() }))
+        }
+        if (announce) pushToast('success', '图标已更新')
+      } else {
+        pushEvent('icon', 'note', '未能生成图标（当前环境无 SVG/图像能力）')
+        if (announce && activeId) {
+          appendMessage(activeId, mkMsg('assistant', '这次没能生成图标 😕。可能是当前环境暂时不支持图标生成能力，或模型没返回有效图形。你可以稍后再说一次「重做图标」，或手动放一张 512×512 的 `icon.png` 到插件目录。'))
+        }
+        if (announce) pushToast('error', '图标没能生成，可稍后重试')
+      }
     } catch (e) {
-      pushEvent('icon', 'error', `图标跳过：${e instanceof Error ? e.message : ''}`)
+      pushEvent('icon', 'error', `图标生成失败：${e instanceof Error ? e.message : ''}`)
+      if (announce && activeId) appendMessage(activeId, mkMsg('assistant', `图标生成失败了：${e instanceof Error ? e.message : '未知错误'}。要不要再试一次？`))
     } finally {
       setIconBusy(false)
     }
   }
+
+  // 自动路径（构建后）：尊重 needIcon、已存在则跳过
+  const tryGenerateIcon = () => generateIcon({})
 
   // 构建后静态校验契约一致性（只读，自动跑）。返回结果同时存入状态供交付页展示。
   const runConformance = async (): Promise<ConformanceResult | null> => {
@@ -1512,7 +1620,7 @@ export function VibePanel({
     : null
   // 插件状态（S4）：对话栏顶部常驻的"它在运行/一键试用"状态条
   const pluginStatus = (createdPath && (generated || built))
-    ? { name: contract?.displayName || contract?.name || createdPath.split('/').pop() || '插件', loaded, trigger: contract ? primaryTrigger(contract) : '' }
+    ? { name: contract?.displayName || contract?.name || createdPath.split('/').pop() || '插件', loaded, trigger: contract ? primaryTrigger(contract) : '', icon: iconDataUrl }
     : null
 
   // 把输入作为「需求」推进（未就绪时）：有目标→规划；否则填入描述并提示
@@ -1542,7 +1650,7 @@ export function VibePanel({
   const runBrainstorm = async (seed: string) => {
     const a = ai()
     if (!a?.call) { seedAsRequirement(seed); return } // 无 AI 时直接进规划
-    if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: '我帮你想了几个方向，挑一个开始，或继续用自己的话描述：', timestamp: Date.now() })
+    recordMessage(mkMsg('assistant', '我帮你想了几个方向，挑一个开始，或继续用自己的话描述：'))
     setBrainstorm({ loading: true, options: [], seed })
     try {
       const obj = await aiJson('你是 Mulby 插件创意助手，只输出可解析的 JSON 对象。', brainstormPrompt(seed))
@@ -1565,20 +1673,24 @@ export function VibePanel({
 
   const pickIdea = (opt: BrainstormOption) => {
     const seed = opt.pitch ? `${opt.title}。${opt.pitch}` : opt.title
-    if (activeId) appendMessage(activeId, { id: `m-${Date.now()}`, role: 'user', content: `选择方向：${opt.title}`, timestamp: Date.now(), intent: 'create' })
+    recordMessage(mkMsg('user', `选择方向：${opt.title}`, { intent: 'create' }))
     planFromSeed(seed)
   }
 
   // 跳过头脑风暴：直接用用户原始描述生成契约
-  const useBrainstormSeed = () => { if (brainstorm) planFromSeed(brainstorm.seed) }
+  const useBrainstormSeed = () => {
+    if (!brainstorm) return
+    recordMessage(mkMsg('user', '直接用我刚才的描述生成', { intent: 'create' }))
+    planFromSeed(brainstorm.seed)
+  }
 
   // 全局对话：规则识别意图后分流。模糊/问答→只读回答，绝不擅自改代码（S1）
   const handleChatSend = (text: string) => {
     const t = text.trim()
     if (!t || busy) return
     const { intent } = classifyIntent(t, { hasPlugin: !!createdPath })
-    // 集中写入用户消息并打上意图标签（ChatPanel 不再自行写入）
-    if (activeId) appendMessage(activeId, { id: `m-${Date.now()}`, role: 'user', content: t, timestamp: Date.now(), intent })
+    // 集中写入用户消息并打上意图标签（会话未建时先缓冲，确保首条需求也进对话历史）
+    recordMessage(mkMsg('user', t, { intent }))
     switch (intent) {
       case 'ask':
         void runAsk(t); return
@@ -1590,6 +1702,11 @@ export function VibePanel({
         if (chatReady && changes.length) {
           setPendingPrompt({ kind: 'confirm', title: '撤销本次会话的全部改动？', desc: '将还原改动并重新构建载入，操作不可逆。', actionLabel: '确认撤销', danger: true, onAction: () => { setPendingPrompt(null); void doRollback() } })
         } else void runAsk(t)
+        return
+      case 'icon':
+        // 重新生成图标：依据插件主题/功能（+用户原话里的风格补充），强制覆盖现有图标
+        if (createdPath && contract) void generateIcon({ force: true, styleHint: t, announce: true })
+        else void runAsk(t)
         return
       case 'modify':
         if (chatReady) void runFollowup(t); else seedAsRequirement(t); return
@@ -1688,6 +1805,7 @@ export function VibePanel({
               versions={versions} vcsAvailable={vcsAvailable} restoringHash={restoringHash}
               onRefreshVersions={loadVersions} onVersionDiff={loadVersionDiff} onRestoreVersion={doRestoreVersion}
               onRebuild={runBuildAndLoad} onRepair={runRepair}
+              onRegenIcon={() => void generateIcon({ force: true, announce: true })}
               onOpenDir={() => dev.openPluginDir(createdPath)}
               onEnableDevtools={enableDevtools}
             />
@@ -1758,8 +1876,8 @@ export function VibePanel({
           <ChatPanel
             onSend={handleChatSend}
             disabled={busy && !iterating}
-            busy={iterating}
-            streamingText={iterating ? narration : ''}
+            busy={iterating || generating || iconBusy}
+            streamingText={(iterating || generating) ? narration : ''}
             brainstorm={brainstorm}
             onPickIdea={pickIdea}
             onMoreIdeas={() => { if (brainstorm) void runBrainstorm(brainstorm.seed) }}
@@ -1772,10 +1890,12 @@ export function VibePanel({
             onPromptDismiss={() => setPendingPrompt(null)}
             status={pluginStatus}
             statusBusy={building || packing}
+            iconBusy={iconBusy}
             packed={packed}
             onOpenPlugin={openPlugin}
             onTryIt={tryIt}
             onPack={doPack}
+            onRegenIcon={() => void generateIcon({ force: true, announce: true })}
             onClearMessages={() => { if (activeId) clearMessages(activeId) }}
             onNewConversation={newConversation}
           />
@@ -1979,7 +2099,7 @@ function DeliverStage({
   changes, rollingBack, onRollback, coreVerified, onToggleCoreVerified,
   conformance, confRepairing, onRepairConformance, smoke, smoking, onRunSmoke,
   versions, vcsAvailable, restoringHash, onRefreshVersions, onVersionDiff, onRestoreVersion,
-  onRebuild, onRepair, onOpenDir, onEnableDevtools
+  onRebuild, onRepair, onRegenIcon, onOpenDir, onEnableDevtools
 }: {
   contract: VibeContract; createdPath: string
   building: boolean; built: boolean; buildLog: string
@@ -1995,6 +2115,7 @@ function DeliverStage({
   versions: VcsCommit[]; vcsAvailable: boolean; restoringHash: string | null
   onRefreshVersions: () => void; onVersionDiff: (hash: string) => Promise<string>; onRestoreVersion: (hash: string) => void
   onRebuild: () => void; onRepair: () => void
+  onRegenIcon: () => void
   onOpenDir: () => void; onEnableDevtools: () => void
 }) {
   const buildFailed = !building && !built && !!buildLog
@@ -2004,12 +2125,17 @@ function DeliverStage({
   return (
     <div className="w-full space-y-5">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center overflow-hidden shrink-0">
-          {building ? <Loader2 size={20} className="text-emerald-500 animate-spin" />
+        <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center overflow-hidden shrink-0">
+          {building ? <Loader2 size={24} className="text-emerald-500 animate-spin" />
             : iconDataUrl ? <img src={iconDataUrl} alt="插件图标" className="w-full h-full object-contain" />
-            : <Rocket size={20} className="text-emerald-500" />}
+            : <Rocket size={24} className="text-emerald-500" />}
+          {iconBusy && (
+            <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center">
+              <Loader2 size={18} className="text-white animate-spin" />
+            </div>
+          )}
         </div>
-        <div>
+        <div className="min-w-0 flex-1">
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
             {building ? '构建并载入中…'
               : buildFailed ? '构建失败'
@@ -2019,6 +2145,17 @@ function DeliverStage({
           </h2>
           <p className="text-[11px] text-slate-400 dark:text-slate-500 mono truncate">{createdPath}</p>
         </div>
+        {createdPath && !building && (
+          <button
+            onClick={onRegenIcon}
+            disabled={iconBusy}
+            className="btn-ghost h-8 px-2.5 text-[11px] shrink-0"
+            title="让 AI 根据插件的主题与功能重新设计图标（覆盖当前图标）"
+          >
+            {iconBusy ? <Loader2 size={13} className="animate-spin" /> : <ImageIcon size={13} />}
+            {iconDataUrl ? '重做图标' : '生成图标'}
+          </button>
+        )}
       </div>
 
       {/* 验收清单：构建/载入是「能编译能装载」，契约一致 + 运行验证才是「真的能跑」 */}
