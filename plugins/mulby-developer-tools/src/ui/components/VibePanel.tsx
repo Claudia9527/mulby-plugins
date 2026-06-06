@@ -541,6 +541,61 @@ export function VibePanel({
     return kept
   }
 
+  // ---------------- 上下文锚点（P1-2：防遗忘） ----------------
+  // 滑窗会淘汰最老的消息，导致多轮后 AI 忘掉「最初需求 / 已确认的方案」。
+  // 这里把会话的关键锚点（最初需求 + 当前契约 + 早期对话的滚动摘要）始终注入 system，
+  // system 不受历史字符预算淘汰，等价于业界 compaction 后的 rehydration / critical-context。
+  const buildSessionAnchor = (): string => {
+    const all = convoRef.current || []
+    const firstUser = all.find((m) => m.role === 'user' && !!m.content.trim())
+    const origReq = (firstUser?.content || sentence || '').trim().slice(0, 800)
+    const lines: string[] = []
+    if (origReq) lines.push(`最初需求：${origReq}`)
+    if (contract) lines.push(`当前插件设定（契约）：${contractSummary(contract)}（displayName=${contract.displayName}）`)
+    const summary = (activeSession?.contextSummary || '').trim()
+    if (summary) lines.push(`前情提要（更早对话的压缩摘要，已确认的方案/决策务必延续）：\n${summary.slice(0, 2000)}`)
+    if (!lines.length) return ''
+    return [
+      '———— 本次会话背景（务必全程遵循、不要遗忘；用户说「按上面的方案 / 刚才说的」即指此处与下方历史）————',
+      ...lines,
+      '————'
+    ].join('\n')
+  }
+  const withAnchorContext = (sys: string): string => {
+    const anchor = buildSessionAnchor()
+    return anchor ? `${sys}\n\n${anchor}` : sys
+  }
+
+  // ---------------- 滚动摘要（P1-3：长对话压缩） ----------------
+  // 当对话变长，把「超出最近窗口」的早期消息用便宜的一次 AI 调用压成结构化摘要，
+  // 持久化到 session.contextSummary，并由 buildSessionAnchor 注入。失败则优雅降级。
+  const summarizingRef = useRef(false)
+  const SUMMARY_KEEP_RECENT = 16 // 最近这么多条仍由历史窗口承载，更早的才进摘要
+  const maybeSummarizeHistory = async () => {
+    const sid = activeId
+    if (!sid || summarizingRef.current) return
+    if (planning || generating || expanding || repairing || iterating || iconBusy || confRepairing) return
+    const all = convoRef.current || []
+    if (all.length <= SUMMARY_KEEP_RECENT + 6) return // 不够长不值得压缩
+    const older = all.slice(0, all.length - SUMMARY_KEEP_RECENT).filter((m) => !!m.content && !!m.content.trim())
+    if (older.length < 4) return
+    const a = ai()
+    if (!a?.call) return
+    summarizingRef.current = true
+    try {
+      const text = older.map((m) => `${m.role === 'user' ? '用户' : 'AI'}：${m.content.slice(0, 1500)}`).join('\n')
+      const prev = (activeSession?.contextSummary || '').trim()
+      const obj = await aiJson(
+        '你是对话压缩器。把给定的早期对话压成结构化中文摘要，只输出 JSON：{ "summary": "..." }。摘要必须覆盖：目标/需求、关键决策与共识、已完成进展、涉及的文件或模块、未完成的下一步；务必逐字保留用户明确认可的方案要点。',
+        `${prev ? `已有前情提要（在此基础上合并更新，不要丢失旧要点）：\n${prev}\n\n` : ''}需要压缩的更早对话：\n${text}`
+      )
+      const summary = obj && typeof obj.summary === 'string' ? obj.summary.trim() : ''
+      if (summary && liveSessionIdRef.current === sid) updateSession(sid, { contextSummary: summary })
+    } catch { /* 压缩失败忽略：锚点（最初需求+契约）与历史窗口仍可用 */ } finally {
+      summarizingRef.current = false
+    }
+  }
+
   // 对话消息记录：会话尚未创建时（新项目的首条需求 / 头脑风暴 / 方向选择都发生在 activeId 为 null 时）
   // 先缓冲到 pendingMsgsRef，待 createSession 时通过 drainPendingMsgs 一并落入会话，
   // 确保「每一步发送与回复」都进入对话历史，而不是等到构建成功才出现第一条。
@@ -881,10 +936,12 @@ export function VibePanel({
     const req = a.call(
       {
         ...(selectedModel ? { model: selectedModel } : {}),
-        messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: user }],
+        messages: [{ role: 'system', content: withAnchorContext(system) }, ...history, { role: 'user', content: user }],
         tools: VIBE_TOOLS,
         maxToolSteps: 200,
         capabilities: ['fs.read'],
+        // 跨轮上下文由本插件自管（锚点 + 滚动摘要 + 历史窗口），关掉宿主按消息条数的截断（默认仅留 8 条，会砍掉我们精心拼的历史）
+        params: { contextWindow: 0 },
         mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
       },
       onAgentChunk
@@ -1394,7 +1451,7 @@ export function VibePanel({
       reqIdRef.current = null
       setNarration('')
       currentPhaseRef.current = 'debug'
-      const sys = withApiSurface(askSystemPrompt(contract, root))
+      const sys = withAnchorContext(withApiSurface(askSystemPrompt(contract, root)))
       const final = await a.call(
         {
           ...(selectedModel ? { model: selectedModel } : {}),
@@ -1402,6 +1459,8 @@ export function VibePanel({
           tools: VIBE_READ_TOOLS,
           maxToolSteps: 60,
           capabilities: ['fs.read'],
+          // 跨轮上下文自管，关掉宿主默认的 8 条消息截断（否则问答看不到完整方案）
+          params: { contextWindow: 0 },
           mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
         },
         onAgentChunk
@@ -1637,6 +1696,12 @@ export function VibePanel({
   const busy = planning || generating || expanding || building || repairing || iconBusy || confRepairing || smoking
   // 正在进行、可被「停止」中断的 AI 生成类任务（不含纯本地的 building / smoking）
   const aiActive = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || !!brainstorm?.loading
+  // P1-3：对话变长且 AI 空闲时，后台把更早消息压成滚动摘要（fire-and-forget，失败不影响主流程）
+  useEffect(() => {
+    if (aiActive) return
+    void maybeSummarizeHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSession?.messages?.length, aiActive])
   const chatReady = !!createdPath && generated
   // 设定卡：契约已生成、等待用户确认开始生成代码（对话内联确认入口）
   const contractPending = (stage === 1 && contract && !generating && !generated)
