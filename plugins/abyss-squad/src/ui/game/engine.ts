@@ -252,6 +252,10 @@ export class GameEngine {
       // Buff更新
       hero.buffs = hero.buffs.filter(b => { b.duration -= dt; return b.duration > 0 })
 
+      // 道具属性加成（动态更新最大生命）
+      hero.maxHp = this.getHeroMaxHp(hero)
+      hero.hp = Math.min(hero.hp, hero.maxHp)
+
       // 回复能力
       const regenStacks = this.getAbilityStacks(hero, 'regen')
       if (regenStacks > 0) {
@@ -426,6 +430,8 @@ export class GameEngine {
     if (doubleEdge > 0) atk *= 1.5
     const berserk = this.getAbilityStacks(hero, 'berserk')
     if (berserk > 0 && hero.hp < hero.maxHp * 0.3) atk *= 2
+    const bloodMagic = this.getAbilityStacks(hero, 'blood_magic')
+    if (bloodMagic > 0) atk *= 1.5
     // 道具加成
     for (const item of hero.items) {
       if (item?.def.effect.attackBonus) atk += item.def.effect.attackBonus
@@ -450,6 +456,18 @@ export class GameEngine {
     const isCrit = Math.random() < this.getCritChance(hero) * damageMult // 非活跃英雄降低暴击率
     const damage = isCrit ? atk * 1.8 : atk
     const isRanged = hero.def.range > 60
+
+    // 血刃：攻击消耗生命
+    if (hero.items.some(it => it?.def.id === 'blood_blade')) {
+      hero.hp -= 3
+      if (hero.hp <= 0) { hero.hp = 1 } // 不会自杀
+    }
+
+    // 血魔法：消耗生命值代替攻击冷却，伤害已在getHeroAttack中提升
+    if (this.getAbilityStacks(hero, 'blood_magic') > 0) {
+      hero.hp -= Math.max(hero.maxHp * 0.02, 1) // 每次攻击消耗2%最大HP
+      if (hero.hp <= 0) { hero.hp = 1 }
+    }
 
     if (isRanged) {
       // 远程：发射弹道
@@ -587,6 +605,17 @@ export class GameEngine {
     return ls
   }
 
+  private getHeroMaxHp(hero: HeroState): number {
+    let hp = hero.def.maxHp * (1 + this.meta.healthLevel * 0.05)
+    // 铁皮能力加成
+    const ironSkinStacks = this.getAbilityStacks(hero, 'iron_skin')
+    hp *= (1 + ironSkinStacks * 0.25)
+    for (const item of hero.items) {
+      if (item?.def.effect.hpBonus) hp += item.def.effect.hpBonus
+    }
+    return Math.round(hp)
+  }
+
   private getAbilityStacks(hero: HeroState, abilityId: string): number {
     const ab = hero.abilities.find(a => a.def.id === abilityId)
     return ab ? ab.stacks : 0
@@ -684,6 +713,9 @@ export class GameEngine {
     const doubleEdge = this.getAbilityStacks(hero, 'double_edge')
     if (doubleEdge > 0) damage *= 1.3
 
+    // 狂战士戒指：防御减半 → 受伤+50%
+    if (hero.items.some(it => it?.def.id === 'berserker_ring')) damage *= 1.5
+
     // 护盾吸收
     const shield = hero.buffs.find(b => b.id === 'shield' || b.id === 'taunt_shield')
     if (shield) {
@@ -699,10 +731,12 @@ export class GameEngine {
     hero.hp -= damage
     this.spawnDamageNumber(hero.x, hero.y - 10, Math.round(damage), '#e74c3c', false)
 
-    // 荆棘反弹
+    // 荆棘反弹（能力+道具）
     const thornsStacks = this.getAbilityStacks(hero, 'thorns')
-    if (thornsStacks > 0 && _attacker && !_attacker.isDead) {
-      const reflectDmg = damage * 0.3 * thornsStacks
+    const hasThornShield = hero.items.some(it => it?.def.id === 'thorn_shield')
+    if ((thornsStacks > 0 || hasThornShield) && _attacker && !_attacker.isDead) {
+      const reflectRatio = thornsStacks > 0 ? 0.3 * thornsStacks : 0.2
+      const reflectDmg = damage * reflectRatio
       _attacker.hp -= reflectDmg
       if (_attacker.hp <= 0) this.killEnemy(_attacker)
     }
@@ -727,11 +761,17 @@ export class GameEngine {
   private damageEnemy(enemy: EnemyState, damage: number, isCrit: boolean, source: HeroState) {
     if (enemy.isDead) return
 
-    // 油瓶+火焰协同
-    if (enemy.oilCovered && this.getAbilityStacks(source, 'fire_enchant') > 0) {
-      damage *= 2
+    // 油瓶+火焰协同（火焰剑/火焰附魔）
+    const hasFireSource = source.items.some(it => it?.def.id === 'flame_sword') || this.getAbilityStacks(source, 'fire_enchant') > 0
+    if (enemy.oilCovered && hasFireSource) {
+      damage *= 2.5
       enemy.oilCovered = false
-      this.spawnParticles(enemy.x, enemy.y, '#ff5722', 8)
+      this.spawnParticles(enemy.x, enemy.y, '#ff5722', 12)
+    }
+
+    // 导电护符：小额电系附伤
+    if (source.items.some(it => it?.def.id === 'conductive_charm') && !source.items.some(it => it?.def.id === 'thunder_staff')) {
+      damage += 5
     }
 
     enemy.hp -= damage
@@ -754,12 +794,47 @@ export class GameEngine {
     // 伤害数字（更醒目）
     this.spawnDamageNumber(enemy.x, enemy.y - 15, Math.round(damage), isCrit ? '#ffd700' : '#fff', isCrit)
 
-    // 燃烧效果
-    const burnDmg = this.getAbilityStacks(source, 'fire_enchant') > 0 ? source.def.attack * 0.3 : 0
+    // 燃烧效果（能力+火焰剑）
+    const hasFlameSword = source.items.some(it => it?.def.id === 'flame_sword')
+    const abilityBurn = this.getAbilityStacks(source, 'fire_enchant') > 0 ? source.def.attack * 0.3 : 0
+    const burnDmg = abilityBurn || (hasFlameSword ? source.def.attack * 0.25 : 0)
     if (burnDmg > 0) {
       enemy.burnTimer = 3000
       enemy.burnDps = burnDmg
     }
+
+    // 爆裂冲击：命中时小范围爆炸
+    const explosiveStacks = this.getAbilityStacks(source, 'explosive_hit')
+    if (explosiveStacks > 0) {
+      for (const e of this.state.floor.enemies) {
+        if (!e.isDead && e !== enemy && this.dist(enemy, e) < 50) {
+          this.damageEnemy(e, damage * 0.3 * explosiveStacks, false, source)
+        }
+      }
+      this.spawnParticles(enemy.x, enemy.y, '#e67e22', 6)
+    }
+
+    // 火焰剑点燃（油瓶+火焰剑 = 额外爆炸）
+    if (hasFlameSword && enemy.oilCovered) {
+      enemy.oilCovered = false
+      this.spawnParticles(enemy.x, enemy.y, '#ff5722', 10)
+      this.damageEnemy(enemy, damage * 0.5, false, source) // 额外50%伤害
+    }
+
+    // 冰霜弓：冻结敌人1秒
+    if (source.items.some(it => it?.def.id === 'frost_bow')) {
+      enemy.stunTimer = Math.max(enemy.stunTimer, 1000)
+      this.spawnParticles(enemy.x, enemy.y, '#3498db', 5)
+    }
+
+    // 雷霆法杖：25%概率闪电链（导电护符增加目标+攻击）
+    if (source.items.some(it => it?.def.id === 'thunder_staff') && Math.random() < 0.25) {
+      const hasCharm = source.items.some(it => it?.def.id === 'conductive_charm')
+      const chainCount = hasCharm ? 5 : 3
+      const chainDmg = (hasCharm ? damage * 0.7 : damage * 0.5)
+      this.chainLightning(enemy, chainDmg, chainCount)
+    }
+
 
     // 油瓶效果
     if (source.items.some(it => it?.def.id === 'oil_flask')) {
@@ -909,6 +984,38 @@ export class GameEngine {
             if (chainStacks > 0 && Math.random() < 0.3) {
               const maxChain = this.hasActiveSynergy('thunder_god') ? 99 : chainStacks + 1
               this.chainLightning(enemy, proj.damage * 0.6, maxChain)
+            }
+
+            // 爆炸宝石：弹道命中时产生AOE爆炸
+            const activeHero2 = this.state.heroes[this.state.activeHeroIndex]
+            if (activeHero2 && !activeHero2.isDead && activeHero2.items.some(it => it?.def.id === 'explosive_gem')) {
+              for (const enemy2 of this.state.floor.enemies) {
+                if (!enemy2.isDead && this.dist(proj, enemy2) < 60) {
+                  this.damageEnemy(enemy2, proj.damage * 0.5, false, activeHero2)
+                }
+              }
+              this.spawnParticles(proj.x, proj.y, '#ff5722', 8)
+              this.state.screenShake = Math.max(this.state.screenShake, 60)
+            }
+
+            // 弹射匕首：弹射到附近其他敌人
+            if (proj.maxBounces > 0 && proj.bounceCount < proj.maxBounces) {
+              const otherEnemies = this.state.floor.enemies.filter(
+                e => !e.isDead && e !== enemy && this.dist(proj, e) < 120
+              )
+              if (otherEnemies.length > 0) {
+                const nextTarget = otherEnemies.reduce((a, b) =>
+                  this.dist(proj, a) < this.dist(proj, b) ? a : b
+                )
+                const angle = Math.atan2(nextTarget.y - proj.y, nextTarget.x - proj.x)
+                this.state.projectiles.push({
+                  id: uid(), x: proj.x, y: proj.y,
+                  vx: Math.cos(angle) * 5, vy: Math.sin(angle) * 5,
+                  damage: proj.damage * 0.7, radius: 4, isEnemy: false,
+                  pierce: 0, bounceCount: proj.bounceCount + 1, maxBounces: proj.maxBounces,
+                  color: '#95a5a6',
+                })
+              }
             }
 
             if (proj.pierce > 0) {
