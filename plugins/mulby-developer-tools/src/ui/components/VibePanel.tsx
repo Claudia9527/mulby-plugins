@@ -357,6 +357,10 @@ export function VibePanel({
 
   const abortedRef = useRef(false)
   const reqIdRef = useRef<string | null>(null)
+  // 发起新 AI 调用前重置中断态，避免上一轮的「已中止」标记误伤本轮
+  const resetAbort = () => { abortedRef.current = false; reqIdRef.current = null }
+  // 流式回调里捕获本次请求 id，供「停止」时精确 abort（也适用于无工具的纯文本/JSON 调用）
+  const captureReqId = (chunk: any) => { if (chunk?.__requestId) reqIdRef.current = chunk.__requestId }
   const deliverStartedRef = useRef(false)
   const eventSeq = useRef(0)
 
@@ -643,7 +647,7 @@ export function VibePanel({
       ...(selectedModel ? { model: selectedModel } : {}),
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
-    })
+    }, captureReqId)
     const content = typeof res?.content === 'string'
       ? res.content
       : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
@@ -667,10 +671,12 @@ export function VibePanel({
       for (const m of drainPendingMsgs()) appendMessage(sid, m)
     }
     setPlanning(true)
+    resetAbort()
     try {
       addLog('info', '▶ [Vibe] AI 正在规划契约…')
       let parsed: any = null
       try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planPrompt(desc)) } catch { /* fallback */ }
+      if (abortedRef.current) { addLog('info', '⏹ [Vibe] 已停止规划'); return }
       const c = normalizeContract(parsed, desc)
       setContract(c)
       setStage(1)
@@ -693,6 +699,7 @@ export function VibePanel({
     if (!desc) { pushToast('error', '请描述你想对这个插件做什么修改'); return }
     if (overrideText) setSentence(desc)
     setPlanning(true)
+    resetAbort()
     try {
       const dirName = editPath.split('/').filter(Boolean).pop() || 'plugin'
       let c: VibeContract | null = null
@@ -716,6 +723,7 @@ export function VibePanel({
         const obj = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', editSummaryPrompt(c, desc))
         if (obj && typeof obj.summary === 'string' && obj.summary.trim()) c.editSummary = obj.summary.trim()
       } catch { /* keep sentence */ }
+      if (abortedRef.current) { addLog('info', '⏹ [Vibe] 已停止分析'); return }
       let sid = activeId
       if (!sid) {
         const sess = createSession({ pluginPath: editPath, pluginName: c.displayName || dirName, vibeMode: 'edit', state: 'contract', contract: c, sentence: desc, genDepth, selectedModel, messages: drainPendingMsgs() })
@@ -875,7 +883,7 @@ export function VibePanel({
         ...(selectedModel ? { model: selectedModel } : {}),
         messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: user }],
         tools: VIBE_TOOLS,
-        maxToolSteps: 60,
+        maxToolSteps: 200,
         capabilities: ['fs.read'],
         mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
       },
@@ -971,11 +979,21 @@ export function VibePanel({
     }
   }
 
+  // 统一「停止 AI 生成」：标记中断 + 精确 abort 在途请求 + 复位所有 AI 忙碌态 + 释放宿主会话锁。
+  // 覆盖所有 AI 流程（规划/头脑风暴/生成/迭代/问答/修复/一致性修复/图标），右侧对话与左侧面板共用。
   const stopAgent = () => {
+    const running = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || !!brainstorm?.loading
+    if (!running) return
     abortedRef.current = true
-    if (reqIdRef.current) ai()?.abort?.(reqIdRef.current)
+    if (reqIdRef.current) { try { ai()?.abort?.(reqIdRef.current) } catch { /* 宿主未实现 abort 时忽略 */ } }
     setGenerating(false); setExpanding(false); setRepairing(false)
-    pushToast('info', '已请求中止')
+    setIterating(false); setPlanning(false); setConfRepairing(false); setIconBusy(false)
+    setBrainstorm((b) => (b && b.loading ? null : b))
+    setNarration('')
+    void dev.hostCall('vibe_end').catch(() => {})
+    pushEvent(currentPhaseRef.current, 'note', '用户已停止生成')
+    addLog('warn', '⏹ [Vibe] 已停止本次 AI 生成')
+    pushToast('info', '已停止生成')
   }
 
   // ---------------- 阶段 3：构建 · 载入 · 图标 · 调试 ----------------
@@ -1026,11 +1044,12 @@ export function VibePanel({
             { role: 'user', content: attempt === 0 ? base : `${base}\n\n上次没有给出可用的 SVG。请严格只返回 SVG 源码本身。` }
           ],
           skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
-        })
+        }, captureReqId)
+        if (abortedRef.current) return null
         const content = typeof res?.content === 'string' ? res.content : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
         const svg = extractSvg(content)
         if (svg) return svg
-      } catch { /* 重试 */ }
+      } catch { if (abortedRef.current) return null /* 否则重试 */ }
     }
     return null
   }
@@ -1079,8 +1098,10 @@ export function VibePanel({
     if (announce) turnEventsRef.current = []
     try {
       setIconBusy(true)
+      resetAbort()
       pushEvent('icon', 'ai', force ? '按主题与功能重新设计图标…' : '生成图标 SVG…', (styleHint || '').slice(0, 40) || undefined)
       const svg = await requestIconSvg(a, contract, styleHint)
+      if (abortedRef.current) { pushEvent('icon', 'note', '已停止图标生成'); return }
       const sharp = sharpApi()
       if (svg && typeof sharp === 'function') {
         try {
@@ -1093,7 +1114,8 @@ export function VibePanel({
           pushEvent('icon', 'note', 'SVG 渲染失败，改用图像模型…')
         }
       }
-      if (!produced) produced = await generateIconViaImageModel(a, fs, contract, styleHint)
+      if (!produced && !abortedRef.current) produced = await generateIconViaImageModel(a, fs, contract, styleHint)
+      if (abortedRef.current) { pushEvent('icon', 'note', '已停止图标生成'); return }
 
       if (produced) {
         setIconDone(true)
@@ -1378,7 +1400,7 @@ export function VibePanel({
           ...(selectedModel ? { model: selectedModel } : {}),
           messages: [{ role: 'system', content: sys }, ...buildHistoryMessages(question), { role: 'user', content: question }],
           tools: VIBE_READ_TOOLS,
-          maxToolSteps: 20,
+          maxToolSteps: 60,
           capabilities: ['fs.read'],
           mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
         },
@@ -1613,6 +1635,8 @@ export function VibePanel({
   }
 
   const busy = planning || generating || expanding || building || repairing || iconBusy || confRepairing || smoking
+  // 正在进行、可被「停止」中断的 AI 生成类任务（不含纯本地的 building / smoking）
+  const aiActive = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || !!brainstorm?.loading
   const chatReady = !!createdPath && generated
   // 设定卡：契约已生成、等待用户确认开始生成代码（对话内联确认入口）
   const contractPending = (stage === 1 && contract && !generating && !generated)
@@ -1652,12 +1676,15 @@ export function VibePanel({
     if (!a?.call) { seedAsRequirement(seed); return } // 无 AI 时直接进规划
     recordMessage(mkMsg('assistant', '我帮你想了几个方向，挑一个开始，或继续用自己的话描述：'))
     setBrainstorm({ loading: true, options: [], seed })
+    resetAbort()
     try {
       const obj = await aiJson('你是 Mulby 插件创意助手，只输出可解析的 JSON 对象。', brainstormPrompt(seed))
+      if (abortedRef.current) { setBrainstorm(null); addLog('info', '⏹ [Vibe] 已停止发散'); return }
       const options = normalizeBrainstorm(obj)
       if (!options.length) { setBrainstorm(null); seedAsRequirement(seed); return }
       setBrainstorm({ loading: false, options, seed })
     } catch {
+      if (abortedRef.current) { setBrainstorm(null); return }
       setBrainstorm(null); seedAsRequirement(seed)
     }
   }
@@ -1687,7 +1714,7 @@ export function VibePanel({
   // 全局对话：规则识别意图后分流。模糊/问答→只读回答，绝不擅自改代码（S1）
   const handleChatSend = (text: string) => {
     const t = text.trim()
-    if (!t || busy) return
+    if (!t || busy || aiActive) return
     const { intent } = classifyIntent(t, { hasPlugin: !!createdPath })
     // 集中写入用户消息并打上意图标签（会话未建时先缓冲，确保首条需求也进对话历史）
     recordMessage(mkMsg('user', t, { intent }))
@@ -1877,6 +1904,8 @@ export function VibePanel({
             onSend={handleChatSend}
             disabled={busy && !iterating}
             busy={iterating || generating || iconBusy}
+            aiActive={aiActive}
+            onStop={stopAgent}
             streamingText={(iterating || generating) ? narration : ''}
             brainstorm={brainstorm}
             onPickIdea={pickIdea}

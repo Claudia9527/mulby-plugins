@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus, Image as ImageIcon } from 'lucide-react'
+import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus, Image as ImageIcon, StopCircle } from 'lucide-react'
 import { useSession } from './SessionProvider'
 import { Markdown } from './Markdown'
 import type { VibeMessage, VibeSessionState, BrainstormOption } from './types'
@@ -33,6 +33,8 @@ interface Props {
   onSend: (text: string) => void
   disabled?: boolean
   busy?: boolean
+  aiActive?: boolean
+  onStop?: () => void
   streamingText?: string
   messages?: VibeMessage[]
   brainstorm?: { loading: boolean; options: BrainstormOption[]; seed: string } | null
@@ -58,7 +60,7 @@ interface Props {
 }
 
 export function ChatPanel({
-  onSend, disabled, busy, streamingText, messages,
+  onSend, disabled, busy, aiActive, onStop, streamingText, messages,
   brainstorm, onPickIdea, onMoreIdeas, onUseSeed, onDismissBrainstorm, examples,
   contractPending, onConfirmGenerate,
   pendingPrompt, onPromptDismiss,
@@ -284,13 +286,23 @@ export function ChatPanel({
             disabled={disabled || busy || state === 'generating'}
             rows={2}
           />
-          <button
-            className="btn-primary shrink-0 h-9 px-3"
-            onClick={send}
-            disabled={disabled || busy || !text.trim() || state === 'generating'}
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          </button>
+          {aiActive && onStop ? (
+            <button
+              className="btn-danger shrink-0 h-9 px-3"
+              onClick={onStop}
+              title="停止当前 AI 生成"
+            >
+              <StopCircle size={14} /> 停止
+            </button>
+          ) : (
+            <button
+              className="btn-primary shrink-0 h-9 px-3"
+              onClick={send}
+              disabled={disabled || busy || !text.trim() || state === 'generating'}
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            </button>
+          )}
         </div>
         <div className="px-3 pb-1.5 text-[10px] text-slate-400 dark:text-slate-500">
           ⌘/Ctrl + Enter 发送 · 提问只读不改码，说「改/修复」才动手
