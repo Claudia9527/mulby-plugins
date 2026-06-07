@@ -26,6 +26,12 @@ export interface MarkRange {
   from: number
   to: number
   cls: string
+  /**
+   * Optional DOM attributes for the rendered span (e.g. a sanitized inline
+   * `style` from `<span style="…">`). Applied via Decoration.mark's `attributes`,
+   * never via innerHTML, and the style string is sanitized to a safe subset.
+   */
+  attrs?: Record<string, string>
 }
 
 export interface LineClass {
@@ -510,11 +516,29 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
           ? 'cm-md-sub'
           : t.tag === 'u'
             ? 'cm-md-underline'
-            : 'cm-md-highlight'
+            : t.tag === 'kbd'
+              ? 'cm-md-kbd'
+              : 'cm-md-highlight'
     marks.push({ from: t.innerStart, to: t.innerEnd, cls })
     if (!isActive(t.start, t.end)) {
       hideRange(t.start, t.innerStart)
       hideRange(t.innerEnd, t.end)
+    }
+  }
+
+  // <span style="…">…</span> -> styled span (sanitized inline style applied via
+  // a mark's attributes, never innerHTML). Bare <span> just shows its content.
+  for (const s of findHtmlStyledSpans(text)) {
+    if (rangesOverlap(s.start, s.end, occupied)) {
+      continue
+    }
+    occupied.push({ from: s.start, to: s.end })
+    if (s.style) {
+      marks.push({ from: s.innerStart, to: s.innerEnd, cls: 'cm-md-styled', attrs: { style: s.style } })
+    }
+    if (!isActive(s.start, s.end)) {
+      hideRange(s.start, s.innerStart)
+      hideRange(s.innerEnd, s.end)
     }
   }
 
@@ -619,17 +643,17 @@ export function findHighlightMatches(text: string): RawMatch[] {
 // the regions not already consumed by code / tables / math.
 
 export interface HtmlTagMatch {
-  tag: 'sup' | 'sub' | 'mark' | 'u'
+  tag: 'sup' | 'sub' | 'mark' | 'u' | 'kbd'
   start: number
   innerStart: number
   innerEnd: number
   end: number
 }
 
-/** Finds paired inline tags `<sup>`, `<sub>`, `<mark>`, `<u>` and their inner range. */
+/** Finds paired inline tags `<sup>`, `<sub>`, `<mark>`, `<u>`, `<kbd>` and their inner range. */
 export function findHtmlInlineTags(text: string): HtmlTagMatch[] {
   const out: HtmlTagMatch[] = []
-  const re = /<(sup|sub|mark|u)>([\s\S]*?)<\/\1>/gi
+  const re = /<(sup|sub|mark|u|kbd)>([\s\S]*?)<\/\1>/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const tag = m[1].toLowerCase() as HtmlTagMatch['tag']
@@ -640,6 +664,78 @@ export function findHtmlInlineTags(text: string): HtmlTagMatch[] {
     if (innerEnd > innerStart) {
       out.push({ tag, start, innerStart, innerEnd, end })
     }
+  }
+  return out
+}
+
+export interface StyledSpanMatch {
+  start: number
+  innerStart: number
+  innerEnd: number
+  end: number
+  /** Already-sanitized inline style (may be empty if nothing safe remained). */
+  style: string
+}
+
+// CSS properties allowed on a rendered `<span style="…">`. Kept to visual,
+// non-layout-breaking, side-effect-free properties.
+const SAFE_STYLE_PROPS = new Set([
+  'color',
+  'background',
+  'background-color',
+  'font-weight',
+  'font-style',
+  'font-size',
+  'font-family',
+  'text-decoration',
+  'text-decoration-color',
+  'text-transform',
+  'letter-spacing',
+  'opacity'
+])
+
+/**
+ * Sanitizes an inline `style` string to a safe subset: only whitelisted
+ * properties are kept, and any value carrying a dangerous token (url(),
+ * expression(), javascript:, @import, comments, angle brackets) is dropped.
+ * This never produces script execution — it's a defense-in-depth filter applied
+ * before the value is set via setAttribute (never innerHTML).
+ */
+export function sanitizeInlineStyle(style: string): string {
+  const out: string[] = []
+  for (const decl of style.split(';')) {
+    const idx = decl.indexOf(':')
+    if (idx < 0) {
+      continue
+    }
+    const prop = decl.slice(0, idx).trim().toLowerCase()
+    const value = decl.slice(idx + 1).trim()
+    if (!prop || !value || !SAFE_STYLE_PROPS.has(prop)) {
+      continue
+    }
+    if (/[<>]|url\s*\(|expression\s*\(|javascript:|@import|\/\*|\*\//i.test(value)) {
+      continue
+    }
+    out.push(`${prop}: ${value}`)
+  }
+  return out.join('; ')
+}
+
+/** Finds `<span …>…</span>` runs, extracting the inner range and a sanitized style. */
+export function findHtmlStyledSpans(text: string): StyledSpanMatch[] {
+  const out: StyledSpanMatch[] = []
+  const re = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const attrs = m[1]
+    const start = m.index
+    const innerStart = start + '<span'.length + attrs.length + 1 // "<span" + attrs + ">"
+    const innerEnd = innerStart + m[2].length
+    const end = start + m[0].length
+    if (innerEnd <= innerStart) {
+      continue
+    }
+    out.push({ start, innerStart, innerEnd, end, style: sanitizeInlineStyle(readHtmlAttr(attrs, 'style')) })
   }
   return out
 }
@@ -876,4 +972,23 @@ function findLabelEnd(state: EditorState, from: number, to: number): number {
 export function extractImageAlt(source: string): string {
   const match = /^!\[([^\]]*)\]/.exec(source)
   return match ? match[1] : ''
+}
+
+/**
+ * GitHub-style anchor slug used to resolve in-document links `[text](#anchor)`:
+ * lowercase, drop punctuation, collapse spaces to hyphens; keeps word characters
+ * and CJK so Chinese headings get a usable anchor.
+ */
+export function slugify(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff -]+/g, '')
+    .replace(/ +/g, '-')
+}
+
+/** Returns the anchor slug of an ATX heading line, or null when not a heading. */
+export function headingSlug(lineText: string): string | null {
+  const m = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(lineText)
+  return m ? slugify(m[1]) : null
 }

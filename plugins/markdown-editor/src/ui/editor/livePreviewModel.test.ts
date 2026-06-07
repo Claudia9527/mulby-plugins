@@ -16,9 +16,13 @@ import {
   findHtmlDefinitionLists,
   findHtmlImages,
   findHtmlInlineTags,
+  findHtmlStyledSpans,
   findInlineMathMatches,
   findReferenceDefinition,
+  headingSlug,
   parseDefinitionList,
+  sanitizeInlineStyle,
+  slugify,
   type HideRange,
   type MarkRange,
   type WidgetRange
@@ -44,6 +48,14 @@ const findWidget = (widgets: WidgetRange[], kind: WidgetRange['kind']) =>
 // extractImageAlt pulls the alt text out of an image's raw source.
 assert.equal(extractImageAlt('![a cat](x.png)'), 'a cat')
 assert.equal(extractImageAlt('![](x.png)'), '')
+
+// Heading anchor slugs (GitHub-style) drive in-document [text](#anchor) jumps.
+assert.equal(slugify('My Section'), 'my-section')
+assert.equal(slugify('Foo, Bar!'), 'foo-bar')
+assert.equal(headingSlug('# Hello World'), 'hello-world')
+assert.equal(headingSlug('### **Bold** Title ###'), 'bold-title')
+assert.equal(headingSlug('## 中文 标题'), '中文-标题')
+assert.equal(headingSlug('not a heading'), null)
 
 // activeLineNumbers covers every line a selection touches.
 {
@@ -300,13 +312,14 @@ assert.equal(extractImageAlt('![](x.png)'), '')
 
 // --- HTML subset scanners (pure) ------------------------------------------
 {
-  // <sup>/<sub>/<mark>/<u> inline tags.
-  const tags = findHtmlInlineTags('x<sup>2</sup> H<sub>2</sub>O <mark>hi</mark> <u>under</u>')
-  assert.equal(tags.length, 4, 'four inline html tags')
+  // <sup>/<sub>/<mark>/<u>/<kbd> inline tags.
+  const tags = findHtmlInlineTags('x<sup>2</sup> H<sub>2</sub>O <mark>hi</mark> <u>under</u> <kbd>Ctrl</kbd>')
+  assert.equal(tags.length, 5, 'five inline html tags')
   assert.equal(tags[0].tag, 'sup', 'first is sup')
   assert.equal(tags[1].tag, 'sub', 'second is sub')
   assert.equal(tags[2].tag, 'mark', 'third is mark')
   assert.equal(tags[3].tag, 'u', 'fourth is u')
+  assert.equal(tags[4].tag, 'kbd', 'fifth is kbd')
   // <ul> must not be mistaken for a <u> tag.
   assert.equal(findHtmlInlineTags('<ul><li>x</li></ul>').length, 0, 'no <u> match in <ul>')
   // Inner range excludes the tags.
@@ -348,6 +361,42 @@ assert.equal(extractImageAlt('![](x.png)'), '')
   assert.ok(hasMark(deco.marks, 'cm-md-sup'), 'sup mark')
   const open = doc.indexOf('<sup>')
   assert.ok(hasHide(deco.hides, open, open + 5), 'hides <sup>')
+}
+
+// --- <span style> sanitization + scanning (pure) --------------------------
+{
+  // Whitelisted props are kept; unknown props and dangerous values are dropped.
+  assert.equal(sanitizeInlineStyle('color: red;'), 'color: red', 'keeps color')
+  assert.equal(
+    sanitizeInlineStyle('color: red; font-weight: 700'),
+    'color: red; font-weight: 700',
+    'keeps multiple safe props'
+  )
+  assert.equal(sanitizeInlineStyle('position: fixed; top: 0'), '', 'drops non-whitelisted props')
+  assert.equal(sanitizeInlineStyle('background: url(x.png)'), '', 'drops url()')
+  assert.equal(sanitizeInlineStyle('color: expression(alert(1))'), '', 'drops expression()')
+  assert.equal(sanitizeInlineStyle('color: red; behavior: url(#x)'), 'color: red', 'keeps safe, drops unsafe')
+
+  // The span scanner extracts the inner range and the sanitized style.
+  const spanSrc = 'a <span style="color: red;">hi</span> b'
+  const spans = findHtmlStyledSpans(spanSrc)
+  assert.equal(spans.length, 1, 'one styled span')
+  assert.equal(spans[0].style, 'color: red', 'sanitized style carried')
+  assert.equal(spanSrc.slice(spans[0].innerStart, spans[0].innerEnd), 'hi', 'inner range is the content')
+}
+
+// <span style> off the active line: tags hidden, inner gets a styled mark with
+// the sanitized inline style as attributes.
+{
+  const doc = 'see <span style="color: red;">red</span> here\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const styled = deco.marks.find((m) => m.cls === 'cm-md-styled')
+  assert.ok(styled, 'styled span mark present')
+  assert.equal(styled?.attrs?.style, 'color: red', 'carries sanitized style attribute')
+  const open = doc.indexOf('<span')
+  const tagEnd = doc.indexOf('>') + 1
+  assert.ok(hasHide(deco.hides, open, tagEnd), 'hides the <span …> open tag')
 }
 
 // HTML image off the active line becomes an image widget carrying its size.

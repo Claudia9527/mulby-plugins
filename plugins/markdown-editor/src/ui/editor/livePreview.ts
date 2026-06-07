@@ -21,7 +21,9 @@ import type { SyntaxNode } from '@lezer/common'
 import katex from 'katex'
 import {
   computeLivePreview,
+  headingSlug,
   parseDefinitionList,
+  slugify,
   type HideRange,
   type LivePreviewDecorations,
   type WidgetRange
@@ -413,7 +415,13 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   }
   for (const mark of model.marks) {
     if (mark.to > mark.from && !rangeOverlaps(mark.from, mark.to, blocks)) {
-      ranges.push(Decoration.mark({ class: mark.cls }).range(mark.from, mark.to))
+      // `attributes` (e.g. a sanitized inline `style`) is applied via
+      // setAttribute by CodeMirror — never innerHTML — so it can't inject markup.
+      ranges.push(
+        Decoration.mark(
+          mark.attrs ? { class: mark.cls, attributes: mark.attrs } : { class: mark.cls }
+        ).range(mark.from, mark.to)
+      )
     }
   }
   for (const hide of model.hides) {
@@ -486,14 +494,18 @@ const blockDecorationField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field)
 })
 
-/** Returns the nearest `.cm-md-link` ancestor of a DOM event target, if any. */
-function closestLink(target: EventTarget | null): HTMLElement | null {
+/**
+ * Returns the nearest navigable ancestor of a DOM event target — a rendered link
+ * (`.cm-md-link`, incl. autolinks) or a footnote reference (`.cm-md-footnote-ref`).
+ * Both share the "single click acts, double click edits" interaction.
+ */
+function closestNavigable(target: EventTarget | null): HTMLElement | null {
   // A mouse event's target can be a text node; climb to its parent element first.
   let el: Element | null = target instanceof Element ? target : null
   if (!el && target instanceof Node && target.parentElement) {
     el = target.parentElement
   }
-  return el ? (el.closest('.cm-md-link') as HTMLElement | null) : null
+  return el ? (el.closest('.cm-md-link, .cm-md-footnote-ref') as HTMLElement | null) : null
 }
 
 /** Extracts the URL of the Link/Image node containing `pos`, if any. */
@@ -540,6 +552,61 @@ function openExternalUrl(url: string): void {
   }
 }
 
+/** Scrolls a matching ATX heading into view for an in-document `#anchor` link. */
+function jumpToHeading(view: EditorView, fragment: string): void {
+  let decoded = fragment
+  try {
+    decoded = decodeURIComponent(fragment)
+  } catch {
+    // Malformed %-escape: fall back to the raw fragment.
+  }
+  const target = slugify(decoded)
+  if (!target) {
+    return
+  }
+  const doc = view.state.doc
+  for (let n = 1; n <= doc.lines; n += 1) {
+    const line = doc.line(n)
+    if (headingSlug(line.text) === target) {
+      view.dispatch({ effects: EditorView.scrollIntoView(line.from, { y: 'start' }) })
+      return
+    }
+  }
+}
+
+/** Scrolls the matching `[^id]: …` definition into view for a footnote reference. */
+function jumpToFootnoteDefinition(view: EditorView, id: string): void {
+  const needle = `[^${id}]:`
+  const doc = view.state.doc
+  for (let n = 1; n <= doc.lines; n += 1) {
+    const line = doc.line(n)
+    if (line.text.trimStart().startsWith(needle)) {
+      view.dispatch({ effects: EditorView.scrollIntoView(line.from, { y: 'start' }) })
+      return
+    }
+  }
+}
+
+/**
+ * Resolves what a single click on a navigable element should *do*: open external
+ * links in the browser, jump to a heading for `#anchor` links, or jump to the
+ * definition for a footnote reference. Returns null when there's nothing to do.
+ */
+function navigableAction(view: EditorView, el: HTMLElement): (() => void) | null {
+  if (el.classList.contains('cm-md-footnote-ref')) {
+    const id = (el.textContent ?? '').trim()
+    return id ? () => jumpToFootnoteDefinition(view, id) : null
+  }
+  const url = resolveOpenUrl(view.state, view.posAtDOM(el), el)
+  if (!url) {
+    return null
+  }
+  if (url.startsWith('#')) {
+    return () => jumpToHeading(view, url.slice(1))
+  }
+  return () => openExternalUrl(url)
+}
+
 /** Toggles a GFM task checkbox in the source when its widget is clicked. */
 function toggleTaskAt(view: EditorView, pos: number): boolean {
   const line = view.state.doc.lineAt(pos)
@@ -554,29 +621,38 @@ function toggleTaskAt(view: EditorView, pos: number): boolean {
 }
 
 /**
- * Places the caret inside a clicked link so its raw Markdown reveals for editing
- * (the double-click "edit" gesture). Resolves the position from the DOM node
- * (`posAtDOM`) rather than the click coordinates (`posAtCoords`): on a tall line
- * the link underline pulls the pointer into the inter-line gap and a coordinate
- * hit-test resolves to a neighboring line — the root cause of "the link won't
- * switch to edit mode unless I click slightly higher".
+ * Places the caret inside a clicked navigable element (link / footnote ref) so
+ * its raw Markdown reveals for editing (the double-click "edit" gesture).
+ * Resolves the position from the DOM node (`posAtDOM`) rather than the click
+ * coordinates (`posAtCoords`): on a tall line the link underline pulls the
+ * pointer into the inter-line gap and a coordinate hit-test resolves to a
+ * neighboring line — the root cause of "it won't switch to edit mode unless I
+ * click slightly higher".
  */
-function revealLinkSource(view: EditorView, link: HTMLElement): void {
-  const pos = view.posAtDOM(link)
+function revealSource(view: EditorView, el: HTMLElement): void {
+  const pos = view.posAtDOM(el)
   view.dispatch({ selection: EditorSelection.cursor(pos), scrollIntoView: true })
   view.focus()
 }
 
 export function livePreviewExtension(): Extension {
-  // Obsidian-style link interaction: a single click opens the link, a double
-  // click edits its source. A single click can't act immediately — it must wait
-  // to see whether a second click turns it into a double click. So a single click
-  // *schedules* the open and a second click / dblclick cancels it.
-  let pendingLinkOpen: ReturnType<typeof setTimeout> | null = null
-  const cancelPendingOpen = () => {
-    if (pendingLinkOpen !== null) {
-      clearTimeout(pendingLinkOpen)
-      pendingLinkOpen = null
+  // Obsidian-style interaction for links & footnote refs: a single click acts
+  // (open external link / jump to an #anchor heading / jump to a footnote def),
+  // a double click edits the source. A single click can't act immediately — it
+  // must wait to see whether a second click turns it into a double click — so it
+  // *schedules* the action and the next press / click / dblclick cancels it.
+  //
+  // The cancel must happen on the second *mousedown* (the earliest signal a
+  // double click is underway), not the second click *release*: the gap between
+  // the two releases routinely exceeds a short timer, which let the open fire
+  // before a double-click could cancel it. The delay is also generous enough to
+  // outlast a normal double-click so a double click only ever edits the source.
+  const DOUBLE_CLICK_MS = 450
+  let pendingAction: ReturnType<typeof setTimeout> | null = null
+  const cancelPendingAction = () => {
+    if (pendingAction !== null) {
+      clearTimeout(pendingAction)
+      pendingAction = null
     }
   }
 
@@ -614,17 +690,26 @@ export function livePreviewExtension(): Extension {
               return true
             }
           }
-          // A click on a rendered link must NOT let CodeMirror move the caret —
-          // that would reveal the source and fight the open/edit gestures decided
-          // in the click / dblclick handlers. Cmd/Ctrl+click opens immediately.
-          const link = closestLink(event.target)
-          if (link) {
+          // A click on a rendered link / footnote ref must NOT let CodeMirror move
+          // the caret — that would reveal the source and fight the act/edit
+          // gestures decided in the click / dblclick handlers. Cmd/Ctrl+click acts
+          // immediately (open / jump).
+          const el = closestNavigable(event.target)
+          if (el) {
             if (event.metaKey || event.ctrlKey) {
-              const url = resolveOpenUrl(view.state, view.posAtDOM(link), link)
-              if (url) {
-                cancelPendingOpen()
-                openExternalUrl(url)
+              const act = navigableAction(view, el)
+              if (act) {
+                cancelPendingAction()
+                act()
               }
+              event.preventDefault()
+              return true
+            }
+            // The second press of a double click is the earliest reliable signal
+            // the user is double-clicking to edit — cancel the scheduled
+            // single-click open here, before its timer can fire.
+            if (event.detail >= 2) {
+              cancelPendingAction()
             }
             event.preventDefault()
             return true
@@ -632,41 +717,43 @@ export function livePreviewExtension(): Extension {
           return false
         },
         click: (event, view) => {
-          const link = closestLink(event.target)
-          if (!link) {
+          const el = closestNavigable(event.target)
+          if (!el) {
             return false
           }
-          // Cmd/Ctrl+click already opened the link on mousedown.
+          // Cmd/Ctrl+click already acted on mousedown.
           if (event.metaKey || event.ctrlKey) {
             event.preventDefault()
             return true
           }
-          // The 2nd click of a double-click (detail > 1) belongs to dblclick:
-          // cancel any pending single-click open and let dblclick reveal source.
-          cancelPendingOpen()
+          // Any click beyond the first belongs to a (potential) double-click:
+          // cancel the pending single-click action (the second mousedown usually
+          // cancelled it already) and let dblclick reveal the source.
           if (event.detail > 1) {
+            cancelPendingAction()
             event.preventDefault()
             return true
           }
-          // Single click -> open, but only after a short delay so a double-click
-          // can cancel it and edit the source instead.
-          const url = resolveOpenUrl(view.state, view.posAtDOM(link), link)
-          if (url) {
-            pendingLinkOpen = setTimeout(() => {
-              pendingLinkOpen = null
-              openExternalUrl(url)
-            }, 300)
+          // First click -> act, but only after a delay so a following press /
+          // dblclick can cancel it and edit the source instead.
+          cancelPendingAction()
+          const act = navigableAction(view, el)
+          if (act) {
+            pendingAction = setTimeout(() => {
+              pendingAction = null
+              act()
+            }, DOUBLE_CLICK_MS)
           }
           event.preventDefault()
           return true
         },
         dblclick: (event, view) => {
-          const link = closestLink(event.target)
-          if (!link) {
+          const el = closestNavigable(event.target)
+          if (!el) {
             return false
           }
-          cancelPendingOpen()
-          revealLinkSource(view, link)
+          cancelPendingAction()
+          revealSource(view, el)
           event.preventDefault()
           return true
         }

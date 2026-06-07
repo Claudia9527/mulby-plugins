@@ -609,19 +609,22 @@ button {
   padding-left: 16px;
   padding-right: 16px;
 }
+/* IMPORTANT: spacing here uses padding, never margin. A vertical `margin` on a
+   `.cm-line` is excluded from CodeMirror's per-line height measurement, so its
+   height map drifts below the block and clicks/selection land on the wrong line
+   (the bug where you had to click slightly higher to edit below a code block).
+   Padding is part of the measured box, so it stays aligned. */
 .cm-md-codeblock-open {
   border-top: 1px solid var(--cm-code-border);
   border-top-left-radius: 10px;
   border-top-right-radius: 10px;
-  padding-top: 8px;
-  margin-top: 8px;
+  padding-top: 12px;
 }
 .cm-md-codeblock-close {
   border-bottom: 1px solid var(--cm-code-border);
   border-bottom-left-radius: 10px;
   border-bottom-right-radius: 10px;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
+  padding-bottom: 12px;
 }
 /* Collapsed fence line (``` + language hidden) — a thin rounded cap; the line
    expands back to normal when the caret enters the block and reveals the fence. */
@@ -686,6 +689,18 @@ button {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* <kbd> keyboard key. */
+.cm-md-kbd {
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
+  font-size: 0.82em;
+  padding: 0.1em 0.45em;
+  border: 1px solid var(--cm-code-border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--panel-muted);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
 /* Multi-line HTML comments are dimmed in place (single-line ones are hidden). */
 .cm-md-comment {
   color: var(--text-muted);
@@ -717,9 +732,12 @@ button {
   font-style: normal;
 }
 /* <dl> definition list (block widget). */
+/* Block widgets use padding (not margin) for outer spacing — a block widget's
+   root margin is excluded from CodeMirror's measured height and drifts the
+   height map / click hit-testing for everything below it (same reason as the
+   code-block caps above). Transparent padding looks identical to margin here. */
 .cm-md-dl {
-  margin: 10px 0;
-  padding: 2px 0;
+  padding: 12px 0;
 }
 .cm-md-dl dt {
   font-weight: 700;
@@ -740,7 +758,7 @@ button {
    the line is being edited). */
 .cm-md-image-block {
   display: block;
-  margin: 0.35em 0;
+  padding: 0.35em 0;
 }
 .cm-md-image {
   max-width: 100%;
@@ -767,7 +785,7 @@ button {
 
 /* Rendered GFM table (block widget) */
 .cm-md-table {
-  margin: 10px 0;
+  padding: 10px 0;
   overflow-x: auto;
 }
 .cm-md-table table {
@@ -805,7 +823,7 @@ button {
 
 /* Rendered Mermaid diagram (block widget). */
 .cm-md-mermaid {
-  margin: 12px 0;
+  padding: 12px 0;
   text-align: center;
   overflow-x: auto;
 }
@@ -834,7 +852,7 @@ button {
 }
 .cm-md-math-block {
   display: block;
-  margin: 12px 0;
+  padding: 12px 0;
   text-align: center;
   overflow-x: auto;
   overflow-y: hidden;
