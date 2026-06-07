@@ -623,6 +623,17 @@ button {
   padding-bottom: 8px;
   margin-bottom: 8px;
 }
+/* Collapsed fence line (``` + language hidden) — a thin rounded cap; the line
+   expands back to normal when the caret enters the block and reveals the fence. */
+.cm-md-codefence {
+  font-size: 0;
+  line-height: 6px;
+}
+/* Fenced code nested inside a blockquote: let the code slab win over the quote
+   tint, but keep the quote's left bar/indent for context. */
+.cm-md-quote.cm-md-codeblock {
+  background: var(--cm-code-bg);
+}
 
 /* Rendered inline spans (live preview) */
 .cm-md-strong {
@@ -658,11 +669,78 @@ button {
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
+/* <sup>/<sub> superscript & subscript. */
+.cm-md-sup,
+.cm-md-sub {
+  font-size: 0.74em;
+  line-height: 0;
+}
+.cm-md-sup {
+  vertical-align: super;
+}
+.cm-md-sub {
+  vertical-align: sub;
+}
+/* <u> underline. */
+.cm-md-underline {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* Multi-line HTML comments are dimmed in place (single-line ones are hidden). */
+.cm-md-comment {
+  color: var(--text-muted);
+  opacity: 0.65;
+  font-style: italic;
+}
+/* Reference-style link definitions, dimmed as metadata. */
+.cm-md-linkdef {
+  color: var(--text-muted);
+  opacity: 0.7;
+  font-size: 0.92em;
+}
+/* Footnote reference [^id] -> small superscript marker. */
+.cm-md-footnote-ref {
+  vertical-align: super;
+  font-size: 0.72em;
+  color: var(--accent);
+  cursor: pointer;
+}
+/* Footnote definition marker [^id]: */
+.cm-md-footnote-def {
+  color: var(--accent);
+  font-weight: 600;
+}
+/* :shortcode: emoji. */
+.cm-md-emoji {
+  font-family:
+    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Segoe UI Symbol", sans-serif;
+  font-style: normal;
+}
+/* <dl> definition list (block widget). */
+.cm-md-dl {
+  margin: 10px 0;
+  padding: 2px 0;
+}
+.cm-md-dl dt {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 6px;
+}
+.cm-md-dl dd {
+  margin: 2px 0 0 18px;
+  color: var(--text-secondary);
+}
 
 /* Rendered widgets (live preview) */
 .cm-md-image-wrap {
   display: inline-block;
   max-width: 100%;
+}
+/* Standalone image rendered as its own block (idle, or below the source while
+   the line is being edited). */
+.cm-md-image-block {
+  display: block;
+  margin: 0.35em 0;
 }
 .cm-md-image {
   max-width: 100%;
@@ -723,6 +801,30 @@ button {
 }
 .cm-md-table tbody tr:nth-child(even) td {
   background: var(--panel-muted);
+}
+
+/* Rendered Mermaid diagram (block widget). */
+.cm-md-mermaid {
+  margin: 12px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.cm-md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.cm-md-mermaid-error {
+  text-align: left;
+}
+.cm-md-mermaid-error pre {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--cm-code-border);
+  border-radius: 10px;
+  background: var(--cm-code-bg);
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
+  font-size: 0.88em;
+  white-space: pre-wrap;
 }
 
 /* Rendered TeX math (KaTeX) — inline and display. */

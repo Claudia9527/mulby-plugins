@@ -6,9 +6,19 @@ import {
   activeLineNumbers,
   computeLivePreview,
   extractImageAlt,
+  findAutolinks,
   findBlockMathMatches,
+  findEmojiShortcodes,
+  findFootnoteDefinition,
+  findFootnoteRefs,
   findHighlightMatches,
+  findHtmlComments,
+  findHtmlDefinitionLists,
+  findHtmlImages,
+  findHtmlInlineTags,
   findInlineMathMatches,
+  findReferenceDefinition,
+  parseDefinitionList,
   type HideRange,
   type MarkRange,
   type WidgetRange
@@ -101,6 +111,48 @@ assert.equal(extractImageAlt('![](x.png)'), '')
   assert.equal(widget?.data.alt, 'a cat')
 }
 
+// A standalone image line is a block widget: idle it replaces the source (no
+// reveal); with the caret on it the source stays and the image is shown below
+// (reveal), so editing never hides the image or jumps the layout.
+{
+  const doc = '![a cat](cat.png)\n\ntail'
+  const idle = findWidget(computeLivePreview(stateFor(doc, doc.indexOf('tail'))).widgets, 'image')
+  assert.equal(idle?.block, true, 'standalone image is a block widget')
+  assert.ok(!idle?.reveal, 'idle standalone image replaces the source (no reveal)')
+
+  const editing = findWidget(computeLivePreview(stateFor(doc, 3)).widgets, 'image')
+  assert.ok(editing, 'image still rendered while its line is edited')
+  assert.equal(editing?.reveal, true, 'editing reveals source above and keeps image below')
+}
+
+// An image embedded inline in text keeps the inline replace (not a block) and is
+// hidden while its line is edited (standalone images are the common case).
+{
+  const doc = 'see ![x](y.png) here\n\ntail'
+  const idle = findWidget(computeLivePreview(stateFor(doc, doc.indexOf('tail'))).widgets, 'image')
+  assert.ok(idle, 'inline image widget present')
+  assert.ok(!idle?.block, 'inline image is not a block widget')
+
+  const editing = computeLivePreview(stateFor(doc, doc.indexOf('see')))
+  assert.ok(!findWidget(editing.widgets, 'image'), 'inline image source revealed while editing')
+}
+
+// A linked image [![alt](img)](href) renders as ONE image unit: the image shows,
+// the wrapping link is not separately styled, and editing reveals it as a unit
+// (so clicking it edits instead of leaving the image showing).
+{
+  const doc = '[![cat](cat.png)](https://x.com)\n\ntail'
+  const idle = computeLivePreview(stateFor(doc, doc.indexOf('tail')))
+  const img = findWidget(idle.widgets, 'image')
+  assert.ok(img, 'linked image renders as an image widget')
+  assert.equal(img?.data.url, 'cat.png', 'uses the inner image src')
+  assert.equal(img?.block, true, 'standalone linked image is a block widget')
+  assert.ok(!hasMark(idle.marks, 'cm-md-link'), 'no half-hidden link mark for a linked image')
+
+  const editing = findWidget(computeLivePreview(stateFor(doc, 5)).widgets, 'image')
+  assert.equal(editing?.reveal, true, 'linked image reveals source as a unit while editing')
+}
+
 // Horizontal rule off the active line becomes an hr widget.
 {
   const doc = 'before\n\n---\n\nafter'
@@ -146,6 +198,30 @@ assert.equal(extractImageAlt('![](x.png)'), '')
   assert.ok(table, 'table widget present')
   assert.equal(table?.block, true)
   assert.ok((table?.data.source ?? '').includes('| a | b |'), 'carries table source')
+}
+
+// Caret inside a table reveals the source (no widget) so it can be edited —
+// this is what makes a single click on a rendered table switch to edit mode.
+{
+  const doc = 'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\ntail'
+  const state = stateFor(doc, doc.indexOf('| a |') + 2)
+  const deco = computeLivePreview(state)
+  assert.ok(!findWidget(deco.widgets, 'table'), 'table revealed when caret is inside it')
+}
+
+// A selection that merely spans across a table (not contained in it) keeps the
+// table rendered, so a drag-select doesn't shift the layout out from under the
+// mouse mid-drag.
+{
+  const doc = 'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\ntail'
+  const state = EditorState.create({
+    doc,
+    selection: { anchor: doc.indexOf('intro'), head: doc.indexOf('tail') + 2 },
+    extensions: [createMarkdownLanguage()]
+  })
+  ensureSyntaxTree(state, state.doc.length, 10000)
+  const deco = computeLivePreview(state)
+  assert.ok(findWidget(deco.widgets, 'table'), 'table stays rendered when only spanned by a selection')
 }
 
 // --- TeX math scanners (pure) ---------------------------------------------
@@ -220,6 +296,215 @@ assert.equal(extractImageAlt('![](x.png)'), '')
   const open = doc.indexOf('==')
   assert.ok(!hasHide(deco.hides, open, open + 2), 'opening == revealed on active line')
   assert.ok(hasMark(deco.marks, 'cm-md-highlight'), 'still marked while editing')
+}
+
+// --- HTML subset scanners (pure) ------------------------------------------
+{
+  // <sup>/<sub>/<mark>/<u> inline tags.
+  const tags = findHtmlInlineTags('x<sup>2</sup> H<sub>2</sub>O <mark>hi</mark> <u>under</u>')
+  assert.equal(tags.length, 4, 'four inline html tags')
+  assert.equal(tags[0].tag, 'sup', 'first is sup')
+  assert.equal(tags[1].tag, 'sub', 'second is sub')
+  assert.equal(tags[2].tag, 'mark', 'third is mark')
+  assert.equal(tags[3].tag, 'u', 'fourth is u')
+  // <ul> must not be mistaken for a <u> tag.
+  assert.equal(findHtmlInlineTags('<ul><li>x</li></ul>').length, 0, 'no <u> match in <ul>')
+  // Inner range excludes the tags.
+  const src = 'a<sup>2</sup>'
+  const t = findHtmlInlineTags(src)[0]
+  assert.equal(src.slice(t.innerStart, t.innerEnd), '2', 'inner is the tag content')
+
+  // Comments.
+  assert.equal(findHtmlComments('a <!-- note --> b').length, 1, 'one comment')
+
+  // HTML images parse src/alt/width/height (quoted and unquoted).
+  const imgs = findHtmlImages('<img src="a.png" alt="cat" width="120" height=80>')
+  assert.equal(imgs.length, 1, 'one html image')
+  assert.equal(imgs[0].src, 'a.png', 'src')
+  assert.equal(imgs[0].alt, 'cat', 'alt')
+  assert.equal(imgs[0].width, '120', 'width')
+  assert.equal(imgs[0].height, '80', 'height (unquoted)')
+  // An <img> without src is ignored.
+  assert.equal(findHtmlImages('<img alt="x">').length, 0, 'no src -> skipped')
+
+  // Definition list parsing (text only).
+  const dls = findHtmlDefinitionLists('<dl><dt>Term</dt><dd>Def</dd></dl>')
+  assert.equal(dls.length, 1, 'one dl block')
+  const items = parseDefinitionList(dls[0].inner)
+  assert.equal(items.length, 2, 'two dl items')
+  assert.equal(items[0].term, true, 'first is a term')
+  assert.equal(items[0].text, 'Term', 'term text')
+  assert.equal(items[1].term, false, 'second is a description')
+  assert.equal(items[1].text, 'Def', 'description text')
+  // Embedded tags inside dd are stripped (XSS-safe text).
+  assert.equal(parseDefinitionList('<dl><dd><b>x</b></dd></dl>')[0].text, 'x', 'tags stripped')
+}
+
+// <sup> off the active line: tags hidden, inner styled.
+{
+  const doc = 'E = mc<sup>2</sup> end\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(hasMark(deco.marks, 'cm-md-sup'), 'sup mark')
+  const open = doc.indexOf('<sup>')
+  assert.ok(hasHide(deco.hides, open, open + 5), 'hides <sup>')
+}
+
+// HTML image off the active line becomes an image widget carrying its size.
+{
+  const doc = 'pic <img src="a.png" width="120"> here\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const img = findWidget(deco.widgets, 'image')
+  assert.ok(img, 'html image widget present')
+  assert.equal(img?.data.url, 'a.png', 'carries src')
+  assert.equal(img?.data.width, '120', 'carries width')
+}
+
+// <dl> off the active line becomes a block definition-list widget.
+{
+  const doc = 'intro\n\n<dl>\n<dt>Term</dt>\n<dd>Def</dd>\n</dl>\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const dl = findWidget(deco.widgets, 'dl')
+  assert.ok(dl, 'dl widget present')
+  assert.equal(dl?.block, true, 'dl is block')
+}
+
+// Single-line HTML comment off the active line is hidden.
+{
+  const doc = 'before <!-- secret --> after\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const start = doc.indexOf('<!--')
+  const end = doc.indexOf('-->') + 3
+  assert.ok(hasHide(deco.hides, start, end), 'single-line comment hidden')
+}
+
+// HTML inside a fenced code block is left untouched (raw).
+{
+  const doc = '```\n<sup>2</sup> <mark>x</mark>\n```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(!hasMark(deco.marks, 'cm-md-sup'), 'no sup mark inside code')
+}
+
+// --- Links / footnotes / emoji scanners (pure) ----------------------------
+{
+  // Autolinks: URL and email.
+  const al = findAutolinks('see <https://a.com/x> or <bob@a.com> end')
+  assert.equal(al.length, 2, 'two autolinks')
+  assert.equal(al[0].href, 'https://a.com/x', 'url href')
+  assert.equal(al[0].email, false, 'url not email')
+  assert.equal(al[1].href, 'mailto:bob@a.com', 'email gets mailto')
+  assert.equal(al[1].email, true, 'email flagged')
+
+  // Reference-style link definition lines.
+  assert.equal(findReferenceDefinition('[ref1]: https://x.com "Title"').ok, true, 'ref def line')
+  assert.equal(findReferenceDefinition('just text').ok, false, 'non-def line')
+
+  // Footnote definitions vs references.
+  assert.equal(findFootnoteDefinition('[^1]: the note').ok, true, 'footnote def')
+  assert.equal(findFootnoteDefinition('plain').ok, false, 'not a footnote def')
+  const refs = findFootnoteRefs('text[^1] more[^note] end')
+  assert.equal(refs.length, 2, 'two footnote refs')
+  // A definition marker at line start is not counted as a reference.
+  assert.equal(findFootnoteRefs('[^1]: def').length, 0, 'def marker is not a ref')
+
+  // Emoji shortcodes (known ones only).
+  const em = findEmojiShortcodes('hi :smile: and :+1: but :notanemoji:')
+  assert.equal(em.length, 2, 'two known emoji')
+  assert.equal(em[0].emoji, '😄', 'smile emoji')
+  assert.equal(em[1].emoji, '👍', '+1 emoji')
+}
+
+// Autolink off the active line: angle brackets hidden, inner styled as link.
+{
+  const doc = 'go <https://a.com> now\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(hasMark(deco.marks, 'cm-md-link'), 'autolink styled as link')
+  const open = doc.indexOf('<https')
+  assert.ok(hasHide(deco.hides, open, open + 1), 'hides opening <')
+}
+
+// Footnote reference off the active line becomes a superscript marker.
+{
+  const doc = 'claim[^1] here\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(hasMark(deco.marks, 'cm-md-footnote-ref'), 'footnote ref marked')
+}
+
+// Emoji shortcode off the active line becomes an emoji widget.
+{
+  const doc = 'nice :smile: day\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const e = findWidget(deco.widgets, 'emoji')
+  assert.ok(e, 'emoji widget present')
+  assert.equal(e?.data.emoji, '😄', 'carries emoji')
+}
+
+// --- Code / quote / list (Batch C) ----------------------------------------
+// #11: off the active block, the ``` fences + language are hidden and the fence
+// lines get the thin-cap class.
+{
+  const doc = '```js\nconst a = 1\n```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(hasHide(deco.hides, 0, 3), 'hides opening ``` ')
+  assert.ok(hasHide(deco.hides, 3, 5), 'hides the language token')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codefence'), 'thin fence cap class')
+}
+
+// #11: while the caret is inside the block, the fences are revealed for editing.
+{
+  const doc = '```js\nconst a = 1\n```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('const'))
+  const deco = computeLivePreview(state)
+  assert.ok(!hasHide(deco.hides, 0, 3), 'opening ``` revealed when editing')
+  assert.ok(!deco.lineClasses.some((l) => l.cls === 'cm-md-codefence'), 'no thin cap while editing')
+}
+
+// #8: a fenced code block inside a blockquote still renders as a code block.
+{
+  const doc = '> ```js\n> const a = 1\n> ```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock'), 'code block inside quote')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-quote'), 'quote class still present')
+}
+
+// #9: nested bullet list renders a bullet for each marker at every depth.
+{
+  const doc = '- a\n  - b\n    - c\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.equal(deco.widgets.filter((w) => w.kind === 'bullet').length, 3, 'three nested bullets')
+}
+
+// --- Mermaid (Batch D) -----------------------------------------------------
+// A ```mermaid block off the active block becomes a mermaid widget carrying code.
+{
+  const doc = 'intro\n\n```mermaid\ngraph TD\nA-->B\n```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const mmd = findWidget(deco.widgets, 'mermaid')
+  assert.ok(mmd, 'mermaid widget present')
+  assert.equal(mmd?.block, true, 'mermaid is block')
+  assert.ok((mmd?.data.code ?? '').includes('graph TD'), 'carries diagram code')
+  // It must NOT also be treated as a normal code block.
+  assert.ok(!deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock'), 'no code-block class for mermaid')
+}
+
+// While editing the mermaid block, the source is shown (no diagram widget).
+{
+  const doc = 'intro\n\n```mermaid\ngraph TD\nA-->B\n```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('graph'))
+  const deco = computeLivePreview(state)
+  assert.ok(!findWidget(deco.widgets, 'mermaid'), 'mermaid source revealed while editing')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock'), 'shows as code block while editing')
 }
 
 console.log('markdown-editor livePreviewModel unit tests passed')

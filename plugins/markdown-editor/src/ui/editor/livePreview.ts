@@ -7,7 +7,7 @@
 // The set is rebuilt on every doc/selection/viewport change, which is what makes
 // the raw Markdown reveal itself on the active line.
 
-import { Facet, StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
+import { EditorSelection, Facet, StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -16,9 +16,12 @@ import {
   type ViewUpdate,
   WidgetType
 } from '@codemirror/view'
+import { syntaxTree } from '@codemirror/language'
+import type { SyntaxNode } from '@lezer/common'
 import katex from 'katex'
 import {
   computeLivePreview,
+  parseDefinitionList,
   type HideRange,
   type LivePreviewDecorations,
   type WidgetRange
@@ -44,28 +47,82 @@ class HrWidget extends WidgetType {
   }
 }
 
+/** Coerces an HTML size attribute ("120" / "50%") into a CSS length. */
+function toCssSize(value: string): string {
+  return /^\d+$/.test(value) ? `${value}px` : value
+}
+
 class ImageWidget extends WidgetType {
   constructor(
     private readonly url: string,
     private readonly alt: string,
-    private readonly resolve: (href: string) => string
+    private readonly resolve: (href: string) => string,
+    private readonly width = '',
+    private readonly height = '',
+    // Standalone-image lines render as block widgets, which must be block-level
+    // elements (a <div>); inline images embedded in text stay as a <span>.
+    private readonly block = false
   ) {
     super()
   }
   eq(other: ImageWidget) {
-    return other.url === this.url && other.alt === this.alt
+    return (
+      other.url === this.url &&
+      other.alt === this.alt &&
+      other.width === this.width &&
+      other.height === this.height &&
+      other.block === this.block
+    )
   }
   toDOM() {
-    const wrap = document.createElement('span')
-    wrap.className = 'cm-md-image-wrap'
+    const wrap = document.createElement(this.block ? 'div' : 'span')
+    wrap.className = this.block ? 'cm-md-image-wrap cm-md-image-block' : 'cm-md-image-wrap'
     const img = document.createElement('img')
     img.className = 'cm-md-image'
     img.src = this.resolve(this.url)
     img.alt = this.alt
     img.title = this.alt
     img.loading = 'lazy'
+    // Explicit HTML sizing (<img width=… height=…>) wins over the CSS cap.
+    if (this.width) {
+      img.style.width = toCssSize(this.width)
+    }
+    if (this.height) {
+      img.style.height = toCssSize(this.height)
+      img.style.maxHeight = 'none'
+    }
     wrap.appendChild(img)
     return wrap
+  }
+  ignoreEvent() {
+    // Let clicks fall through to CodeMirror so the caret lands here and the
+    // source reveals for editing (default WidgetType.ignoreEvent is `true`,
+    // which silently swallows clicks on the widget).
+    return false
+  }
+}
+
+class DefinitionListWidget extends WidgetType {
+  constructor(private readonly source: string) {
+    super()
+  }
+  eq(other: DefinitionListWidget) {
+    return other.source === this.source
+  }
+  toDOM() {
+    // Built from text content only (never innerHTML) so embedded markup can't
+    // inject anything.
+    const dl = document.createElement('dl')
+    dl.className = 'cm-md-dl'
+    for (const item of parseDefinitionList(this.source)) {
+      const el = document.createElement(item.term ? 'dt' : 'dd')
+      el.textContent = item.text
+      dl.appendChild(el)
+    }
+    return dl
+  }
+  ignoreEvent() {
+    return false
   }
 }
 
@@ -81,6 +138,59 @@ class TableWidget extends WidgetType {
     wrap.className = 'cm-md-table'
     wrap.innerHTML = renderMarkdownDocument(this.source)
     return wrap
+  }
+  ignoreEvent() {
+    // Allow clicks to position the caret in the table source (reveals it for
+    // editing); otherwise a rendered table swallows all clicks.
+    return false
+  }
+}
+
+// Lazily load mermaid — it's a large dependency, so it's code-split into its own
+// chunk and only fetched the first time a ```mermaid block actually renders.
+let mermaidLoader: Promise<(typeof import('mermaid'))['default']> | null = null
+let mermaidSeq = 0
+function loadMermaid() {
+  if (!mermaidLoader) {
+    mermaidLoader = import('mermaid').then((mod) => mod.default)
+  }
+  return mermaidLoader
+}
+
+class MermaidWidget extends WidgetType {
+  private readonly dark: boolean
+  constructor(private readonly code: string) {
+    super()
+    // Capture the theme so a theme change (which re-runs the live preview)
+    // produces a non-equal widget and re-renders the diagram with the new theme.
+    this.dark = document.documentElement.classList.contains('dark')
+  }
+  eq(other: MermaidWidget) {
+    return other.code === this.code && other.dark === this.dark
+  }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-md-mermaid'
+    const { code, dark } = this
+    loadMermaid()
+      .then((mermaid) => {
+        mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default', securityLevel: 'strict' })
+        return mermaid.render(`cm-mermaid-${(mermaidSeq += 1)}`, code)
+      })
+      .then(({ svg }) => {
+        wrap.innerHTML = svg
+      })
+      .catch(() => {
+        // Invalid diagram: fall back to the raw source so nothing is lost.
+        wrap.classList.add('cm-md-mermaid-error')
+        const pre = document.createElement('pre')
+        pre.textContent = code
+        wrap.replaceChildren(pre)
+      })
+    return wrap
+  }
+  ignoreEvent() {
+    return false
   }
 }
 
@@ -110,6 +220,10 @@ class MathWidget extends WidgetType {
     }
     return el
   }
+  ignoreEvent() {
+    // Let clicks position the caret so the math source reveals for editing.
+    return false
+  }
 }
 
 class BulletWidget extends WidgetType {
@@ -121,6 +235,29 @@ class BulletWidget extends WidgetType {
     dot.className = 'cm-md-bullet'
     dot.textContent = '•'
     return dot
+  }
+  ignoreEvent() {
+    // Let clicks position the caret so the list marker reveals for editing.
+    return false
+  }
+}
+
+class EmojiWidget extends WidgetType {
+  constructor(private readonly emoji: string) {
+    super()
+  }
+  eq(other: EmojiWidget) {
+    return other.emoji === this.emoji
+  }
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = 'cm-md-emoji'
+    span.textContent = this.emoji
+    return span
+  }
+  ignoreEvent() {
+    // Let clicks position the caret so the :shortcode: reveals for editing.
+    return false
   }
 }
 
@@ -194,14 +331,47 @@ function rangeOverlaps(from: number, to: number, ranges: HideRange[]): boolean {
  */
 function buildBlockDecorations(state: EditorState): DecorationSet {
   const model = computeLivePreview(state)
+  const resolve = state.facet(imageUrlResolver)
   const ranges: Range<Decoration>[] = []
   for (const widget of model.widgets) {
     if (widget.to <= widget.from || !widgetIsBlock(state, widget)) {
       continue
     }
-    if (widget.kind === 'table') {
+    if (widget.kind === 'image') {
+      const img = new ImageWidget(
+        widget.data.url ?? '',
+        widget.data.alt ?? '',
+        resolve,
+        widget.data.width ?? '',
+        widget.data.height ?? '',
+        true
+      )
+      if (widget.reveal) {
+        // The line is being edited: keep its raw source visible and draw the
+        // image as a block *below* it (insert, not replace) so the image never
+        // disappears and the layout barely shifts.
+        ranges.push(Decoration.widget({ widget: img, block: true, side: 1 }).range(widget.to))
+      } else {
+        // Idle: the image block stands in for the whole source line.
+        ranges.push(Decoration.replace({ widget: img, block: true }).range(widget.from, widget.to))
+      }
+    } else if (widget.kind === 'table') {
       ranges.push(
         Decoration.replace({ widget: new TableWidget(widget.data.source ?? ''), block: true }).range(
+          widget.from,
+          widget.to
+        )
+      )
+    } else if (widget.kind === 'dl') {
+      ranges.push(
+        Decoration.replace({ widget: new DefinitionListWidget(widget.data.source ?? ''), block: true }).range(
+          widget.from,
+          widget.to
+        )
+      )
+    } else if (widget.kind === 'mermaid') {
+      ranges.push(
+        Decoration.replace({ widget: new MermaidWidget(widget.data.code ?? ''), block: true }).range(
           widget.from,
           widget.to
         )
@@ -258,7 +428,13 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
     if (widget.kind === 'image') {
       ranges.push(
         Decoration.replace({
-          widget: new ImageWidget(widget.data.url ?? '', widget.data.alt ?? '', resolve)
+          widget: new ImageWidget(
+            widget.data.url ?? '',
+            widget.data.alt ?? '',
+            resolve,
+            widget.data.width ?? '',
+            widget.data.height ?? ''
+          )
         }).range(widget.from, widget.to)
       )
     } else if (widget.kind === 'hr') {
@@ -278,6 +454,10 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
           widget.from,
           widget.to
         )
+      )
+    } else if (widget.kind === 'emoji') {
+      ranges.push(
+        Decoration.replace({ widget: new EmojiWidget(widget.data.emoji ?? '') }).range(widget.from, widget.to)
       )
     }
   }
@@ -306,6 +486,60 @@ const blockDecorationField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field)
 })
 
+/** Returns the nearest `.cm-md-link` ancestor of a DOM event target, if any. */
+function closestLink(target: EventTarget | null): HTMLElement | null {
+  // A mouse event's target can be a text node; climb to its parent element first.
+  let el: Element | null = target instanceof Element ? target : null
+  if (!el && target instanceof Node && target.parentElement) {
+    el = target.parentElement
+  }
+  return el ? (el.closest('.cm-md-link') as HTMLElement | null) : null
+}
+
+/** Extracts the URL of the Link/Image node containing `pos`, if any. */
+function linkUrlAt(state: EditorState, pos: number): string | null {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1)
+  while (node) {
+    if (node.name === 'Link' || node.name === 'Image') {
+      const url = node.getChild('URL')
+      return url ? state.doc.sliceString(url.from, url.to) : null
+    }
+    node = node.parent
+  }
+  return null
+}
+
+/**
+ * Resolves the URL to open for a clicked link element: prefers the markdown
+ * Link's destination, falling back to the element's text for autolinks
+ * (`<https://…>` / `<a@b.com>`), where the visible text *is* the address.
+ */
+function resolveOpenUrl(state: EditorState, pos: number, linkEl: HTMLElement): string | null {
+  const fromTree = linkUrlAt(state, pos)
+  if (fromTree) {
+    return fromTree
+  }
+  const text = (linkEl.textContent ?? '').trim()
+  if (/^(https?|ftp|mailto):/i.test(text)) {
+    return text
+  }
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+    return `mailto:${text}`
+  }
+  return null
+}
+
+/** Opens a URL in the system browser via the Mulby host, falling back to window.open. */
+function openExternalUrl(url: string): void {
+  const shell = (window as unknown as { mulby?: { shell?: { openExternal?: (u: string) => unknown } } })
+    .mulby?.shell
+  if (shell?.openExternal) {
+    void shell.openExternal(url)
+  } else {
+    window.open(url, '_blank', 'noopener')
+  }
+}
+
 /** Toggles a GFM task checkbox in the source when its widget is clicked. */
 function toggleTaskAt(view: EditorView, pos: number): boolean {
   const line = view.state.doc.lineAt(pos)
@@ -319,7 +553,33 @@ function toggleTaskAt(view: EditorView, pos: number): boolean {
   return true
 }
 
+/**
+ * Places the caret inside a clicked link so its raw Markdown reveals for editing
+ * (the double-click "edit" gesture). Resolves the position from the DOM node
+ * (`posAtDOM`) rather than the click coordinates (`posAtCoords`): on a tall line
+ * the link underline pulls the pointer into the inter-line gap and a coordinate
+ * hit-test resolves to a neighboring line — the root cause of "the link won't
+ * switch to edit mode unless I click slightly higher".
+ */
+function revealLinkSource(view: EditorView, link: HTMLElement): void {
+  const pos = view.posAtDOM(link)
+  view.dispatch({ selection: EditorSelection.cursor(pos), scrollIntoView: true })
+  view.focus()
+}
+
 export function livePreviewExtension(): Extension {
+  // Obsidian-style link interaction: a single click opens the link, a double
+  // click edits its source. A single click can't act immediately — it must wait
+  // to see whether a second click turns it into a double click. So a single click
+  // *schedules* the open and a second click / dblclick cancels it.
+  let pendingLinkOpen: ReturnType<typeof setTimeout> | null = null
+  const cancelPendingOpen = () => {
+    if (pendingLinkOpen !== null) {
+      clearTimeout(pendingLinkOpen)
+      pendingLinkOpen = null
+    }
+  }
+
   const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet
@@ -354,7 +614,61 @@ export function livePreviewExtension(): Extension {
               return true
             }
           }
+          // A click on a rendered link must NOT let CodeMirror move the caret —
+          // that would reveal the source and fight the open/edit gestures decided
+          // in the click / dblclick handlers. Cmd/Ctrl+click opens immediately.
+          const link = closestLink(event.target)
+          if (link) {
+            if (event.metaKey || event.ctrlKey) {
+              const url = resolveOpenUrl(view.state, view.posAtDOM(link), link)
+              if (url) {
+                cancelPendingOpen()
+                openExternalUrl(url)
+              }
+            }
+            event.preventDefault()
+            return true
+          }
           return false
+        },
+        click: (event, view) => {
+          const link = closestLink(event.target)
+          if (!link) {
+            return false
+          }
+          // Cmd/Ctrl+click already opened the link on mousedown.
+          if (event.metaKey || event.ctrlKey) {
+            event.preventDefault()
+            return true
+          }
+          // The 2nd click of a double-click (detail > 1) belongs to dblclick:
+          // cancel any pending single-click open and let dblclick reveal source.
+          cancelPendingOpen()
+          if (event.detail > 1) {
+            event.preventDefault()
+            return true
+          }
+          // Single click -> open, but only after a short delay so a double-click
+          // can cancel it and edit the source instead.
+          const url = resolveOpenUrl(view.state, view.posAtDOM(link), link)
+          if (url) {
+            pendingLinkOpen = setTimeout(() => {
+              pendingLinkOpen = null
+              openExternalUrl(url)
+            }, 300)
+          }
+          event.preventDefault()
+          return true
+        },
+        dblclick: (event, view) => {
+          const link = closestLink(event.target)
+          if (!link) {
+            return false
+          }
+          cancelPendingOpen()
+          revealLinkSource(view, link)
+          event.preventDefault()
+          return true
         }
       }
     }

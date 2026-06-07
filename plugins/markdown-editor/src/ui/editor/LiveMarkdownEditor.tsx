@@ -160,10 +160,17 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    // Reconfigure theme when the prop changes.
+    // Reconfigure theme when the prop changes. Re-assert the current selection in
+    // the same transaction so the live-preview block decorations rebuild and
+    // theme-aware widgets (e.g. mermaid diagrams) re-render for the new theme.
     useEffect(() => {
-      viewRef.current?.dispatch({
-        effects: themeCompartment.reconfigure([baseTheme, themeExtension(theme)])
+      const view = viewRef.current
+      if (!view) {
+        return
+      }
+      view.dispatch({
+        effects: themeCompartment.reconfigure([baseTheme, themeExtension(theme)]),
+        selection: view.state.selection
       })
     }, [theme, themeCompartment])
 
