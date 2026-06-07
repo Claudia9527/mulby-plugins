@@ -34,6 +34,8 @@ interface Props {
   disabled?: boolean
   busy?: boolean
   aiActive?: boolean
+  /** 正在用 LLM 判断这条消息该触发什么动作（意图路由），期间显示「理解中」并禁用发送 */
+  routing?: boolean
   onStop?: () => void
   streamingText?: string
   messages?: VibeMessage[]
@@ -67,7 +69,7 @@ interface Props {
 }
 
 export function ChatPanel({
-  onSend, disabled, busy, aiActive, onStop, streamingText, messages,
+  onSend, disabled, busy, routing, aiActive, onStop, streamingText, messages,
   brainstorm, onPickIdea, onMoreIdeas, onUseSeed, onDismissBrainstorm, examples,
   contractPending, onConfirmGenerate,
   plan, planPhase, onStartPlan, onReplan,
@@ -85,7 +87,7 @@ export function ChatPanel({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [allMessages.length, busy, streamingText])
+  }, [allMessages.length, busy, streamingText, routing])
 
   const send = () => {
     const t = text.trim()
@@ -205,6 +207,11 @@ export function ChatPanel({
             </div>
           ) : (
             allMessages.map((msg) => <MessageBubble key={msg.id} msg={msg} />)
+          )}
+          {routing && !busy && (
+            <div className="flex items-center gap-1.5 text-[11px] text-indigo-500 dark:text-indigo-400">
+              <Loader2 size={11} className="animate-spin" /> 正在理解你的意图…
+            </div>
           )}
           {busy && (streamingText && streamingText.trim() ? (
             <div className="flex flex-col items-start gap-1">
@@ -354,14 +361,14 @@ export function ChatPanel({
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={disabled || busy || state === 'generating'}
+            disabled={disabled || busy || routing || state === 'generating'}
             rows={2}
           />
-          {aiActive && onStop ? (
+          {(aiActive || routing) && onStop ? (
             <button
               className="btn-danger shrink-0 h-9 px-3"
               onClick={onStop}
-              title="停止当前 AI 生成"
+              title={routing ? '取消理解' : '停止当前 AI 生成'}
             >
               <StopCircle size={14} /> 停止
             </button>

@@ -189,6 +189,8 @@ const VIBE_TOOLS = [
 const VIBE_READ_TOOLS = VIBE_TOOLS.filter((t) => ['list_dir', 'read_file', 'grep'].includes(t.function.name))
 
 export type VibeIntent = 'ask' | 'create' | 'modify' | 'run' | 'package' | 'rollback' | 'icon'
+// LLM 路由可选动作：在意图之外多一个「resume（继续未完成任务）」
+export type RouteAction = VibeIntent | 'resume'
 
 /**
  * 规则优先的意图识别（零延迟、零成本）。模糊时降级为 'ask'（只读问答），杜绝擅自改代码。
@@ -363,6 +365,8 @@ export function VibePanel({
   const planPreparedRef = useRef(false)
   // 计划执行互斥：防止「停止后立刻继续」时，上一轮尚未结算的执行循环与新一轮并发跑、互相覆盖状态
   const planExecutingRef = useRef(false)
+  // 正在用 LLM 判断这条对话该触发什么动作（C 方案：意图路由）
+  const [routing, setRouting] = useState(false)
 
   // 对话内提示卡（S4）：危险操作二次确认 / 构建失败一键修复等
   const [pendingPrompt, setPendingPrompt] = useState<{ kind: 'confirm' | 'action'; title: string; desc: string; actionLabel: string; danger?: boolean; onAction: () => void } | null>(null)
@@ -1266,12 +1270,12 @@ export function VibePanel({
   // 统一「停止 AI 生成」：标记中断 + 精确 abort 在途请求 + 复位所有 AI 忙碌态 + 释放宿主会话锁。
   // 覆盖所有 AI 流程（规划/头脑风暴/生成/迭代/问答/修复/一致性修复/图标），右侧对话与左侧面板共用。
   const stopAgent = () => {
-    const running = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || !!brainstorm?.loading
+    const running = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || routing || !!brainstorm?.loading
     if (!running) return
     abortedRef.current = true
     if (reqIdRef.current) { try { ai()?.abort?.(reqIdRef.current) } catch { /* 宿主未实现 abort 时忽略 */ } }
     setGenerating(false); setExpanding(false); setRepairing(false)
-    setIterating(false); setPlanning(false); setConfRepairing(false); setIconBusy(false)
+    setIterating(false); setPlanning(false); setConfRepairing(false); setIconBusy(false); setRouting(false)
     setBrainstorm((b) => (b && b.loading ? null : b))
     setNarration('')
     void dev.hostCall('vibe_end').catch(() => {})
@@ -2080,25 +2084,82 @@ export function VibePanel({
     return false
   }
 
-  // 全局对话：规则识别意图后分流。模糊/问答→只读回答，绝不擅自改代码（S1）
-  const handleChatSend = (text: string) => {
-    const t = text.trim()
-    if (!t || busy || aiActive) return
-    // 断点续传优先级最高：会话有未完成任务时，「继续/接着/继续修改/继续执行…」一律接上当前阶段，
-    // 不再被 classifyIntent 误判为新建项目或只读问答（修复「发『继续』却新建了一个项目」）。
+  // ---------------- 意图路由（C 方案）：让 LLM 看「消息 + 历史 + 当前状态」决定该触发哪个动作 ----------------
+  // 取代写死的正则分流；正则（classifyIntent / reContinue）降级为 AI 不可用/失败/超时时的兜底安全网。
+  const buildRouterState = (): string => {
+    const parts: string[] = []
+    if (createdPath) parts.push(`已有插件「${contract?.displayName || contract?.name || '项目'}」（${generated ? '已生成、可运行' : '生成中'}）`)
+    else parts.push('当前还没有插件项目')
+    if (planPhase === 'planning') parts.push('正在制定开发计划')
+    else if (planPhase === 'executing') parts.push('正在按计划执行')
+    else if (planPhase === 'review') parts.push('有一份开发计划待执行/可续跑（resume = 继续执行该计划）')
+    else if (!generated && !!contract) parts.push('插件设定(契约)已就绪、尚未制定计划（resume = 开始制定计划）')
+    parts.push(vibeMode === 'edit' ? '处于「改造现有插件」模式' : '处于「新建插件」模式')
+    return parts.join('；')
+  }
+
+  const ROUTE_ACTIONS = new Set<RouteAction>(['ask', 'create', 'modify', 'resume', 'run', 'package', 'rollback', 'icon'])
+
+  const routerSystemPrompt = (): string => [
+    '你是 Mulby「对话式插件开发助手」的意图路由器。读懂用户最新消息（结合上面的历史对话与下面的当前状态），判断接下来应触发哪一个动作。',
+    '只输出 JSON：{"action":"ask|create|modify|resume|run|package|rollback|icon"}，不要解释、不要 Markdown。',
+    '',
+    '动作含义与选择规则：',
+    '- ask：提问 / 咨询 / 要思路或方案 / 查看现状 / 排查「为什么…」。这是默认动作——只要意图不明、或更像在提问/讨论，一律选 ask（只读，绝不改代码）。带疑问语气（「…吗？」「为什么」「能不能」「怎么」）即使提到功能词也选 ask。',
+    '- modify：明确要求改动「现有插件」的功能/样式/代码（祈使句，如「帮我加…」「把…改成…」「修复…」「优化某处」）。',
+    '- create：明确想从零做一个「全新插件」，且当前没有正在进行的插件任务。',
+    '- resume：想继续 / 接着完成「当前未完成的任务」（如「继续」「接着做」「继续执行」「接着写」）。仅当下面【状态】标明有进行中的计划或待制定计划时才可选。',
+    '- run：想运行 / 打开 / 试用当前插件。',
+    '- package：想打包 / 导出 / 发布插件。',
+    '- rollback：想撤销 / 回滚 / 还原改动。',
+    '- icon：想重做 / 更换 / 美化插件图标。',
+    '',
+    '红线：宁可选 ask，也不要在不确定时选 modify/create——默认不动代码。',
+    `【当前状态】${buildRouterState()}`
+  ].join('\n')
+
+  // 调一次轻量 LLM 做路由（无工具、无技能、关历史截断），只输出动作；失败/无效返回 null（交给规则兜底）。
+  const routeIntent = async (text: string): Promise<RouteAction | null> => {
+    const a = ai()
+    if (!a?.call) return null
+    try {
+      const res = await a.call({
+        ...(selectedModel ? { model: selectedModel } : {}),
+        messages: [{ role: 'system', content: routerSystemPrompt() }, ...buildHistoryMessages(text).slice(-6), { role: 'user', content: text }],
+        params: { contextWindow: 0 },
+        skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
+      }, captureReqId)
+      const content = typeof res?.content === 'string'
+        ? res.content
+        : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
+      const json = extractJsonObject(content)
+      if (!json) return null
+      const action = String(JSON.parse(json)?.action || '').trim() as RouteAction
+      return ROUTE_ACTIONS.has(action) ? action : null
+    } catch { return null }
+  }
+
+  // 路由带超时：给较慢的推理模型充足时间（100s）再回退到正则兜底；期间可随时点「停止」取消（见 stopAgent）。
+  const routeIntentWithTimeout = async (text: string): Promise<RouteAction | null> =>
+    Promise.race([
+      routeIntent(text),
+      new Promise<RouteAction | null>((resolve) => setTimeout(() => resolve(null), 100000))
+    ])
+
+  // 规则兜底（AI 不可用/失败/超时）：保留原有正则作为安全网（含断点续传的「继续」识别）
+  const fallbackAction = (text: string): RouteAction => {
     const reContinue = /^\s*(继续|接着|接上|往下|下一步|go ?on|continue|keep ?going|resume)/i
-    // review 态（计划待执行/续跑）无论是否已交付都可续；契约待制定计划仅在未交付时
     const canResume = planPhase === 'review' || (!generated && planPhase === 'idle' && !!contract)
-    if (canResume && reContinue.test(t)) {
-      recordMessage(mkMsg('user', t, { intent: 'create' }))
-      if (planPhase === 'review') void executePlan()
-      else void generatePlan()
-      return
-    }
-    const { intent } = classifyIntent(t, { hasPlugin: !!createdPath })
-    // 集中写入用户消息并打上意图标签（会话未建时先缓冲，确保首条需求也进对话历史）
-    recordMessage(mkMsg('user', t, { intent }))
-    switch (intent) {
+    if (canResume && reContinue.test(text)) return 'resume'
+    return classifyIntent(text, { hasPlugin: !!createdPath }).intent
+  }
+
+  // 把「动作」分发到既有工作流（LLM 路由与规则兜底都汇聚到这里）。默认不动代码，破坏性操作二次确认。
+  const dispatchAction = (action: RouteAction, t: string) => {
+    switch (action) {
+      case 'resume':
+        if (!resumeInFlight()) void runAsk(t) // 无可续任务 → 退化为只读问答
+        return
       case 'ask':
         void runAsk(t); return
       case 'run':
@@ -2132,6 +2193,26 @@ export function VibePanel({
         seedAsRequirement(t)
         return
     }
+  }
+
+  // 全局对话入口：先即时显示用户消息，再由 LLM 路由（失败/超时回退规则）决定动作。默认不动代码。
+  const handleChatSend = async (text: string) => {
+    const t = text.trim()
+    if (!t || busy || aiActive || routing) return
+    // 立即落消息：意图标签先用规则给个即时值（真正动作由 LLM 决定，避免等待路由才显示用户气泡）
+    const provisional = fallbackAction(t)
+    recordMessage(mkMsg('user', t, { intent: provisional === 'resume' ? 'create' : provisional }))
+    let action: RouteAction = provisional
+    if (ai()?.call) {
+      resetAbort()
+      setRouting(true)
+      try {
+        const routed = await routeIntentWithTimeout(t)
+        if (abortedRef.current) return // 用户在「理解中」点了停止 → 取消本次分发
+        if (routed) action = routed
+      } finally { setRouting(false) }
+    }
+    dispatchAction(action, t)
   }
 
   return (
@@ -2289,6 +2370,7 @@ export function VibePanel({
             onSend={handleChatSend}
             disabled={busy && !iterating}
             busy={iterating || generating || iconBusy}
+            routing={routing}
             aiActive={aiActive}
             onStop={stopAgent}
             streamingText={(iterating || generating) ? narration : ''}
