@@ -22,6 +22,21 @@ export interface VibeAction {
   detail?: string
 }
 
+export type VibePlanTodoStatus = 'pending' | 'in_progress' | 'done' | 'failed'
+
+/** Plan 模式：契约确认后、生成之前 AI 制定的开发计划中的一步（todo） */
+export interface VibePlanTodo {
+  id: string
+  /** 简短步骤名（≤ 20 字），用于对话内 todo 列表展示 */
+  title: string
+  /** 这一步要做什么（一句话） */
+  detail?: string
+  status: VibePlanTodoStatus
+}
+
+/** Plan 模式所处阶段：idle 无计划 / planning 正在制定 / review 待用户开始 / executing 逐项执行 / done 全部完成 */
+export type VibePlanPhase = 'idle' | 'planning' | 'review' | 'executing' | 'done'
+
 export interface VibeSession {
   id: string
   pluginPath: string
@@ -37,6 +52,11 @@ export interface VibeSession {
   vibeMode: 'create' | 'edit'
   genDepth: 'full' | 'minimal'
   selectedModel: string
+
+  /** Plan 模式：AI 制定的开发计划（todo list），持久化以便重载/切换后仍能查看与续跑 */
+  plan?: VibePlanTodo[]
+  /** Plan 模式所处阶段；持久化（重载后瞬态阶段会被降级，见水合逻辑） */
+  planPhase?: VibePlanPhase
 
   createdAt: number
   lastActiveAt: number

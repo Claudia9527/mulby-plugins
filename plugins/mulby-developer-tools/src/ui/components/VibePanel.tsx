@@ -14,7 +14,7 @@ import {
   manifestJson, primaryTrigger, primaryFeatureCode, contractSummary, triggerLabel
 } from '../lib/vibeContract'
 import { useSession, SessionSwitcher, ChatPanel } from '../vibe'
-import type { VibeSessionState, VibeAction, BrainstormOption, VibeMessage } from '../vibe'
+import type { VibeSessionState, VibeAction, BrainstormOption, VibeMessage, VibePlanTodo, VibePlanPhase } from '../vibe'
 
 export interface VibeEditTarget {
   path: string
@@ -202,6 +202,9 @@ export function classifyIntent(text: string, ctx: { hasPlugin: boolean }): { int
   const reRun = /运行|试一?下|试用|跑一?下|跑跑|打开插件|验证一?下|测一?下/
   const reModify = /改|修复|修一?下|加(个|一个|上)?|增加|去掉|删掉|移除|换成|替换|支持|优化|重构|调整|美化|变成|做成|新增|实现|让它|不能|没反应|报错|bug|崩溃|不对|失效|多语言/i
   const reAsk = /[?？]\s*$|^(为什么|为啥|怎么|如何|是不是|有没有|能不能|可不可以|什么是|啥是|解释|说明|介绍|看一?下|查一?下|现在|目前|当前|状态|结构|哪些|多少|是否|讲讲|说说)/
+  // 「问句强信号」：以 ？结尾，或以纯疑问词开头——即便含「支持/优化/没反应」等改动关键词也优先当只读问答，
+  // 落实「默认不动代码」（修复「为什么没反应？」「它支持 PDF 吗？」被误判为 modify 而擅自改代码）。
+  const reStrongAsk = /[?？]\s*$|^\s*(为什么|为啥|为何|是不是|是否|有没有|能不能|可不可以|什么是|啥是|有什么|怎么回事|怎么办|干嘛|干啥|解释|介绍|讲讲|说说)/
   // 图标意图：含「图标/icon/logo」名词 + 重做/更换/美化等诉求，且不是在问问题。需已有插件项目。
   const reIcon = /图标|icon|logo|标志|图案/i
   const reIconWant = /重新|重做|重画|重绘|再(来|画|做|生成|搞)|换|更换|换个|换成|生成|设计|做个|画个|画一|做一|美化|优化|调整|改成?|变(成|得)?|搞个|来个|换掉|重置|不好看|难看|太丑|丑|不满意|不喜欢/
@@ -214,6 +217,8 @@ export function classifyIntent(text: string, ctx: { hasPlugin: boolean }): { int
     return { intent: 'icon', confidence: 0.85 }
   }
   if (reRun.test(t)) return { intent: 'run', confidence: 0.8 }
+  // 问句强信号优先于 modify/create：明显是在提问就只读问答，绝不擅自改代码或新建项目
+  if (reStrongAsk.test(t)) return { intent: 'ask', confidence: 0.72 }
 
   if (!ctx.hasPlugin) {
     if (reAsk.test(t) && !reModify.test(t)) return { intent: 'ask', confidence: 0.7 }
@@ -351,6 +356,14 @@ export function VibePanel({
   // 头脑风暴（S3）：开局让 AI 发散候选方向供小白选择
   const [brainstorm, setBrainstorm] = useState<{ loading: boolean; options: BrainstormOption[]; seed: string } | null>(null)
 
+  // Plan 模式（契约确认后→生成前）：AI 制定开发计划(todo list)，再逐步执行、实时勾选
+  const [plan, setPlan] = useState<VibePlanTodo[]>([])
+  const [planPhase, setPlanPhase] = useState<VibePlanPhase>('idle')
+  // 本次计划是否已脚手架就绪：用于「继续执行」时跳过重复脚手架/基线重置（即便首步就被中止、尚无步骤完成）
+  const planPreparedRef = useRef(false)
+  // 计划执行互斥：防止「停止后立刻继续」时，上一轮尚未结算的执行循环与新一轮并发跑、互相覆盖状态
+  const planExecutingRef = useRef(false)
+
   // 对话内提示卡（S4）：危险操作二次确认 / 构建失败一键修复等
   const [pendingPrompt, setPendingPrompt] = useState<{ kind: 'confirm' | 'action'; title: string; desc: string; actionLabel: string; danger?: boolean; onAction: () => void } | null>(null)
 
@@ -410,7 +423,16 @@ export function VibePanel({
     setGenDepth(s.genDepth || 'full')
     if (s.selectedModel) setSelectedModel(s.selectedModel)
     setContract(s.contract)
+    // 恢复开发计划（Plan 模式）。瞬态阶段（planning/executing）在重载后无对应在跑任务，
+    // 降级为 review 让用户可「继续执行」；执行中的步骤回退为 pending 以便重跑。
     const materialized = s.state === 'ready' || s.state === 'generating'
+    if (s.plan && s.plan.length) {
+      setPlan(s.plan.map((t) => (t.status === 'in_progress' ? { ...t, status: 'pending' } : t)))
+      const ph = s.planPhase
+      setPlanPhase(ph === 'planning' || ph === 'executing' ? 'review' : (ph || 'idle'))
+      // 项目是否已在磁盘脚手架/绑定（generating/ready 即已物化）→ 续跑时跳过重复脚手架与基线重置
+      planPreparedRef.current = materialized
+    }
     if (s.pluginPath) {
       if (s.vibeMode === 'edit') { setEditPath(s.pluginPath); setCreatedPath(s.pluginPath) }
       else { setTargetDir(s.pluginPath.split('/').slice(0, -1).join('/') || ''); if (materialized) setCreatedPath(s.pluginPath) }
@@ -445,10 +467,12 @@ export function VibePanel({
         vibeMode,
         genDepth,
         selectedModel,
+        plan,
+        planPhase,
         pluginPath: createdPath || (vibeMode === 'edit' ? editPath : '') || ''
       })
     }, 800)
-  }, [activeId, stage, generating, contract, sentence, vibeMode, genDepth, selectedModel, createdPath, editPath, updateSession])
+  }, [activeId, stage, generating, contract, sentence, vibeMode, genDepth, selectedModel, plan, planPhase, createdPath, editPath, updateSession])
 
   useEffect(() => { syncToSession() }, [syncToSession])
 
@@ -966,49 +990,55 @@ export function VibePanel({
     return await req
   }
 
-  // ---------------- 阶段 1 → 2：写契约 manifest + 生成最小可运行路径 ----------------
-  const doGenerate = async () => {
-    if (!contract) return
-    setBrainstorm(null)
-    recordMessage(mkMsg('user', contract.isEdit ? '确认设定，开始改造' : '确认设定，开始生成', { intent: 'create' }))
+  // ---------------- 阶段 1 → 2：脚手架 + 写契约 manifest（"直接生成"与"按计划生成"共用） ----------------
+  // 脚手架(create)/绑定目标(edit) + 写 manifest.json + 建/绑定会话；返回插件根目录与会话 id，失败返回 null。
+  // resume=true：项目已就绪（计划续跑/失败重试），不重复脚手架、不重置快照基线、不覆盖 manifest，
+  //   避免 ①`mulby create` 遇到已存在目录直接报错导致「继续执行」失败 ②清掉已完成步骤的快照/manifest 改动。
+  const prepareProject = async (resume = false): Promise<{ root: string; sid: string | null } | null> => {
+    if (!contract) return null
+    let root = ''
     let sid = activeId
-    setGenerating(true)
-    setEvents([])
-    setToolCalls(0)
-    setNarration('')
-    turnEventsRef.current = [] // 收集本轮生成的操作明细，供对话内联
-    setExpanded(false)
-    setStage(2)
-    try {
-      let root = ''
-      if (contract.isEdit) {
-        root = contract.targetPath || editPath
-        if (!root) { pushToast('error', '缺少目标插件目录'); return }
-        setCreatedPath(root)
-        pushEvent('scaffold', 'note', `改造目标：${root}`)
+    if (contract.isEdit) {
+      root = contract.targetPath || editPath
+      if (!root) { pushToast('error', '缺少目标插件目录'); return null }
+      setCreatedPath(root)
+      if (!resume) pushEvent('scaffold', 'note', `改造目标：${root}`)
+    } else if (resume && createdPath) {
+      // 续跑：脚手架已存在，直接复用，不再 createPlugin（否则目录已存在会失败）
+      root = createdPath
+      if (activeId) updateSession(activeId, { state: 'generating' })
+      sid = activeId
+      pushEvent('scaffold', 'note', '复用已有脚手架（继续执行计划）')
+    } else {
+      pushEvent('scaffold', 'note', `脚手架 ${contract.name}（${contract.template}）`)
+      addLog('info', `▶ [Vibe] 脚手架：${contract.name} → ${targetDir}`)
+      const created = await dev.createPlugin(targetDir, contract.name, contract.template)
+      if (created.log) addLog(created.success ? 'success' : 'error', created.log)
+      if (!created.success) {
+        // 目录已存在（重新生成等场景）→ 视为复用已有脚手架而非失败；其它失败才中止
+        const dirExists = /已存在|exists/i.test(`${created.error || ''} ${created.log || ''}`)
+        if (!dirExists) { pushEvent('scaffold', 'error', created.error || '脚手架失败'); pushToast('error', created.error || '脚手架失败'); return null }
+        root = createdPath || `${targetDir}/${contract.name}`
+        pushEvent('scaffold', 'note', '复用已有脚手架')
       } else {
-        pushEvent('scaffold', 'note', `脚手架 ${contract.name}（${contract.template}）`)
-        addLog('info', `▶ [Vibe] 脚手架：${contract.name} → ${targetDir}`)
-        const created = await dev.createPlugin(targetDir, contract.name, contract.template)
-        if (created.log) addLog(created.success ? 'success' : 'error', created.log)
-        if (!created.success) { pushEvent('scaffold', 'error', created.error || '脚手架失败'); pushToast('error', created.error || '脚手架失败'); return }
         root = created.path || `${targetDir}/${contract.name}`
-        setCreatedPath(root)
-        // 真实插件目录已知，修正会话的 pluginPath（planCreate 阶段只能先记父目录占位）
-        if (!activeId) {
-          const sess = createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel, messages: drainPendingMsgs() })
-          liveSessionIdRef.current = sess.id
-          sid = sess.id
-        } else {
-          updateSession(activeId, { pluginPath: root, pluginName: contract.displayName || contract.name, contract, state: 'generating' })
-        }
-        onAfterCreate()
-        pushEvent('scaffold', 'note', '脚手架已生成')
       }
-
-      // 由契约确定性写出 manifest.json（在脚手架/原有 manifest 之上叠加，保留 window/pluginSetting 等默认）
-      // fresh:true 标记新会话开始，清空历史快照，使「本次改动」只反映本轮生成
-      await dev.hostCall('vibe_begin', { root, fresh: true })
+      setCreatedPath(root)
+      // 真实插件目录已知，修正会话的 pluginPath（planCreate 阶段只能先记父目录占位）
+      if (!activeId) {
+        const sess = createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel, messages: drainPendingMsgs() })
+        liveSessionIdRef.current = sess.id
+        sid = sess.id
+      } else {
+        updateSession(activeId, { pluginPath: root, pluginName: contract.displayName || contract.name, contract, state: 'generating' })
+      }
+      onAfterCreate()
+    }
+    // 锁定会话根目录。fresh:true（首次）清历史快照并打基线；fresh:false（续跑）保留历史、仅加一个还原点
+    await dev.hostCall('vibe_begin', { root, fresh: !resume })
+    // 由契约确定性写出 manifest.json（叠加既有，保留 window/pluginSetting 默认）。
+    // 续跑时跳过：避免覆盖前面步骤里 AI 已对 manifest 的合理改动
+    if (!resume) {
       let baseManifest: any = undefined
       try {
         const r = await dev.hostCall<{ content?: string }>('read_file', { path: 'manifest.json' })
@@ -1017,7 +1047,26 @@ export function VibePanel({
       const mfText = manifestJson(contract, baseManifest)
       await dev.hostCall('write_file', { path: 'manifest.json', content: mfText })
       pushEvent('manifest', 'write', '写入 manifest.json（来自契约）', `${contract.features.length} 个功能`)
+    }
+    return { root, sid }
+  }
 
+  // 直接生成（不分步）：脚手架 → 一次性完整实现 → 交付。作为"计划模式"失败时的兜底路径。
+  const doGenerate = async () => {
+    if (!contract) return
+    setBrainstorm(null)
+    recordMessage(mkMsg('user', contract.isEdit ? '确认设定，开始改造' : '确认设定，开始生成', { intent: 'create' }))
+    setGenerating(true)
+    setEvents([])
+    setToolCalls(0)
+    setNarration('')
+    turnEventsRef.current = [] // 收集本轮生成的操作明细，供对话内联
+    setExpanded(false)
+    setStage(2)
+    try {
+      const prep = await prepareProject()
+      if (!prep) return
+      const { root, sid } = prep
       // 首轮生成：根据用户所选生成深度——full=一次性完整实现（默认）；minimal=先最小可跑
       const firstPhase: 'minimal' | 'full' = genDepth === 'minimal' ? 'minimal' : 'full'
       const phaseName = firstPhase === 'minimal' ? '最小可运行版本' : '完整版本'
@@ -1049,6 +1098,167 @@ export function VibePanel({
       if (!isAbort) { pushEvent('minimal', 'error', msg); pushToast('error', msg); addLog('error', `✘ [Vibe] 生成失败：${msg}`) }
     } finally {
       setGenerating(false)
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // ---------------- Plan 模式：契约确认后→生成前，先制定开发计划(todo list)，再逐步执行、实时勾选 ----------------
+  const planListPrompt = (c: VibeContract) => [
+    '你是资深 Mulby 插件架构师。把"实现这个插件"拆解成一份清晰、可执行的开发计划（todo list）。',
+    '只输出 JSON：{ "todos": [ { "title": "简短步骤名(≤20字)", "detail": "这一步具体做什么(一句话)" } ] }，不要解释、不要 Markdown 代码块。',
+    '要求：3–6 步，按依赖与实现顺序排列；每步是一个独立、可验证的开发动作（如"实现核心处理逻辑""搭建主界面 UI""接入剪贴板/通知能力""完善错误处理与边界""自检构建并修复问题"）。',
+    '不要把"创建脚手架/写 manifest.json"列进去（已自动完成）；最后一步通常是"自检构建并修复问题"。',
+    c.isEdit ? `这是对现有插件的改造，需求：${c.editSummary || sentence}` : `插件需求：${sentence}`,
+    `契约：${contractSummary(c)}`,
+    `功能与触发：${c.features.map((f) => `${f.code}(${f.mode})`).join('；')}`
+  ].join('\n')
+
+  const normalizePlan = (parsed: any): VibePlanTodo[] => {
+    const arr = Array.isArray(parsed?.todos) ? parsed.todos : Array.isArray(parsed) ? parsed : []
+    const todos: VibePlanTodo[] = []
+    for (const it of arr) {
+      const title = String(it?.title ?? it?.name ?? '').trim()
+      if (!title) continue
+      const detail = String(it?.detail ?? it?.description ?? '').trim()
+      todos.push({ id: `t${todos.length + 1}`, title: title.slice(0, 40), detail: detail ? detail.slice(0, 200) : undefined, status: 'pending' })
+      if (todos.length >= 8) break
+    }
+    return todos
+  }
+
+  // 契约确认后 → 制定开发计划（不立即生成）。成功则进入 review 等用户「开始执行」；失败回退直接生成。
+  const generatePlan = async () => {
+    if (!contract || aiActive) return
+    setBrainstorm(null)
+    recordMessage(mkMsg('user', '确认设定，先制定开发计划', { intent: 'create' }))
+    planPreparedRef.current = false
+    setPlan([])
+    setPlanPhase('planning')
+    setPlanning(true)
+    resetAbort()
+    try {
+      addLog('info', '▶ [Vibe] AI 正在制定开发计划…')
+      let parsed: any = null
+      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planListPrompt(contract)) } catch { /* fallback below */ }
+      if (abortedRef.current) { setPlanPhase('idle'); addLog('info', '⏹ [Vibe] 已停止制定计划'); return }
+      const todos = normalizePlan(parsed)
+      if (!todos.length) {
+        setPlanPhase('idle')
+        recordMessage(mkMsg('assistant', '没能拆出分步计划，我直接开始完整实现。'))
+        setPlanning(false)
+        await doGenerate()
+        return
+      }
+      setPlan(todos)
+      setPlanPhase('review')
+      recordMessage(mkMsg('assistant', `我把开发拆成了 ${todos.length} 步：\n${todos.map((t, i) => `${i + 1}. ${t.title}`).join('\n')}\n\n点「开始执行」我就按计划一步步实现，每完成一步都会勾选；也可以「重新规划」。`))
+      addLog('success', `✔ [Vibe] 开发计划已就绪：${todos.length} 步`)
+    } catch (e) {
+      setPlanPhase('idle')
+      recordMessage(mkMsg('assistant', '制定计划时出错，我直接开始完整实现。'))
+      setPlanning(false)
+      await doGenerate()
+      return
+    } finally {
+      setPlanning(false)
+    }
+  }
+
+  // 单步执行的 system/user prompt：复用整体规约（full），但强制"本轮只做当前这一步"
+  const planStepSystem = (c: VibeContract, root: string, todos: VibePlanTodo[], idx: number): string => {
+    const base = c.isEdit ? editSystemPrompt(c, root, 'full') : createSystemPrompt(c, root, 'full')
+    return base + '\n\n' + [
+      '———— 分步执行模式（本轮只做一步）————',
+      '整个插件已制定下面的开发计划。请忽略上文"一次性完整实现"的说法：本轮只完成「当前步骤」，不要提前实现后续步骤；同时不要破坏前面已完成步骤的成果（先 read_file 看现有代码再改）。',
+      '开发计划：',
+      todos.map((t, i) => `${i + 1}. ${i < idx ? '✅ 已完成' : i === idx ? '▶ 进行中' : '⬜ 待办'} ${t.title}${t.detail ? `（${t.detail}）` : ''}`).join('\n'),
+      `当前步骤（第 ${idx + 1}/${todos.length} 步）：${todos[idx].title}${todos[idx].detail ? ` — ${todos[idx].detail}` : ''}`,
+      '只实现这一步，完成后用一句话说明本步改动并停止（不要继续做后面的步骤）。'
+    ].join('\n')
+  }
+
+  const planStepUser = (todo: VibePlanTodo, idx: number, total: number): string =>
+    `请完成开发计划的第 ${idx + 1}/${total} 步：${todo.title}${todo.detail ? `\n（${todo.detail}）` : ''}\n先读懂当前代码现状，只实现这一步所需的改动，可用 build_check 自检，完成后用一句话说明本步改动并停止。`
+
+  // 按计划逐步执行：脚手架 → 逐个 todo（实时勾选）→ 全部完成后交付构建。已完成的 todo 跳过（支持中断/失败后续跑）。
+  const executePlan = async () => {
+    // planExecutingRef：即便「停止」已把 generating 复位（aiActive=false），上一轮循环可能仍在收尾——此时拒绝新一轮，杜绝并发
+    if (!contract || aiActive || planExecutingRef.current) return
+    if (!plan.length) { await generatePlan(); return }
+    // 续跑判定：项目已脚手架（本次会话已准备过，或重载后存在已完成/失败步骤）→ prepareProject 跳过重复脚手架与基线重置
+    const resume = planPreparedRef.current || plan.some((t) => t.status === 'done' || t.status === 'failed')
+    planExecutingRef.current = true
+    setBrainstorm(null)
+    recordMessage(mkMsg('user', resume ? '继续执行计划' : '开始执行计划', { intent: 'create' }))
+    setPlanPhase('executing')
+    setGenerating(true)
+    setEvents([])
+    setToolCalls(0)
+    setNarration('')
+    turnEventsRef.current = []
+    setExpanded(false)
+    setStage(2)
+    resetAbort()
+    try {
+      const prep = await prepareProject(resume)
+      if (!prep) { setPlanPhase('review'); return }
+      planPreparedRef.current = true
+      const { root, sid } = prep
+      const todos = plan
+      for (let i = 0; i < todos.length; i++) {
+        if (todos[i].status === 'done') continue
+        if (abortedRef.current) break
+        setPlan((prev) => prev.map((t, j) => (j === i ? { ...t, status: 'in_progress' } : t)))
+        setNarration('')
+        turnEventsRef.current = []
+        pushEvent('full', 'ai', `第 ${i + 1}/${todos.length} 步：${todos[i].title}`, todos[i].detail)
+        addLog('info', `▶ [Vibe] 计划第 ${i + 1}/${todos.length} 步：${todos[i].title}`)
+        let sys = planStepSystem(contract, root, todos, i)
+        if (contract.isEdit) sys = await injectCgContext(root, `${todos[i].title} ${todos[i].detail || ''}`, 'full', sys)
+        sys = withApiSurface(sys)
+        let stepSummary = ''
+        try {
+          const final = await runAgent(sys, planStepUser(todos[i], i, todos.length), root, 'full', buildHistoryMessages())
+          stepSummary = typeof final?.content === 'string' ? final.content : ''
+        } catch (e) {
+          if (abortedRef.current) break
+          const msg = e instanceof Error ? e.message : '步骤失败'
+          setPlan((prev) => prev.map((t, j) => (j === i ? { ...t, status: 'failed' } : t)))
+          pushEvent('full', 'error', `第 ${i + 1} 步失败：${msg}`)
+          addLog('error', `✘ [Vibe] 计划第 ${i + 1} 步失败：${msg}`)
+          if (sid) appendMessage(sid, mkMsg('assistant', `第 ${i + 1} 步「${todos[i].title}」执行失败：${msg}。点「继续执行」可重试这一步，或在对话里告诉我怎么调整。`))
+          setPlanPhase('review')
+          return
+        }
+        if (abortedRef.current) break
+        setPlan((prev) => prev.map((t, j) => (j === i ? { ...t, status: 'done' } : t)))
+        pushEvent('full', 'note', `第 ${i + 1} 步完成`)
+        if (sid) appendMessage(sid, mkMsg('assistant', `✅ 第 ${i + 1}/${todos.length} 步完成：${todos[i].title}${stepSummary ? `\n\n${stepSummary}` : ''}`, { actions: collectTurnActions() }))
+      }
+      if (abortedRef.current) {
+        setPlan((prev) => prev.map((t) => (t.status === 'in_progress' ? { ...t, status: 'pending' } : t)))
+        setPlanPhase('review')
+        pushEvent('full', 'note', '已停止执行计划')
+        addLog('warn', '⏹ [Vibe] 已停止执行计划（点「继续执行」可接着跑）')
+        return
+      }
+      // 全部完成 → 交付构建（沿用 stage 3 的自动构建载入）
+      setPlanPhase('done')
+      setGenerated(true)
+      setNarration('')
+      addLog('success', `✔ [Vibe] 开发计划全部完成（${todos.length} 步）`)
+      pendingCommitMsgRef.current = contract.isEdit
+        ? `改造：${(contract.editSummary || sentence).slice(0, 120)}`
+        : `生成：${sentence.slice(0, 120)}`
+      deliverStartedRef.current = false
+      setStage(3)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '执行失败'
+      const isAbort = abortedRef.current || msg.toLowerCase().includes('abort')
+      if (!isAbort) { pushEvent('full', 'error', msg); pushToast('error', msg); addLog('error', `✘ [Vibe] 执行计划失败：${msg}`); setPlanPhase('review') }
+    } finally {
+      setGenerating(false)
+      planExecutingRef.current = false
       void dev.hostCall('vibe_end').catch(() => {})
     }
   }
@@ -1390,7 +1600,8 @@ export function VibePanel({
 
   // 回滚到某个历史版本：还原文件 → 重新构建载入 → 记录一条「回滚」版本
   const doRestoreVersion = async (hash: string) => {
-    if (!createdPath || restoringHash) return
+    // 与 undoToBeforeAI 一致：AI 生成/构建进行中禁止回滚，避免与在途写入/构建撕扯
+    if (!createdPath || restoringHash || aiActive || busy) return
     setRestoringHash(hash)
     try {
       const r = await dev.hostCall<{ ok?: boolean; available?: boolean; reason?: string }>('vcs_restore', { root: createdPath, hash })
@@ -1746,6 +1957,7 @@ export function VibePanel({
     setIterating(false)
     setVersions([]); setRestoringHash(null); setVcsAvailable(true)
     setBrainstorm(null)
+    setPlan([]); setPlanPhase('idle'); planPreparedRef.current = false
     setPendingPrompt(null)
     pendingCommitMsgRef.current = ''
     deliverStartedRef.current = false
@@ -1785,7 +1997,8 @@ export function VibePanel({
   }, [activeSession?.messages?.length, aiActive])
   const chatReady = !!createdPath && generated
   // 设定卡：契约已生成、等待用户确认开始生成代码（对话内联确认入口）
-  const contractPending = (stage === 1 && contract && !generating && !generated)
+  // 契约确认卡仅在「尚未进入计划流程」时出现；一旦开始制定/执行计划，改由计划卡接管
+  const contractPending = (stage === 1 && contract && !generating && !generated && planPhase === 'idle')
     ? { name: contract.displayName || contract.name, summary: contractSummary(contract) }
     : null
   // 插件状态（S4）：对话栏顶部常驻的"它在运行/一键试用"状态条
@@ -1857,10 +2070,31 @@ export function VibePanel({
     planFromSeed(brainstorm.seed)
   }
 
+  // 断点续传：接上当前会话中「未完成的任务」而不是新建项目/重新规划。
+  // 计划待执行(review)→继续执行；契约已就绪但还没制定计划(idle+contract)→制定计划。返回是否已处理。
+  const resumeInFlight = (): boolean => {
+    // 计划待执行（含「重新生成」后 generated 仍为 true 的 review 态）→ 继续执行
+    if (planPhase === 'review') { void executePlan(); return true }
+    // 契约已就绪但还没制定计划（尚未交付）→ 制定计划
+    if (!generated && planPhase === 'idle' && !!contract) { void generatePlan(); return true }
+    return false
+  }
+
   // 全局对话：规则识别意图后分流。模糊/问答→只读回答，绝不擅自改代码（S1）
   const handleChatSend = (text: string) => {
     const t = text.trim()
     if (!t || busy || aiActive) return
+    // 断点续传优先级最高：会话有未完成任务时，「继续/接着/继续修改/继续执行…」一律接上当前阶段，
+    // 不再被 classifyIntent 误判为新建项目或只读问答（修复「发『继续』却新建了一个项目」）。
+    const reContinue = /^\s*(继续|接着|接上|往下|下一步|go ?on|continue|keep ?going|resume)/i
+    // review 态（计划待执行/续跑）无论是否已交付都可续；契约待制定计划仅在未交付时
+    const canResume = planPhase === 'review' || (!generated && planPhase === 'idle' && !!contract)
+    if (canResume && reContinue.test(t)) {
+      recordMessage(mkMsg('user', t, { intent: 'create' }))
+      if (planPhase === 'review') void executePlan()
+      else void generatePlan()
+      return
+    }
     const { intent } = classifyIntent(t, { hasPlugin: !!createdPath })
     // 集中写入用户消息并打上意图标签（会话未建时先缓冲，确保首条需求也进对话历史）
     recordMessage(mkMsg('user', t, { intent }))
@@ -1882,10 +2116,15 @@ export function VibePanel({
         else void runAsk(t)
         return
       case 'modify':
-        if (chatReady) void runFollowup(t); else seedAsRequirement(t); return
+        if (chatReady) { void runFollowup(t); return }
+        // 任务进行中（契约/计划阶段、尚未交付）→ 接上当前阶段，避免重新规划丢失进度
+        if (resumeInFlight()) return
+        seedAsRequirement(t); return
       case 'create':
       default:
         if (chatReady) { void runFollowup(t); return }
+        // 已有进行中的任务 → 接上，绝不新建项目（修复「忘记当前在做什么、又开了个新项目」）
+        if (resumeInFlight()) return
         if (vibeMode === 'create') {
           if (!targetDir.trim()) { pushToast('info', '请先在左侧选择插件生成的目标目录，再描述一次即可'); return }
           void runBrainstorm(t); return
@@ -2006,7 +2245,7 @@ export function VibePanel({
           {stage === 1 && (
             generated ? (
               <div className="flex gap-2">
-                <button className="btn-ghost" onClick={doGenerate} disabled={generating} title="按当前契约重新生成代码（会覆盖现有实现）">
+                <button className="btn-ghost" onClick={generatePlan} disabled={generating} title="按当前契约重新制定开发计划并生成（会覆盖现有实现）">
                   <Play size={15} /> 重新生成
                 </button>
                 <button className="btn-primary" onClick={() => setStage((maxStage >= 3 ? 3 : 2) as Stage)}>下一步 <ChevronRight size={15} /></button>
@@ -2025,7 +2264,7 @@ export function VibePanel({
                 <Rocket size={15} /> 去构建与交付 <ChevronRight size={15} />
               </button>
             ) : (
-              <button className="btn-primary" onClick={doGenerate} disabled={!contract}><Play size={15} /> 重新生成</button>
+              <button className="btn-primary" onClick={generatePlan} disabled={!contract}><Play size={15} /> 重新生成</button>
             )
           )}
 
@@ -2060,7 +2299,11 @@ export function VibePanel({
             onDismissBrainstorm={() => setBrainstorm(null)}
             examples={vibeMode === 'edit' ? EDIT_EXAMPLES : EXAMPLES}
             contractPending={contractPending}
-            onConfirmGenerate={doGenerate}
+            onConfirmGenerate={generatePlan}
+            plan={plan}
+            planPhase={planPhase}
+            onStartPlan={executePlan}
+            onReplan={generatePlan}
             pendingPrompt={pendingPrompt}
             onPromptDismiss={() => setPendingPrompt(null)}
             status={pluginStatus}

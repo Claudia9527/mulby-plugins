@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus, Image as ImageIcon, StopCircle, RotateCcw } from 'lucide-react'
+import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus, Image as ImageIcon, StopCircle, RotateCcw, ListChecks, CheckCircle2, Circle } from 'lucide-react'
 import { useSession } from './SessionProvider'
 import { Markdown } from './Markdown'
-import type { VibeMessage, VibeSessionState, BrainstormOption } from './types'
+import type { VibeMessage, VibeSessionState, BrainstormOption, VibePlanTodo, VibePlanPhase } from './types'
 
 const PLACEHOLDER: Record<VibeSessionState, string> = {
   initial: '描述你想做的插件，或直接提问…',
@@ -45,6 +45,10 @@ interface Props {
   examples?: string[]
   contractPending?: { name: string; summary: string } | null
   onConfirmGenerate?: () => void
+  plan?: VibePlanTodo[]
+  planPhase?: VibePlanPhase
+  onStartPlan?: () => void
+  onReplan?: () => void
   pendingPrompt?: { kind: 'confirm' | 'action'; title: string; desc: string; actionLabel: string; danger?: boolean; onAction: () => void } | null
   onPromptDismiss?: () => void
   status?: { name: string; loaded: boolean; trigger: string; icon?: string | null } | null
@@ -66,6 +70,7 @@ export function ChatPanel({
   onSend, disabled, busy, aiActive, onStop, streamingText, messages,
   brainstorm, onPickIdea, onMoreIdeas, onUseSeed, onDismissBrainstorm, examples,
   contractPending, onConfirmGenerate,
+  plan, planPhase, onStartPlan, onReplan,
   pendingPrompt, onPromptDismiss,
   status, statusBusy, iconBusy, iconProgress, packed, onOpenPlugin, onTryIt, onPack, onRegenIcon, onUndoToBefore, undoing, onClearMessages, onNewConversation
 }: Props) {
@@ -271,6 +276,59 @@ export function ChatPanel({
         </div>
       )}
 
+      {!pendingPrompt && planPhase && planPhase !== 'idle' && planPhase !== 'done' && (
+        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-indigo-50/60 dark:bg-indigo-950/10">
+          <div className="flex items-center justify-between text-[11px] font-medium text-indigo-700 dark:text-indigo-300 mb-1">
+            <span className="flex items-center gap-1">
+              <ListChecks size={12} /> 开发计划{plan && plan.length > 0 ? `（${plan.filter((t) => t.status === 'done').length}/${plan.length}）` : ''}
+            </span>
+            {planPhase === 'executing' && <Loader2 size={12} className="animate-spin text-indigo-500" />}
+          </div>
+          {planPhase === 'planning' && (!plan || plan.length === 0) ? (
+            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 py-1">
+              <Loader2 size={12} className="animate-spin" /> AI 正在制定开发计划…
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1 mt-1 max-h-56 overflow-auto">
+                {(plan || []).map((t, i) => (
+                  <div key={t.id} className="flex items-start gap-1.5 text-[11px]">
+                    <span className="mt-0.5 shrink-0">
+                      {t.status === 'done' ? <CheckCircle2 size={13} className="text-emerald-500" />
+                        : t.status === 'in_progress' ? <Loader2 size={13} className="text-indigo-500 animate-spin" />
+                        : t.status === 'failed' ? <AlertTriangle size={13} className="text-rose-500" />
+                        : <Circle size={13} className="text-slate-300 dark:text-slate-600" />}
+                    </span>
+                    <div className="min-w-0">
+                      <div className={t.status === 'done' ? 'text-slate-400 dark:text-slate-500 line-through' : 'text-slate-700 dark:text-slate-200'}>{i + 1}. {t.title}</div>
+                      {t.detail && <div className="text-[10px] text-slate-400 dark:text-slate-500 break-words">{t.detail}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {planPhase === 'review' && (
+                <>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button onClick={onStartPlan} disabled={busy} className="btn-primary h-7 px-2.5 text-[11px]">
+                      <Play size={12} /> {plan && plan.some((t) => t.status === 'done') ? '继续执行' : '开始执行'}
+                    </button>
+                    <button onClick={onReplan} disabled={busy} className="btn-ghost h-7 px-2.5 text-[11px]">
+                      <RefreshCw size={11} /> 重新规划
+                    </button>
+                  </div>
+                  {plan && plan.some((t) => t.status === 'done' || t.status === 'failed') && (
+                    <div className="mt-1.5 text-[10px] text-slate-400 dark:text-slate-500">上次未跑完，点「继续执行」或在下方输入「继续」即可接着完成。</div>
+                  )}
+                </>
+              )}
+              {planPhase === 'executing' && (
+                <div className="mt-1.5 text-[10px] text-slate-400 dark:text-slate-500">AI 正在按计划逐步实现，完成一步勾选一步…</div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {!brainstorm && !pendingPrompt && contractPending && (
         <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-emerald-50/60 dark:bg-emerald-950/10">
           <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 mb-1">
@@ -280,7 +338,7 @@ export function ChatPanel({
           <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2 break-words">{contractPending.summary}</div>
           <div className="mt-2 flex items-center gap-2">
             <button onClick={onConfirmGenerate} disabled={disabled || busy} className="btn-primary h-7 px-2.5 text-[11px]">
-              <Play size={12} /> 确认并生成
+              <Play size={12} /> 确认并制定计划
             </button>
             <span className="text-[10px] text-slate-400 dark:text-slate-500">想改设定可在中间面板编辑</span>
           </div>
