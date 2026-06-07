@@ -10,6 +10,7 @@ import {
   Loader2,
   Maximize2,
   MessageSquare,
+  MoreHorizontal,
   PenLine,
   Replace,
   RotateCcw,
@@ -64,8 +65,12 @@ interface AiBubbleProps {
 
 type BubblePhase = 'menu' | 'input' | 'running' | 'result'
 
+// 'image' is a pseudo-action: it opens the image generator rather than running a
+// text AiAction, but it lives in the same menu so it can share the overflow.
+type MenuEntryId = AiActionId | 'image'
+
 interface MenuItem {
-  id: AiActionId
+  id: MenuEntryId
   label: string
   icon: typeof Sparkles
 }
@@ -76,8 +81,13 @@ const MENU_ITEMS: MenuItem[] = [
   { id: 'ask', label: '问一问', icon: HelpCircle },
   { id: 'continue', label: '续写', icon: PenLine },
   { id: 'summarize', label: '总结', icon: ListTree },
-  { id: 'custom', label: '自定义', icon: MessageSquare }
+  { id: 'custom', label: '自定义', icon: MessageSquare },
+  { id: 'image', label: '生图', icon: ImagePlus }
 ]
+
+// How many actions stay inline in the compact toolbar; the rest fold into a
+// "更多" dropdown so the bubble stays small but every tool is one click away.
+const PRIMARY_COUNT = 3
 
 export function AiBubble({
   anchor,
@@ -101,6 +111,7 @@ export function AiBubble({
   const [instruction, setInstruction] = useState('')
   const [output, setOutput] = useState('')
   const [pos, setPos] = useState<BubblePosition | null>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
   const bubbleRef = useRef<HTMLDivElement>(null)
   const instructionRef = useRef<HTMLTextAreaElement>(null)
   const handleRef = useRef<AiRequestHandle | null>(null)
@@ -109,7 +120,18 @@ export function AiBubble({
   const hasSelection = selection.trim().length > 0
   // Without a selection (summoned via shortcut) actions run on the whole doc.
   const primaryText = hasSelection ? selection : documentText
-  const visibleItems = MENU_ITEMS.filter((item) => hasSelection || !getAiAction(item.id).needsSelection)
+  // 生图 always shows; selection-only text actions are hidden without a selection.
+  const visibleItems = MENU_ITEMS.filter(
+    (item) => item.id === 'image' || hasSelection || !getAiAction(item.id).needsSelection
+  )
+  const primaryItems = visibleItems.slice(0, PRIMARY_COUNT)
+  const overflowItems = visibleItems.slice(PRIMARY_COUNT)
+  const hintFor = (item: MenuItem): string =>
+    item.id === 'image'
+      ? hasSelection
+        ? '根据选中文字生成图片'
+        : '输入提示词生成图片'
+      : getAiAction(item.id).hint
 
   // Re-measure and reposition whenever the anchor moves or the bubble's size
   // changes (phase transitions grow/shrink the card). A bounded output height
@@ -253,6 +275,20 @@ export function AiBubble({
     [onActivate, runAction]
   )
 
+  // Dispatches a menu entry: 生图 opens the image generator, everything else is
+  // a normal text action. Always closes the "更多" dropdown first.
+  const handleEntry = useCallback(
+    (item: MenuItem) => {
+      setMoreOpen(false)
+      if (item.id === 'image') {
+        onImage(hasSelection ? selection : '')
+        return
+      }
+      handlePick(item.id)
+    },
+    [handlePick, hasSelection, onImage, selection]
+  )
+
   const stop = useCallback(() => {
     handleRef.current?.abort()
     handleRef.current = null
@@ -263,6 +299,7 @@ export function AiBubble({
     handleRef.current?.abort()
     handleRef.current = null
     setOutput('')
+    setMoreOpen(false)
     setPhase('menu')
   }, [])
 
@@ -291,32 +328,59 @@ export function AiBubble({
       {phase === 'menu' && (
         <div className="ai-bubble-menu-row">
           {!hasSelection && <span className="ai-bubble-scope" title="未选中文字，将处理全文">全文</span>}
-          {visibleItems.map((item) => {
+          {primaryItems.map((item) => {
             const Icon = item.icon
             return (
               <button
                 key={item.id}
                 type="button"
                 className="ai-bubble-chip"
-                title={getAiAction(item.id).hint}
+                title={hintFor(item)}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => handlePick(item.id)}
+                onClick={() => handleEntry(item)}
               >
                 <Icon size={14} />
                 <span>{item.label}</span>
               </button>
             )
           })}
-          <button
-            type="button"
-            className="ai-bubble-chip"
-            title={hasSelection ? '根据选中文字生成图片' : '输入提示词生成图片'}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => onImage(hasSelection ? selection : '')}
-          >
-            <ImagePlus size={14} />
-            <span>生图</span>
-          </button>
+          {overflowItems.length > 0 && (
+            <div className="ai-bubble-more">
+              <button
+                type="button"
+                className={`ai-bubble-chip${moreOpen ? ' is-active' : ''}`}
+                title="更多操作"
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setMoreOpen((open) => !open)}
+              >
+                <MoreHorizontal size={14} />
+                <span>更多</span>
+              </button>
+              {moreOpen && (
+                <div className="ai-bubble-more-pop" role="menu">
+                  {overflowItems.map((item) => {
+                    const Icon = item.icon
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="menuitem"
+                        className="ai-bubble-more-item"
+                        title={hintFor(item)}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => handleEntry(item)}
+                      >
+                        <Icon size={14} />
+                        <span>{item.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           <span className="ai-bubble-divider" aria-hidden="true" />
           <button
             type="button"

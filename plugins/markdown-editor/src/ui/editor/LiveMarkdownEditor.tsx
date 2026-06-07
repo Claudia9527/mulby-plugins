@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
 import 'katex/dist/katex.min.css'
 import { Compartment, EditorSelection, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder as cmPlaceholder } from '@codemirror/view'
@@ -111,6 +111,20 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
     const onSelectionChangeRef = useRef(onSelectionChange)
     onChangeRef.current = onChange
     onSelectionChangeRef.current = onSelectionChange
+    // True while the mouse button is held inside the editor (dragging out a
+    // selection). Selection reports are deferred until release so the floating
+    // AI bubble appears only after the selection is finished, not mid-drag.
+    const pointerDownRef = useRef(false)
+
+    const emitSelection = useCallback((view: EditorView) => {
+      const main = view.state.selection.main
+      onSelectionChangeRef.current?.({
+        text: view.state.sliceDoc(main.from, main.to),
+        from: main.from,
+        to: main.to,
+        hasFocus: view.hasFocus
+      })
+    }, [])
 
     const buildExtensions = useMemo(
       () => () =>
@@ -129,13 +143,12 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
               onChangeRef.current(update.state.doc.toString())
             }
             if (update.selectionSet || update.docChanged || update.focusChanged) {
-              const main = update.state.selection.main
-              onSelectionChangeRef.current?.({
-                text: update.state.sliceDoc(main.from, main.to),
-                from: main.from,
-                to: main.to,
-                hasFocus: update.view.hasFocus
-              })
+              // Suppress selection reporting while a mouse drag is in progress;
+              // the window 'mouseup' handler emits the final selection once.
+              if (pointerDownRef.current) {
+                return
+              }
+              emitSelection(update.view)
             }
           })
         ],
@@ -153,7 +166,32 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
         state: EditorState.create({ doc: initialValue, extensions: buildExtensions() })
       })
       viewRef.current = view
+
+      // Track the drag so selection is only reported on release. mousedown is
+      // scoped to the editor (only editor drags count); mouseup listens on the
+      // window so a drag that ends outside the editor still resolves.
+      const onPointerDown = () => {
+        pointerDownRef.current = true
+      }
+      const onPointerUp = () => {
+        if (!pointerDownRef.current) {
+          return
+        }
+        pointerDownRef.current = false
+        // Defer one frame so CodeMirror has finalized the selection from this
+        // mouseup before we read and report it.
+        requestAnimationFrame(() => {
+          if (viewRef.current) {
+            emitSelection(viewRef.current)
+          }
+        })
+      }
+      view.dom.addEventListener('mousedown', onPointerDown)
+      window.addEventListener('mouseup', onPointerUp)
+
       return () => {
+        view.dom.removeEventListener('mousedown', onPointerDown)
+        window.removeEventListener('mouseup', onPointerUp)
         view.destroy()
         viewRef.current = null
       }

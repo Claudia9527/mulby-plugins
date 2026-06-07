@@ -1553,6 +1553,64 @@ button {
   color: var(--accent);
 }
 
+.ai-bubble-chip.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* "更多" overflow dropdown — keeps the inline toolbar compact while every tool
+   stays one click away. */
+.ai-bubble-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.ai-bubble-more-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 2;
+  min-width: 140px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+}
+
+:root.dark .ai-bubble-more-pop {
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.46);
+}
+
+.ai-bubble-more-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-bubble-more-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ai-bubble-more-item svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
 .ai-bubble-divider {
   width: 1px;
   height: 18px;
