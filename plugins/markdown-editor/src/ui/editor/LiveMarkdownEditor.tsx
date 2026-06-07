@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
+import 'katex/dist/katex.min.css'
 import { Compartment, EditorSelection, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder as cmPlaceholder } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
@@ -52,6 +53,7 @@ interface LiveMarkdownEditorProps {
 }
 
 const markdownHighlight = HighlightStyle.define([
+  // Markdown structure (mostly applies to the revealed source on the active line).
   { tag: tags.heading1, fontWeight: '700' },
   { tag: tags.heading2, fontWeight: '700' },
   { tag: tags.heading3, fontWeight: '700' },
@@ -60,8 +62,22 @@ const markdownHighlight = HighlightStyle.define([
   { tag: tags.strikethrough, textDecoration: 'line-through' },
   { tag: tags.link, color: 'var(--accent)' },
   { tag: tags.url, color: 'var(--text-muted)' },
-  { tag: tags.monospace, fontFamily: 'var(--font-mono, ui-monospace, monospace)' },
-  { tag: tags.meta, color: 'var(--text-muted)' }
+  { tag: tags.meta, color: 'var(--text-muted)' },
+  // Code token colors — theme-aware via CSS vars defined in styles.css so they
+  // adapt to light/dark. Drives fenced-code highlighting (codeLanguages).
+  { tag: tags.keyword, color: 'var(--cm-keyword)' },
+  { tag: tags.tagName, color: 'var(--cm-keyword)' },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: 'var(--cm-string)' },
+  { tag: [tags.number, tags.bool, tags.null], color: 'var(--cm-number)' },
+  { tag: tags.comment, color: 'var(--cm-comment)', fontStyle: 'italic' },
+  {
+    tag: [tags.function(tags.variableName), tags.function(tags.propertyName)],
+    color: 'var(--cm-function)'
+  },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: 'var(--cm-type)' },
+  { tag: [tags.propertyName, tags.attributeName], color: 'var(--cm-property)' },
+  { tag: [tags.operator, tags.punctuation, tags.separator, tags.derefOperator], color: 'var(--cm-punct)' },
+  { tag: tags.variableName, color: 'var(--cm-variable)' }
 ])
 
 const baseTheme = EditorView.theme({

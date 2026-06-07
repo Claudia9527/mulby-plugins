@@ -33,13 +33,15 @@ export interface LineClass {
   cls: string
 }
 
-export type WidgetKind = 'image' | 'hr' | 'checkbox'
+export type WidgetKind = 'image' | 'hr' | 'checkbox' | 'bullet' | 'table' | 'math'
 
 export interface WidgetRange {
   from: number
   to: number
   kind: WidgetKind
   data: Record<string, string>
+  /** Block-level replacement (replaces whole lines), e.g. tables / display math. */
+  block?: boolean
 }
 
 export interface LivePreviewDecorations {
@@ -83,6 +85,10 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
   const marks: MarkRange[] = []
   const lineClasses: LineClass[] = []
   const widgets: WidgetRange[] = []
+  // Ranges already consumed by a rendered construct (code / table / image / hr /
+  // math). Used to keep the regex-based $math$ / ==highlight== detection out of
+  // code spans and out of blocks that are already replaced by a widget.
+  const occupied: HideRange[] = []
   const active = activeLineNumbers(state)
   const doc = state.doc
 
@@ -149,6 +155,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
 
       if (name === 'InlineCode') {
         marks.push({ from: node.from, to: node.to, cls: 'cm-md-code' })
+        occupied.push({ from: node.from, to: node.to })
         return
       }
 
@@ -190,6 +197,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
             kind: 'image',
             data: { url: urlText, alt }
           })
+          occupied.push({ from: node.from, to: node.to })
         }
         return
       }
@@ -197,22 +205,71 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       if (name === 'HorizontalRule') {
         if (!isActive(node.from, node.to)) {
           widgets.push({ from: node.from, to: node.to, kind: 'hr', data: {} })
+          occupied.push({ from: node.from, to: node.to })
         }
         return
       }
 
       if (name === 'Blockquote') {
-        lineClasses.push({ pos: node.from, cls: 'cm-md-quote' })
+        // Class every line of the quote (not just the first) so multi-line
+        // blockquotes render with a continuous bar.
+        const startLine = doc.lineAt(node.from).number
+        const endLine = doc.lineAt(Math.min(node.to, doc.length)).number
+        for (let n = startLine; n <= endLine; n += 1) {
+          lineClasses.push({ pos: doc.line(n).from, cls: 'cm-md-quote' })
+        }
+        return
+      }
+
+      if (name === 'QuoteMark') {
+        // Hide the ">" marker off the active line; the bar comes from the line class.
+        if (!isActive(node.from, node.to)) {
+          let end = node.to
+          if (doc.sliceString(end, end + 1) === ' ') {
+            end += 1
+          }
+          hideRange(node.from, end)
+        }
+        return
+      }
+
+      if (name === 'Table') {
+        // Render a GFM table as a real table (block widget) when not editing it.
+        if (!isActive(node.from, node.to)) {
+          const from = doc.lineAt(node.from).from
+          const to = doc.lineAt(Math.min(node.to, doc.length)).to
+          widgets.push({ from, to, kind: 'table', data: { source: doc.sliceString(from, to) }, block: true })
+          occupied.push({ from, to })
+          return false // don't decorate inside the replaced block
+        }
+        return undefined
+      }
+
+      if (name === 'ListMark') {
+        // Render bullet-list markers (-, *, +) as a • dot; leave ordered-list
+        // numbers as-is. Skip when the line is being edited.
+        const list = node.node.parent?.parent
+        if (list && list.name === 'BulletList' && !isActive(node.from, node.to)) {
+          widgets.push({ from: node.from, to: node.to, kind: 'bullet', data: {} })
+        }
         return
       }
 
       if (name === 'FencedCode') {
-        // Give every line of the block a class so it reads as a code block.
+        // Give every line of the block a class so it reads as a code block, plus
+        // open/close classes on the fence lines for rounded-corner styling.
         const startLine = doc.lineAt(node.from).number
         const endLine = doc.lineAt(Math.min(node.to, doc.length)).number
+        occupied.push({ from: node.from, to: Math.min(node.to, doc.length) })
         for (let n = startLine; n <= endLine; n += 1) {
           const line = doc.line(n)
           lineClasses.push({ pos: line.from, cls: 'cm-md-codeblock' })
+          if (n === startLine) {
+            lineClasses.push({ pos: line.from, cls: 'cm-md-codeblock-open' })
+          }
+          if (n === endLine) {
+            lineClasses.push({ pos: line.from, cls: 'cm-md-codeblock-close' })
+          }
         }
         return
       }
@@ -235,7 +292,133 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     }
   })
 
+  // Constructs the markdown grammar (GFM) doesn't model — TeX math ($…$, $$…$$)
+  // and ==highlight== — are detected with a text scan over the regions not
+  // already consumed by code / tables / images / rules. Block math is detected
+  // first so inline math doesn't match the inner "$".
+  const text = doc.toString()
+
+  for (const m of findBlockMathMatches(text)) {
+    if (rangesOverlap(m.start, m.end, occupied) || isActive(m.start, m.end)) {
+      continue
+    }
+    const startLine = doc.lineAt(m.start)
+    const endLine = doc.lineAt(Math.min(m.end, doc.length))
+    const leadOnly = startLine.text.slice(0, m.start - startLine.from).trim() === ''
+    const trailOnly = endLine.text.slice(m.end - endLine.from).trim() === ''
+    if (leadOnly && trailOnly) {
+      widgets.push({
+        from: startLine.from,
+        to: endLine.to,
+        kind: 'math',
+        data: { tex: m.inner, display: '1' },
+        block: true
+      })
+      occupied.push({ from: startLine.from, to: endLine.to })
+    } else {
+      widgets.push({ from: m.start, to: m.end, kind: 'math', data: { tex: m.inner, display: '1' } })
+      occupied.push({ from: m.start, to: m.end })
+    }
+  }
+
+  for (const m of findInlineMathMatches(text)) {
+    if (rangesOverlap(m.start, m.end, occupied) || isActive(m.start, m.end)) {
+      continue
+    }
+    widgets.push({ from: m.start, to: m.end, kind: 'math', data: { tex: m.inner, display: '' } })
+    occupied.push({ from: m.start, to: m.end })
+  }
+
+  for (const m of findHighlightMatches(text)) {
+    if (rangesOverlap(m.start, m.end, occupied)) {
+      continue
+    }
+    // Always style the highlighted span; only hide the "==" fences off the
+    // active line so the marker can be edited where the cursor sits.
+    marks.push({ from: m.start, to: m.end, cls: 'cm-md-highlight' })
+    if (!isActive(m.start, m.end)) {
+      hideRange(m.start, m.start + 2)
+      hideRange(m.end - 2, m.end)
+    }
+    occupied.push({ from: m.start, to: m.end })
+  }
+
   return { hides, marks, lineClasses, widgets }
+}
+
+/** True when [from, to) intersects any of the given ranges. */
+function rangesOverlap(from: number, to: number, ranges: HideRange[]): boolean {
+  for (const r of ranges) {
+    if (from < r.to && r.from < to) {
+      return true
+    }
+  }
+  return false
+}
+
+export interface RawMatch {
+  start: number
+  end: number
+  /** The inner payload (math TeX / highlighted text), already trimmed for math. */
+  inner: string
+}
+
+/**
+ * Finds `==highlight==` spans on a single line. The inner text must be padded by
+ * non-space (so `== a ==` and stray "a == b" comparisons don't match) and may not
+ * contain "=".
+ */
+export function findHighlightMatches(text: string): RawMatch[] {
+  const out: RawMatch[] = []
+  const re = /==([^\n=]+?)==/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const inner = m[1]
+    if (inner.length > 0 && inner.trim() === inner) {
+      out.push({ start: m.index, end: m.index + m[0].length, inner })
+    }
+  }
+  return out
+}
+
+/** Finds display math `$$…$$`, which may span multiple lines. */
+export function findBlockMathMatches(text: string): RawMatch[] {
+  const out: RawMatch[] = []
+  const re = /\$\$([\s\S]+?)\$\$/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const inner = m[1].trim()
+    if (inner.length > 0) {
+      out.push({ start: m.index, end: m.index + m[0].length, inner })
+    }
+  }
+  return out
+}
+
+/**
+ * Finds inline math `$…$` on a single line. The inner expression must be padded
+ * by non-space, and a currency guard skips "$5 … $10" style text (a digit right
+ * after the closing "$", or an alphanumeric right before the opening "$").
+ */
+export function findInlineMathMatches(text: string): RawMatch[] {
+  const out: RawMatch[] = []
+  const re = /\$([^\n$]+?)\$/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const inner = m[1]
+    const start = m.index
+    const end = start + m[0].length
+    if (inner.length === 0 || inner.trim() !== inner) {
+      continue
+    }
+    const before = start > 0 ? text[start - 1] : ''
+    const after = end < text.length ? text[end] : ''
+    if (/\d/.test(after) || /[A-Za-z0-9]/.test(before)) {
+      continue
+    }
+    out.push({ start, end, inner })
+  }
+  return out
 }
 
 /**

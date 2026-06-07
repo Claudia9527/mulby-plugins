@@ -7,7 +7,7 @@
 // The set is rebuilt on every doc/selection/viewport change, which is what makes
 // the raw Markdown reveal itself on the active line.
 
-import { Facet, type Extension, type Range } from '@codemirror/state'
+import { Facet, StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -16,7 +16,14 @@ import {
   type ViewUpdate,
   WidgetType
 } from '@codemirror/view'
-import { computeLivePreview } from './livePreviewModel'
+import katex from 'katex'
+import {
+  computeLivePreview,
+  type HideRange,
+  type LivePreviewDecorations,
+  type WidgetRange
+} from './livePreviewModel'
+import { renderMarkdownDocument } from '../services/markdownHtml'
 
 /** Resolves a Markdown image href into a URL the <img> can actually load. */
 export const imageUrlResolver = Facet.define<(href: string) => string, (href: string) => string>({
@@ -62,6 +69,61 @@ class ImageWidget extends WidgetType {
   }
 }
 
+class TableWidget extends WidgetType {
+  constructor(private readonly source: string) {
+    super()
+  }
+  eq(other: TableWidget) {
+    return other.source === this.source
+  }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-md-table'
+    wrap.innerHTML = renderMarkdownDocument(this.source)
+    return wrap
+  }
+}
+
+class MathWidget extends WidgetType {
+  constructor(
+    private readonly tex: string,
+    private readonly display: boolean
+  ) {
+    super()
+  }
+  eq(other: MathWidget) {
+    return other.tex === this.tex && other.display === this.display
+  }
+  toDOM() {
+    const el = document.createElement(this.display ? 'div' : 'span')
+    el.className = this.display ? 'cm-md-math cm-md-math-block' : 'cm-md-math cm-md-math-inline'
+    try {
+      el.innerHTML = katex.renderToString(this.tex, {
+        displayMode: this.display,
+        throwOnError: false,
+        output: 'html'
+      })
+    } catch {
+      // KaTeX should not throw (throwOnError:false), but stay defensive: fall
+      // back to the raw source so the user never loses content.
+      el.textContent = this.display ? `$$${this.tex}$$` : `$${this.tex}$`
+    }
+    return el
+  }
+}
+
+class BulletWidget extends WidgetType {
+  eq() {
+    return true
+  }
+  toDOM() {
+    const dot = document.createElement('span')
+    dot.className = 'cm-md-bullet'
+    dot.textContent = '•'
+    return dot
+  }
+}
+
 class CheckboxWidget extends WidgetType {
   constructor(private readonly checked: boolean) {
     super()
@@ -81,26 +143,118 @@ class CheckboxWidget extends WidgetType {
   }
 }
 
-function buildDecorations(view: EditorView): DecorationSet {
-  const model = computeLivePreview(view.state)
-  const resolve = view.state.facet(imageUrlResolver)
+/**
+ * A widget must be provided as a *block* decoration (and therefore from a
+ * StateField, not a ViewPlugin) when it is flagged block-level or when its range
+ * crosses a line boundary — CodeMirror forbids both of those from plugins
+ * ("Block decorations may not be specified via plugins").
+ */
+function widgetIsBlock(state: EditorState, widget: WidgetRange): boolean {
+  if (widget.block === true) {
+    return true
+  }
+  const startLine = state.doc.lineAt(widget.from).number
+  const endLine = state.doc.lineAt(Math.min(widget.to, state.doc.length)).number
+  return startLine !== endLine
+}
+
+/** Ranges covered by block widgets, so inline decorations inside them are skipped. */
+function blockWidgetRanges(state: EditorState, model: LivePreviewDecorations): HideRange[] {
+  const out: HideRange[] = []
+  for (const widget of model.widgets) {
+    if (widget.to > widget.from && widgetIsBlock(state, widget)) {
+      out.push({ from: widget.from, to: widget.to })
+    }
+  }
+  return out
+}
+
+function posWithin(pos: number, ranges: HideRange[]): boolean {
+  for (const r of ranges) {
+    if (pos >= r.from && pos < r.to) {
+      return true
+    }
+  }
+  return false
+}
+
+function rangeOverlaps(from: number, to: number, ranges: HideRange[]): boolean {
+  for (const r of ranges) {
+    if (from < r.to && r.from < to) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Block-level decorations (tables, display/multi-line math). These affect block
+ * layout, so CodeMirror requires them to come from a StateField rather than the
+ * ViewPlugin. Tables and block math are the only block widgets the model emits.
+ */
+function buildBlockDecorations(state: EditorState): DecorationSet {
+  const model = computeLivePreview(state)
+  const ranges: Range<Decoration>[] = []
+  for (const widget of model.widgets) {
+    if (widget.to <= widget.from || !widgetIsBlock(state, widget)) {
+      continue
+    }
+    if (widget.kind === 'table') {
+      ranges.push(
+        Decoration.replace({ widget: new TableWidget(widget.data.source ?? ''), block: true }).range(
+          widget.from,
+          widget.to
+        )
+      )
+    } else if (widget.kind === 'math') {
+      // `block: true` is only valid over whole lines (the model sets it for
+      // standalone $$…$$). Mid-line math that merely crosses a line break is a
+      // line-spanning inline replace — allowed from a field, but not as a block.
+      ranges.push(
+        Decoration.replace({
+          widget: new MathWidget(widget.data.tex ?? '', widget.data.display === '1'),
+          block: widget.block === true
+        }).range(widget.from, widget.to)
+      )
+    }
+  }
+  return Decoration.set(ranges, true)
+}
+
+/**
+ * Inline + line decorations (headings, marks, hidden markers, images, rules,
+ * bullets, checkboxes, inline math). These are safe to provide from a ViewPlugin.
+ * Anything that falls inside a block widget's range is skipped so the two
+ * decoration sources never fight over the same span.
+ */
+function buildInlineDecorations(view: EditorView): DecorationSet {
+  const state = view.state
+  const model = computeLivePreview(state)
+  const resolve = state.facet(imageUrlResolver)
+  const blocks = blockWidgetRanges(state, model)
   const ranges: Range<Decoration>[] = []
 
   for (const line of model.lineClasses) {
-    const lineStart = view.state.doc.lineAt(line.pos).from
+    const lineStart = state.doc.lineAt(line.pos).from
+    if (posWithin(lineStart, blocks)) {
+      continue
+    }
     ranges.push(Decoration.line({ class: line.cls }).range(lineStart))
   }
   for (const mark of model.marks) {
-    if (mark.to > mark.from) {
+    if (mark.to > mark.from && !rangeOverlaps(mark.from, mark.to, blocks)) {
       ranges.push(Decoration.mark({ class: mark.cls }).range(mark.from, mark.to))
     }
   }
   for (const hide of model.hides) {
-    if (hide.to > hide.from) {
+    if (hide.to > hide.from && !rangeOverlaps(hide.from, hide.to, blocks)) {
       ranges.push(Decoration.replace({}).range(hide.from, hide.to))
     }
   }
   for (const widget of model.widgets) {
+    if (widget.to <= widget.from || widgetIsBlock(state, widget)) {
+      continue
+    }
     if (widget.kind === 'image') {
       ranges.push(
         Decoration.replace({
@@ -109,6 +263,15 @@ function buildDecorations(view: EditorView): DecorationSet {
       )
     } else if (widget.kind === 'hr') {
       ranges.push(Decoration.replace({ widget: new HrWidget() }).range(widget.from, widget.to))
+    } else if (widget.kind === 'bullet') {
+      ranges.push(Decoration.replace({ widget: new BulletWidget() }).range(widget.from, widget.to))
+    } else if (widget.kind === 'math') {
+      ranges.push(
+        Decoration.replace({ widget: new MathWidget(widget.data.tex ?? '', widget.data.display === '1') }).range(
+          widget.from,
+          widget.to
+        )
+      )
     } else if (widget.kind === 'checkbox') {
       ranges.push(
         Decoration.replace({ widget: new CheckboxWidget(widget.data.checked === '1') }).range(
@@ -123,6 +286,25 @@ function buildDecorations(view: EditorView): DecorationSet {
   // brittle because line/mark/replace decorations have different internal sides.
   return Decoration.set(ranges, true)
 }
+
+/**
+ * State field that carries the block-level decorations. Block decorations must be
+ * provided through `EditorView.decorations.from(field)` (not a ViewPlugin).
+ * Recomputed on doc/selection change so blocks reveal their source on the active
+ * line; widgets implement `eq()` so unchanged blocks are reused (keeps IME safe).
+ */
+const blockDecorationField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildBlockDecorations(state)
+  },
+  update(value, tr) {
+    if (tr.docChanged || tr.selection) {
+      return buildBlockDecorations(tr.state)
+    }
+    return value
+  },
+  provide: (field) => EditorView.decorations.from(field)
+})
 
 /** Toggles a GFM task checkbox in the source when its widget is clicked. */
 function toggleTaskAt(view: EditorView, pos: number): boolean {
@@ -142,7 +324,7 @@ export function livePreviewExtension(): Extension {
     class {
       decorations: DecorationSet
       constructor(view: EditorView) {
-        this.decorations = buildDecorations(view)
+        this.decorations = buildInlineDecorations(view)
       }
       update(update: ViewUpdate) {
         // Never rebuild decorations mid-IME-composition: replacing/collapsing
@@ -156,7 +338,7 @@ export function livePreviewExtension(): Extension {
           return
         }
         if (update.docChanged || update.selectionSet || update.viewportChanged) {
-          this.decorations = buildDecorations(update.view)
+          this.decorations = buildInlineDecorations(update.view)
         }
       }
     },
@@ -177,5 +359,6 @@ export function livePreviewExtension(): Extension {
       }
     }
   )
-  return plugin
+  // Block decorations from a field + inline/line decorations from the plugin.
+  return [blockDecorationField, plugin]
 }

@@ -23,6 +23,21 @@
   --radius-xl: 20px;
   --radius-lg: 14px;
   --radius-md: 12px;
+  /* Code syntax-highlight palette (light) */
+  --cm-code-bg: #f6f7f9;
+  --cm-keyword: #a626a4;
+  --cm-string: #50a14f;
+  --cm-number: #b76b01;
+  --cm-comment: #a0a1a7;
+  --cm-function: #4078f2;
+  --cm-type: #c18401;
+  --cm-property: #e45649;
+  --cm-variable: #383a42;
+  --cm-punct: #8a8f98;
+  --cm-code-border: #e3e6ea;
+  /* ==highlight== marker (light) */
+  --cm-highlight-bg: rgba(255, 209, 64, 0.45);
+  --cm-highlight-text: #5c4a00;
 }
 
 :root.dark {
@@ -42,6 +57,21 @@
   --accent-soft: rgba(125, 164, 215, 0.14);
   --danger: #e17a7a;
   --shadow-sm: 0 10px 28px rgba(0, 0, 0, 0.22);
+  /* Code syntax-highlight palette (dark) */
+  --cm-code-bg: #282c34;
+  --cm-keyword: #c678dd;
+  --cm-string: #98c379;
+  --cm-number: #d19a66;
+  --cm-comment: #7f848e;
+  --cm-function: #61afef;
+  --cm-type: #e5c07b;
+  --cm-property: #e06c75;
+  --cm-variable: #abb2bf;
+  --cm-punct: #abb2bf;
+  --cm-code-border: #3a3f4b;
+  /* ==highlight== marker (dark) */
+  --cm-highlight-bg: rgba(250, 204, 21, 0.32);
+  --cm-highlight-text: #fde68a;
 }
 
 * {
@@ -561,18 +591,37 @@ button {
 }
 
 .cm-md-quote {
-  border-left: 3px solid var(--border-strong);
-  padding-left: 0.85em;
+  border-left: 3px solid var(--accent);
+  padding-left: 0.9em;
   color: var(--text-secondary);
+  background: var(--accent-soft);
 }
 
-/* Fenced code block lines render with a shared mono background slab. */
+/* Fenced code block lines render with a shared mono background slab framed by a
+   thin border; the first/last fence lines round the corners. */
 .cm-md-codeblock {
   font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
-  font-size: 0.9em;
-  background: var(--panel-muted);
-  padding-left: 14px;
-  padding-right: 14px;
+  font-size: 0.88em;
+  line-height: 1.6;
+  background: var(--cm-code-bg);
+  border-left: 1px solid var(--cm-code-border);
+  border-right: 1px solid var(--cm-code-border);
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.cm-md-codeblock-open {
+  border-top: 1px solid var(--cm-code-border);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.cm-md-codeblock-close {
+  border-bottom: 1px solid var(--cm-code-border);
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
 }
 
 /* Rendered inline spans (live preview) */
@@ -589,14 +638,25 @@ button {
 .cm-md-code {
   font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
   font-size: 0.9em;
-  padding: 0.1em 0.34em;
+  padding: 0.12em 0.38em;
   border-radius: 6px;
   background: var(--panel-muted);
+  border: 1px solid var(--cm-code-border);
 }
 .cm-md-link {
   color: var(--accent);
   text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
+}
+/* ==highlight== marker — Obsidian-style yellow marker, theme-aware. */
+.cm-md-highlight {
+  background: var(--cm-highlight-bg);
+  color: var(--cm-highlight-text);
+  border-radius: 4px;
+  padding: 0.04em 0.12em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 /* Rendered widgets (live preview) */
@@ -621,6 +681,67 @@ button {
   margin: 0 0.4em 0 0;
   cursor: pointer;
   vertical-align: middle;
+}
+.cm-md-bullet {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Rendered GFM table (block widget) */
+.cm-md-table {
+  margin: 10px 0;
+  overflow-x: auto;
+}
+.cm-md-table table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: auto;
+  max-width: 100%;
+  font-size: 0.94em;
+  border: 1px solid var(--cm-code-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cm-md-table th,
+.cm-md-table td {
+  border-bottom: 1px solid var(--cm-code-border);
+  border-right: 1px solid var(--cm-code-border);
+  padding: 7px 14px;
+  text-align: left;
+}
+.cm-md-table th:last-child,
+.cm-md-table td:last-child {
+  border-right: none;
+}
+.cm-md-table tr:last-child td {
+  border-bottom: none;
+}
+.cm-md-table th {
+  background: var(--accent-soft);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.cm-md-table tbody tr:nth-child(even) td {
+  background: var(--panel-muted);
+}
+
+/* Rendered TeX math (KaTeX) — inline and display. */
+.cm-md-math-inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+.cm-md-math-block {
+  display: block;
+  margin: 12px 0;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.cm-md-math .katex {
+  font-size: 1.05em;
+}
+.cm-md-math-block .katex-display {
+  margin: 0;
 }
 
 .editor-pane-header {
