@@ -1,10 +1,14 @@
 import { createInputState } from './input'
-import type { Vec2, InputState, Camera, HeroState, EnemyState, Projectile, LootDrop, DamageNumber, Particle, DungeonState, Floor, MetaProgress, AbilityDef, AbilityInstance, ItemDef, ActiveSynergy, AttackArc, CloneState } from './types'
+import type { Vec2, InputState, Camera, HeroState, EnemyState, Projectile, LootDrop, DamageNumber, Particle, DungeonState, Floor, MetaProgress, AbilityDef, AbilityInstance, ItemDef, ActiveSynergy, AttackArc, CloneState, RoomEvent, ActiveItemState, TeamSynergyDef, RunStats } from './types'
 import { HEROES } from './data/heroes'
 import { ENEMIES, FLOOR_ENEMY_POOLS } from './data/enemies'
 import { ABILITIES } from './data/abilities'
 import { ITEMS } from './data/items'
 import { SYNERGIES } from './data/synergies'
+import { generateEvent } from './data/events'
+import { getRandomAffix, ELITE_AFFIXES } from './data/eliteAffixes'
+import { randomActiveItem } from './data/activeItems'
+import { checkTeamSynergies } from './data/teamSynergies'
 
 let nextId = 1
 const uid = () => nextId++
@@ -18,8 +22,10 @@ export type GameEvent =
   | { type: 'level_up'; choices: AbilityDef[]; heroName: string; heroColor: string }
   | { type: 'synergy'; name: string; desc: string; color: string }
   | { type: 'floor_clear'; floor: number }
-  | { type: 'run_end'; crystals: number; floor: number }
+  | { type: 'run_end'; crystals: number; floor: number; runStats?: RunStats }
   | { type: 'item_drop'; item: ItemDef }
+  | { type: 'event_room'; event: RoomEvent }
+  | { type: 'achievement'; name: string; desc: string; crystals: number }
 
 export class GameEngine {
   state: DungeonState
@@ -71,6 +77,21 @@ export class GameEngine {
       hitstop: 0,
       attackArcs: [],
       clone: null,
+      // === 新系统 ===
+      isEventPending: false,
+      currentEvent: null,
+      activeItem: null,
+      activeTeamSynergies: checkTeamSynergies(heroIds),
+      runStats: {
+        heroesUsed: heroIds,
+        synergiesTriggered: [],
+        maxFloor: 1,
+        enemiesKilled: 0,
+        itemsCollected: [],
+        bossKilledFullHp: false,
+        startTime: Date.now(),
+        victory: false,
+      },
     }
     this.setupWave(1)
   }
@@ -115,6 +136,15 @@ export class GameEngine {
     const count = isBossFloor ? 4 : Math.min(baseCount, 8)
     for (let i = 0; i < count; i++) {
       this.spawnEnemy(pool, floorLevel)
+    }
+
+    // === 精英敌人：每层 5%~15% 概率升级 1 只普通怪 ===
+    if (!isBossFloor) {
+      const eliteChance = 0.05 + floorLevel * 0.01
+      if (Math.random() < eliteChance && this.state.floor.enemies.length > 0) {
+        const idx = Math.floor(Math.random() * this.state.floor.enemies.length)
+        this.upgradeToElite(this.state.floor.enemies[idx])
+      }
     }
   }
 
@@ -162,7 +192,197 @@ export class GameEngine {
       oilCovered: false,
       hitFlash: 0, knockbackVx: 0, knockbackVy: 0,
       markHits: 0,
+      // === 精英敌人 ===
+      isElite: false,
+      eliteAffix: '',
+      eliteColor: '',
+      shieldValue: 0,
+      shieldTimer: 0,
     })
+  }
+
+  // ========== 精英敌人 ==========
+  private upgradeToElite(enemy: EnemyState) {
+    const affixDef = getRandomAffix()
+    enemy.isElite = true
+    enemy.eliteAffix = affixDef.affix
+    enemy.eliteColor = affixDef.color
+    // 应用词缀属性倍率
+    if (affixDef.hpMult) {
+      enemy.maxHp = Math.round(enemy.maxHp * affixDef.hpMult)
+      enemy.hp = enemy.maxHp
+    }
+    if (affixDef.speedMult) {
+      enemy.def = { ...enemy.def, speed: enemy.def.speed * affixDef.speedMult }
+    }
+    if (affixDef.atkMult) {
+      enemy.def = { ...enemy.def, attack: Math.round(enemy.def.attack * affixDef.atkMult) }
+    }
+    // 体型增大 30%
+    enemy.def = { ...enemy.def, size: Math.round(enemy.def.size * 1.3) }
+    // 护盾精英初始化护盾计时器
+    if (affixDef.special === 'periodic_shield') {
+      enemy.shieldValue = enemy.maxHp * 0.3
+      enemy.shieldTimer = 10000
+    }
+  }
+
+  // ========== 主动道具 ==========
+  useActiveItem() {
+    const ai = this.state.activeItem
+    if (!ai || ai.cooldownRemaining > 0) return
+    const hero = this.state.heroes[this.state.activeHeroIndex]
+    if (!hero || hero.isDead) return
+
+    ai.cooldownRemaining = ai.def.cooldown
+    const { effectType, value } = ai.def
+
+    switch (effectType) {
+      case 'aoe_damage':
+        // 全屏伤害
+        for (const e of this.state.floor.enemies) {
+          if (!e.isDead) this.damageEnemy(e, value, false, hero)
+        }
+        this.state.screenShake = 500
+        this.spawnParticles(hero.x, hero.y, '#ff5722', 20)
+        break
+      case 'heal_team':
+        for (const h of this.state.heroes) {
+          if (!h.isDead) {
+            h.hp = Math.min(h.maxHp, h.hp + h.maxHp * value)
+            this.spawnDamageNumber(h.x, h.y, '+HP', '#4caf50', false)
+          }
+        }
+        break
+      case 'teleport':
+        hero.x = WALL + 30 + Math.random() * (ROOM_W - WALL * 2 - 60)
+        hero.y = WALL + 30 + Math.random() * (ROOM_H - WALL * 2 - 60)
+        this.spawnParticles(hero.x, hero.y, '#2196f3', 15)
+        break
+      case 'freeze_all':
+        for (const e of this.state.floor.enemies) {
+          if (!e.isDead) e.stunTimer = Math.max(e.stunTimer, value)
+        }
+        this.spawnParticles(ROOM_W / 2, ROOM_H / 2, '#00bcd4', 30)
+        break
+      case 'rage_buff':
+        ai.buffTimer = ai.def.duration || 5000
+        break
+      case 'shield_team':
+        for (const h of this.state.heroes) {
+          if (!h.isDead) {
+            h.buffs.push({ id: 'shield', name: '护盾', duration: 10000, value, isDebuff: false, color: '#3f51b5' })
+          }
+        }
+        break
+    }
+  }
+
+  // ========== 事件房间 ==========
+  handleEventChoice(choiceIdx: number) {
+    const event = this.state.currentEvent
+    if (!event) return
+    const choice = event.choices[choiceIdx]
+    if (!choice) return
+
+    const hero = this.state.heroes[this.state.activeHeroIndex]
+
+    // 消耗检查
+    if (choice.costType === 'crystal' && choice.cost) {
+      if (this.state.crystals < choice.cost) return
+      this.state.crystals -= choice.cost
+    } else if (choice.costType === 'hp_percent' && choice.cost) {
+      for (const h of this.state.heroes) {
+        if (!h.isDead) h.hp = Math.max(1, h.hp - h.maxHp * choice.cost / 100)
+      }
+    }
+
+    // 奖励处理
+    switch (choice.reward) {
+      case 'random_item': {
+        const item = this.randomItem()
+        if (item && hero && !hero.isDead) {
+          const slot = hero.items.findIndex(it => it === null)
+          if (slot >= 0) {
+            hero.items[slot] = { def: item }
+            this.state.runStats.itemsCollected.push(item.id)
+            this.onEvent({ type: 'item_drop', item })
+          }
+        }
+        break
+      }
+      case 'heal_50':
+        for (const h of this.state.heroes) {
+          if (!h.isDead) h.hp = Math.min(h.maxHp, h.hp + h.maxHp * 0.5)
+        }
+        break
+      case 'random_ability': {
+        if (hero && !hero.isDead) {
+          const pool = ABILITIES.filter(a => !hero.abilities.some(ha => ha.def.id === a.id && ha.stacks >= a.maxStacks))
+          if (pool.length > 0) {
+            const ab = pool[Math.floor(Math.random() * pool.length)]
+            const existing = hero.abilities.find(ha => ha.def.id === ab.id)
+            if (existing) {
+              existing.stacks++
+            } else if (hero.abilities.length < 6) {
+              hero.abilities.push({ def: ab, stacks: 1 })
+            }
+            this.checkSynergies(hero)
+          }
+        }
+        break
+      }
+      case 'upgrade_item': {
+        if (hero && !hero.isDead) {
+          const itemSlot = hero.items.findIndex(it => it !== null)
+          if (itemSlot >= 0) {
+            const oldItem = hero.items[itemSlot]!
+            const better = ITEMS.filter(it => {
+              const rarityOrder = ['common', 'uncommon', 'rare', 'epic']
+              return rarityOrder.indexOf(it.rarity) > rarityOrder.indexOf(oldItem.def.rarity)
+            })
+            if (better.length > 0) {
+              const newItem = better[Math.floor(Math.random() * better.length)]
+              hero.items[itemSlot] = { def: newItem }
+              this.state.runStats.itemsCollected.push(newItem.id)
+              this.onEvent({ type: 'item_drop', item: newItem })
+            }
+          }
+        }
+        break
+      }
+      case 'rare_item_plus_enemies': {
+        // 稀有道具
+        const rares = ITEMS.filter(it => it.rarity === 'rare' || it.rarity === 'epic')
+        if (rares.length > 0 && hero && !hero.isDead) {
+          const item = rares[Math.floor(Math.random() * rares.length)]
+          const slot = hero.items.findIndex(it => it === null)
+          if (slot >= 0) {
+            hero.items[slot] = { def: item }
+            this.state.runStats.itemsCollected.push(item.id)
+            this.onEvent({ type: 'item_drop', item })
+          }
+        }
+        // 生成 3 个强敌
+        const pool = FLOOR_ENEMY_POOLS[this.state.floorLevel] || FLOOR_ENEMY_POOLS[1]
+        for (let i = 0; i < 3; i++) this.spawnEnemy(pool, this.state.floorLevel + 2)
+        break
+      }
+      case 'safe_loot':
+        this.state.crystals += 10
+        for (const h of this.state.heroes) {
+          if (!h.isDead) h.hp = Math.min(h.maxHp, h.hp + h.maxHp * 0.15)
+        }
+        break
+      case 'none':
+      default:
+        break
+    }
+
+    // 结束事件，继续游戏
+    this.state.isEventPending = false
+    this.state.currentEvent = null
+    this.setupWave(this.state.floorLevel)
   }
 
   // ========== 游戏循环 ==========
@@ -183,7 +403,7 @@ export class GameEngine {
     const dt = Math.min(now - this.lastTime, 50) // cap at 50ms
     this.lastTime = now
 
-    if (!this.state.isPaused && !this.state.isLevelUpPending) {
+    if (!this.state.isPaused && !this.state.isLevelUpPending && !this.state.isEventPending) {
       this.update(dt)
     }
 
@@ -261,7 +481,12 @@ export class GameEngine {
       // 回复能力
       const regenStacks = this.getAbilityStacks(hero, 'regen')
       if (regenStacks > 0) {
-        hero.hp = Math.min(hero.maxHp, hero.hp + hero.maxHp * 0.01 * regenStacks * dt / 1000)
+        let healAmount = hero.maxHp * 0.01 * regenStacks * dt / 1000
+        // === 队伍协同：守护之光 - 战士受治疗效果+50% ===
+        if (hero.def.id === 'warrior' && this.state.activeTeamSynergies.some(s => s.effectType === 'heal_boost')) {
+          healAmount *= 1.5
+        }
+        hero.hp = Math.min(hero.maxHp, hero.hp + healAmount)
       }
 
       // 治疗光环
@@ -391,6 +616,28 @@ export class GameEngine {
     if (this.input.justPressed.has('2') && heroes[1] && !heroes[1].isDead) this.state.activeHeroIndex = 1
     if (this.input.justPressed.has('3') && heroes[2] && !heroes[2].isDead) this.state.activeHeroIndex = 2
 
+    // === 主动道具 Q 键 ===
+    if (this.input.justPressed.has('q')) {
+      this.useActiveItem()
+    }
+
+    // === 主动道具冷却更新 ===
+    if (this.state.activeItem) {
+      this.state.activeItem.cooldownRemaining = Math.max(0, this.state.activeItem.cooldownRemaining - dt)
+      if (this.state.activeItem.buffTimer > 0) {
+        this.state.activeItem.buffTimer = Math.max(0, this.state.activeItem.buffTimer - dt)
+      }
+    }
+
+    // === 队伍协同：生存专家 - 每 10 秒全队回复 5% HP ===
+    if (this.state.activeTeamSynergies.some(s => s.effectType === 'team_regen')) {
+      if (Math.floor(this.state.gameTime / 10000) !== Math.floor((this.state.gameTime - dt) / 10000)) {
+        for (const h of heroes) {
+          if (!h.isDead) h.hp = Math.min(h.maxHp, h.hp + h.maxHp * 0.05)
+        }
+      }
+    }
+
     // 活跃英雄操作（移动/攻击/技能）
     if (active && !active.isDead) {
       // WASD 移动
@@ -499,6 +746,8 @@ export class GameEngine {
   private getAttackSpeedBonus(hero: HeroState): number {
     let bonus = 0
     if (hero.items.some(it => it?.def.effect.special === 'berserker')) bonus += 1
+    // === 队伍协同：致命连击 - 攻速+25% ===
+    if (this.state.activeTeamSynergies.some(s => s.effectType === 'attack_speed')) bonus += 0.25
     return bonus
   }
 
@@ -517,6 +766,14 @@ export class GameEngine {
     }
     // 协同加成
     if (this.hasActiveSynergy('damage_overload') && hero.hp < hero.maxHp * 0.3) atk *= 3
+    // === 队伍协同：元素风暴 - 技能伤害+40% ===
+    if (this.state.activeTeamSynergies.some(s => s.effectType === 'skill_boost')) {
+      atk *= 1.4
+    }
+    // === 主动道具：狂暴药剂 ===
+    if (this.state.activeItem && this.state.activeItem.buffTimer > 0) {
+      atk *= 2
+    }
     return atk
   }
 
@@ -535,8 +792,16 @@ export class GameEngine {
     const isCrit = Math.random() < this.getCritChance(hero) * damageMult // 非活跃英雄降低暴击率
     const hasGambleDice = hero.items.some(it => it?.def.id === 'gamblers_dice')
     const critMult = hasGambleDice ? 3.0 : 1.8
-    const damage = isCrit ? atk * critMult : atk
+    let damage = isCrit ? atk * critMult : atk
     const isRanged = hero.def.range > 60
+
+    // === 队伍协同：魔法箭雨 - 远程攻击 10% 概率附加法术伤害 ===
+    if (isRanged && this.state.activeTeamSynergies.some(s => s.effectType === 'magic_proc')) {
+      if (Math.random() < 0.1) {
+        damage += atk * 0.5  // 额外法术伤害
+        this.spawnParticles(target.x, target.y, '#3498db', 5)
+      }
+    }
 
     // 血刃：攻击消耗生命
     if (hero.items.some(it => it?.def.id === 'blood_blade')) {
@@ -589,6 +854,13 @@ export class GameEngine {
       const attackRange = hero.def.range + target.def.size + 20
       if (this.dist(hero, target) < attackRange) {
         this.damageEnemy(target, damage, isCrit, hero)
+        // === 队伍协同：暗影双杀 - 暴击时额外攻击 ===
+        if (isCrit && this.state.activeTeamSynergies.some(s => s.effectType === 'double_attack')) {
+          if (!target.isDead) {
+            this.damageEnemy(target, atk * 0.5, false, hero)
+            this.spawnParticles(target.x, target.y, '#9b59b6', 8)
+          }
+        }
         // 生成攻击弧光特效（更醒目）
         const angle = Math.atan2(target.y - hero.y, target.x - hero.x)
         const arcRadius = hero.def.range + 30
@@ -735,6 +1007,19 @@ export class GameEngine {
         if (enemy.hp <= 0) { this.killEnemy(enemy); continue }
       }
 
+      // === 精英敌人特殊行为 ===
+      if (enemy.isElite) {
+        // 护盾精英：每 10 秒生成护盾
+        if (enemy.eliteAffix === 'shielded') {
+          enemy.shieldTimer -= dt
+          if (enemy.shieldTimer <= 0) {
+            enemy.shieldValue = enemy.maxHp * 0.3
+            enemy.shieldTimer = 10000
+            this.spawnParticles(enemy.x, enemy.y, '#ffd600', 8)
+          }
+        }
+      }
+
       // 协同：时停
       if (this.state.activeSynergies.some(s => s.def.id === 'time_stop' && s.triggerCooldown > 0)) {
         continue
@@ -760,6 +1045,11 @@ export class GameEngine {
         enemy.x = Math.max(WALL + enemy.def.size, Math.min(ROOM_W - WALL - enemy.def.size, enemy.x))
         enemy.y = Math.max(WALL + enemy.def.size, Math.min(ROOM_H - WALL - enemy.def.size, enemy.y))
       } else if (enemy.attackCooldown <= 0) {
+        // === 精英狂怒：HP低于50%时攻击×2 ===
+        let atkDmg = enemy.def.attack
+        if (enemy.isElite && enemy.eliteAffix === 'enraged' && enemy.hp < enemy.maxHp * 0.5) {
+          atkDmg *= 2
+        }
         // 攻击
         if (enemy.def.range > 60) {
           // 远程敌人
@@ -767,12 +1057,16 @@ export class GameEngine {
           this.state.projectiles.push({
             id: uid(), x: enemy.x, y: enemy.y,
             vx: Math.cos(angle) * 4, vy: Math.sin(angle) * 4,
-            damage: enemy.def.attack, radius: 4, isEnemy: true,
-            pierce: 0, bounceCount: 0, maxBounces: 0, color: enemy.def.color,
+            damage: atkDmg, radius: 4, isEnemy: true,
+            pierce: 0, bounceCount: 0, maxBounces: 0, color: enemy.isElite ? enemy.eliteColor : enemy.def.color,
           })
         } else {
           // 近战敌人
-          this.damageHero(target, enemy.def.attack, enemy)
+          this.damageHero(target, atkDmg, enemy)
+        }
+        // === 精英吸血：攻击后回复 5% HP ===
+        if (enemy.isElite && enemy.eliteAffix === 'vampiric') {
+          enemy.hp = Math.min(enemy.maxHp, enemy.hp + enemy.maxHp * 0.05)
         }
         enemy.attackCooldown = enemy.def.attackSpeed
       }
@@ -798,6 +1092,11 @@ export class GameEngine {
 
     // 狂战士戒指：防御减半 → 受伤+50%
     if (hero.items.some(it => it?.def.id === 'berserker_ring')) damage *= 1.5
+
+    // === 队伍协同：铁壁防线 - 全队受伤-15% ===
+    if (this.state.activeTeamSynergies.some(s => s.effectType === 'damage_reduce')) {
+      damage *= 0.85
+    }
 
     // 护盾吸收
     const shield = hero.buffs.find(b => b.id === 'shield' || b.id === 'taunt_shield')
@@ -865,6 +1164,19 @@ export class GameEngine {
 
   private damageEnemy(enemy: EnemyState, damage: number, isCrit: boolean, source: HeroState) {
     if (enemy.isDead) return
+
+    // === 精英护盾吸收 ===
+    if (enemy.shieldValue > 0) {
+      if (damage <= enemy.shieldValue) {
+        enemy.shieldValue -= damage
+        this.spawnDamageNumber(enemy.x, enemy.y, 'SHIELD', '#ffd600', false)
+        return
+      } else {
+        damage -= enemy.shieldValue
+        enemy.shieldValue = 0
+        this.spawnParticles(enemy.x, enemy.y, '#ffd600', 10)
+      }
+    }
 
     // 油瓶+火焰协同（火焰剑/火焰附魔）
     const hasFireSource = source.items.some(it => it?.def.id === 'flame_sword') || this.getAbilityStacks(source, 'fire_enchant') > 0
@@ -990,6 +1302,29 @@ export class GameEngine {
     enemy.isDead = true
     enemy.hp = 0
     this.enemiesKilledThisFloor++
+    this.state.runStats.enemiesKilled++
+
+    // === 精英敌人额外奖励 ===
+    if (enemy.isElite) {
+      const affixDef = ELITE_AFFIXES.find(a => a.affix === enemy.eliteAffix)
+      if (affixDef) {
+        this.state.crystals += affixDef.bonusCrystal
+        this.spawnDamageNumber(enemy.x, enemy.y - 20, `+${affixDef.bonusCrystal}◆`, '#ffd600', false)
+      }
+      // 分裂：死亡时分裂为2个小怪
+      if (enemy.eliteAffix === 'splitter') {
+        const pool = [enemy.def.id]
+        for (let i = 0; i < 2; i++) {
+          this.spawnEnemy(pool, this.state.floorLevel)
+        }
+      }
+    }
+
+    // === Boss 无伤检查 ===
+    if (enemy.def.isBoss) {
+      const allFullHp = this.state.heroes.every(h => h.isDead || h.hp >= h.maxHp)
+      if (allFullHp) this.state.runStats.bossKilledFullHp = true
+    }
 
     // === 死亡爆炸特效 ===
     const deathParticleCount = enemy.def.isBoss ? 30 : 12
@@ -1034,6 +1369,13 @@ export class GameEngine {
           type: 'item', itemDef: item, value: 0, pickupRadius: 45,
         })
       }
+    }
+
+    // === Boss 必掉主动道具 ===
+    if (enemy.def.isBoss && !this.state.activeItem) {
+      const activeDef = randomActiveItem()
+      this.state.activeItem = { def: activeDef, cooldownRemaining: 0, buffTimer: 0 }
+      this.spawnDamageNumber(enemy.x, enemy.y - 30, `Q: ${activeDef.name}`, activeDef.color, false)
     }
 
     // 灵魂收割
@@ -1472,10 +1814,25 @@ export class GameEngine {
     }
 
     this.state.floorLevel++
+    this.state.runStats.maxFloor = this.state.floorLevel
     this.state.floor = this.generateFloor(this.state.floorLevel)
     this.state.projectiles = []
     this.state.floor.loot = []
     this.portalSpawned = false
+
+    // === 事件房间：每 2 层触发，跳过第 10 层 Boss ===
+    if (this.state.floorLevel % 2 === 0 && this.state.floorLevel < 10) {
+      this.state.isEventPending = true
+      this.state.currentEvent = generateEvent(this.state.floorLevel, this.state.crystals)
+      // 回复一些生命
+      for (const hero of this.state.heroes) {
+        if (!hero.isDead) hero.hp = Math.min(hero.maxHp, hero.hp + hero.maxHp * 0.15)
+      }
+      this.onEvent({ type: 'event_room', event: this.state.currentEvent })
+      this.onEvent({ type: 'floor_clear', floor: this.state.floorLevel - 1 })
+      return
+    }
+
     this.setupWave(this.state.floorLevel)
 
     // 回复一些生命
@@ -1496,8 +1853,9 @@ export class GameEngine {
 
   private endRun(victory: boolean) {
     const crystals = this.state.crystals + (victory ? 50 : 0)
+    this.state.runStats.victory = victory
     this.stop()
-    this.onEvent({ type: 'run_end', crystals, floor: this.state.floorLevel })
+    this.onEvent({ type: 'run_end', crystals, floor: this.state.floorLevel, runStats: this.state.runStats })
   }
 
   // ========== 工具方法 ==========

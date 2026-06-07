@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { MetaProgress } from '../game/types'
 import { HEROES, HERO_UNLOCK_COST } from '../game/data/heroes'
+import { ACHIEVEMENTS } from '../game/data/achievements'
 
 interface Props {
   meta: MetaProgress
@@ -9,7 +10,7 @@ interface Props {
   onUnlockHero: (heroId: string, cost: number) => void
 }
 
-type Tab = 'training' | 'smith' | 'library' | 'tavern' | 'shrine'
+type Tab = 'training' | 'smith' | 'library' | 'tavern' | 'shrine' | 'achievements'
 
 export default function Hub({ meta, onBack, onUpgrade, onUnlockHero }: Props) {
   const [tab, setTab] = useState<Tab>('training')
@@ -31,13 +32,13 @@ export default function Hub({ meta, onBack, onUpgrade, onUnlockHero }: Props) {
       </div>
 
       <div className="hub-tabs">
-        {(['training', 'smith', 'library', 'tavern', 'shrine'] as Tab[]).map(t => (
+        {(['training', 'smith', 'library', 'tavern', 'shrine', 'achievements'] as Tab[]).map(t => (
           <button
             key={t}
             className={`tab-btn ${tab === t ? 'active' : ''}`}
             onClick={() => setTab(t)}
           >
-            {t === 'training' ? '训练营' : t === 'smith' ? '铁匠铺' : t === 'library' ? '图书馆' : t === 'tavern' ? '酒馆' : '神龛'}
+            {t === 'training' ? '训练营' : t === 'smith' ? '铁匠铺' : t === 'library' ? '图书馆' : t === 'tavern' ? '酒馆' : t === 'shrine' ? '神龛' : '成就'}
           </button>
         ))}
       </div>
@@ -134,6 +135,44 @@ export default function Hub({ meta, onBack, onUpgrade, onUnlockHero }: Props) {
             <p>神龛可以解锁新的协同组合</p>
             <p className="stat">已解锁额外协同: {meta.unlockedSynergies.length}</p>
             <p className="stat hint">集齐特定能力+道具触发超强效果!</p>
+          </div>
+        )}
+
+        {tab === 'achievements' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {ACHIEVEMENTS.map(ach => {
+              const unlocked = meta.achievements?.includes(ach.id)
+              return (
+                <div
+                  key={ach.id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 14px', borderRadius: 8,
+                    background: unlocked ? 'rgba(46, 204, 113, 0.15)' : 'rgba(255,255,255,0.05)',
+                    border: `1px solid ${unlocked ? '#2ecc71' : '#333'}`,
+                  }}
+                >
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: unlocked ? '#2ecc71' : '#333', fontSize: 16, flexShrink: 0,
+                  }}>
+                    {unlocked ? '✓' : '?'}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ color: unlocked ? '#2ecc71' : '#888', fontWeight: 'bold', fontSize: 13 }}>
+                      {ach.name}
+                      <span style={{ fontSize: 10, color: ach.category === 'challenge' ? '#e94560' : '#888', marginLeft: 6 }}>
+                        {ach.category === 'challenge' ? '挑战' : '基础'}
+                      </span>
+                    </div>
+                    <div style={{ color: '#aaa', fontSize: 11 }}>{ach.desc}</div>
+                  </div>
+                  <div style={{ color: '#ffd700', fontSize: 12, flexShrink: 0 }}>
+                    {unlocked ? '✓ 已获得' : `◆${ach.rewardCrystals}`}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

@@ -140,6 +140,12 @@ export interface EnemyState {
   knockbackVx: number   // 击退X速度
   knockbackVy: number   // 击退Y速度
   markHits: number      // 标记猎人连续命中次数
+  // === 精英敌人 ===
+  isElite: boolean
+  eliteAffix: string    // 词缀标识
+  eliteColor: string    // 词缀发光颜色
+  shieldValue: number   // 精英护盾值
+  shieldTimer: number   // 护盾生成计时器
 }
 
 // ========== 弹道 ==========
@@ -240,6 +246,94 @@ export interface CloneState {
   isDead: boolean
 }
 
+// ========== 事件房间 ==========
+export type EventType = 'merchant' | 'altar' | 'treasure_trap'
+
+export interface RoomEvent {
+  id: string
+  type: EventType
+  title: string
+  desc: string
+  choices: EventChoiceDef[]
+}
+
+export interface EventChoiceDef {
+  label: string
+  cost?: number        // 水晶消耗
+  costType?: 'crystal' | 'hp_percent' | 'item'
+  reward?: string      // 奖励描述
+  disabled?: boolean   // 是否不可选
+}
+
+// ========== 精英词缀 ==========
+export type EliteAffix = 'swift' | 'vampiric' | 'splitter' | 'shielded' | 'enraged'
+
+export interface EliteAffixDef {
+  affix: EliteAffix
+  name: string
+  color: string
+  speedMult?: number
+  hpMult?: number
+  atkMult?: number
+  special?: string
+  bonusCrystal: number
+  bonusXp: number
+}
+
+// ========== 主动道具 ==========
+export interface ActiveItemDef {
+  id: string
+  name: string
+  desc: string
+  cooldown: number   // 冷却时间(ms)
+  color: string
+  effectType: 'aoe_damage' | 'heal_team' | 'teleport' | 'freeze_all' | 'rage_buff' | 'shield_team'
+  value: number
+  duration?: number
+}
+
+export interface ActiveItemState {
+  def: ActiveItemDef
+  cooldownRemaining: number  // 剩余冷却(ms)
+  buffTimer: number          // 狂怒等buff剩余时间
+}
+
+// ========== 队伍协同 ==========
+export interface TeamSynergyDef {
+  id: string
+  name: string
+  requiredHeroes: string[]
+  desc: string
+  color: string
+  effectType: 'heal_boost' | 'magic_proc' | 'double_attack' | 'damage_reduce' | 'skill_boost' | 'team_regen' | 'attack_speed'
+  value: number
+}
+
+// ========== 局内统计 ==========
+export interface RunStats {
+  heroesUsed: string[]
+  synergiesTriggered: string[]
+  maxFloor: number
+  enemiesKilled: number
+  itemsCollected: string[]
+  bossKilledFullHp: boolean
+  startTime: number
+  victory: boolean
+}
+
+// ========== 成就 ==========
+export interface AchievementDef {
+  id: string
+  name: string
+  desc: string
+  rewardCrystals: number
+  category: 'basic' | 'challenge'
+}
+
+export interface AchievementProgress {
+  unlocked: string[]   // 已解锁的成就 id
+}
+
 // ========== 地下城状态 ==========
 export interface DungeonState {
   floor: Floor
@@ -260,6 +354,12 @@ export interface DungeonState {
   hitstop: number        // 顿帧计时器(ms)
   attackArcs: AttackArc[] // 近战攻击弧光
   clone: CloneState | null // 影子分身
+  // === 新系统 ===
+  isEventPending: boolean
+  currentEvent: RoomEvent | null
+  activeItem: ActiveItemState | null
+  activeTeamSynergies: TeamSynergyDef[]
+  runStats: RunStats
 }
 
 export interface DamageNumber {
@@ -309,6 +409,8 @@ export interface MetaProgress {
   weaponLevel: number
   totalRuns: number
   bestFloor: number
+  achievements: string[]   // 已解锁成就 id
+  allHeroesUsed: string[] // 历史使用过的英雄
 }
 
 // ========== 输入状态 ==========

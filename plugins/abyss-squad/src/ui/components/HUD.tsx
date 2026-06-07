@@ -1,4 +1,4 @@
-import type { HeroState, ActiveSynergy } from '../game/types'
+import type { HeroState, ActiveSynergy, ActiveItemState, TeamSynergyDef } from '../game/types'
 
 interface FloorInfo {
   level: number
@@ -13,10 +13,12 @@ interface Props {
   floorInfo?: FloorInfo
   crystals: number
   synergies: ActiveSynergy[]
+  activeItem?: ActiveItemState | null
+  teamSynergies?: TeamSynergyDef[]
   onQuit: () => void
 }
 
-export default function HUD({ heroes, activeHeroIndex, floorInfo, crystals, synergies, onQuit }: Props) {
+export default function HUD({ heroes, activeHeroIndex, floorInfo, crystals, synergies, activeItem, teamSynergies, onQuit }: Props) {
   return (
     <div className="hud-overlay">
       {/* 顶部信息栏 */}
@@ -97,6 +99,36 @@ export default function HUD({ heroes, activeHeroIndex, floorInfo, crystals, syne
               {s.def.name}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* 队伍协同徽章 */}
+      {teamSynergies && teamSynergies.length > 0 && (
+        <div className="hud-synergies" style={{ bottom: 90 }}>
+          {teamSynergies.map((s, i) => (
+            <div key={i} className="synergy-badge" style={{ backgroundColor: s.color, fontSize: 10 }} title={s.desc}>
+              🤝 {s.name}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 主动道具 Q 键 */}
+      {activeItem && (
+        <div style={{
+          position: 'absolute', bottom: 95, right: 16,
+          background: 'rgba(0,0,0,0.7)', borderRadius: 8, padding: '6px 10px',
+          border: `2px solid ${activeItem.def.color}`, textAlign: 'center', minWidth: 60,
+        }}>
+          <div style={{ color: activeItem.def.color, fontSize: 11, fontWeight: 'bold' }}>{activeItem.def.name}</div>
+          {activeItem.cooldownRemaining > 0 ? (
+            <div style={{ color: '#888', fontSize: 12 }}>{Math.ceil(activeItem.cooldownRemaining / 1000)}s</div>
+          ) : (
+            <div style={{ color: '#4caf50', fontSize: 12, fontWeight: 'bold' }}>Q 就绪</div>
+          )}
+          {activeItem.buffTimer > 0 && (
+            <div style={{ color: '#e91e63', fontSize: 10 }}>🔥 {Math.ceil(activeItem.buffTimer / 1000)}s</div>
+          )}
         </div>
       )}
 

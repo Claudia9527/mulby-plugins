@@ -3,7 +3,9 @@ import MainMenu from './components/MainMenu'
 import Hub from './components/Hub'
 import GameCanvas from './components/GameCanvas'
 import GameOver from './components/GameOver'
-import type { GameScreen, MetaProgress } from './game/types'
+import type { GameScreen, MetaProgress, RunStats } from './game/types'
+import { checkNewAchievements } from './game/data/achievements'
+import { ACHIEVEMENTS } from './game/data/achievements'
 
 const DEFAULT_META: MetaProgress = {
   crystals: 0,
@@ -17,6 +19,8 @@ const DEFAULT_META: MetaProgress = {
   weaponLevel: 0,
   totalRuns: 0,
   bestFloor: 0,
+  achievements: [],
+  allHeroesUsed: [],
 }
 
 async function loadMeta(): Promise<MetaProgress> {
@@ -73,14 +77,34 @@ export default function App() {
   const handleGoHub = () => setScreen('hub')
   const handleGoMenu = () => setScreen('menu')
 
-  const handleRunEnd = (crystals: number, floor: number) => {
+  const handleRunEnd = (crystals: number, floor: number, runStats?: RunStats) => {
     setRunResult({ crystals, floor })
-    updateMeta(prev => ({
-      ...prev,
-      crystals: prev.crystals + crystals,
-      totalRuns: prev.totalRuns + 1,
-      bestFloor: Math.max(prev.bestFloor, floor),
-    }))
+    updateMeta(prev => {
+      const next: MetaProgress = {
+        ...prev,
+        crystals: prev.crystals + crystals,
+        totalRuns: prev.totalRuns + 1,
+        bestFloor: Math.max(prev.bestFloor, floor),
+        allHeroesUsed: [...new Set([...prev.allHeroesUsed, ...(runStats?.heroesUsed || [])])],
+      }
+
+      // 检查成就
+      if (runStats) {
+        const newAchs = checkNewAchievements(next, runStats, prev.achievements || [])
+        if (newAchs.length > 0) {
+          next.achievements = [...(prev.achievements || []), ...newAchs]
+          // 发放水晶奖励
+          for (const achId of newAchs) {
+            const achDef = ACHIEVEMENTS.find(a => a.id === achId)
+            if (achDef) {
+              next.crystals += achDef.rewardCrystals
+            }
+          }
+        }
+      }
+
+      return next
+    })
     setScreen('gameover')
   }
 

@@ -36,6 +36,7 @@ export class GameRenderer {
     this.drawAttackArcs(state.attackArcs)
     this.drawEnemies(state.floor.enemies)
     this.drawHeroes(state.heroes, state.activeHeroIndex)
+    this.drawClone(state)
     this.drawProjectiles(state.projectiles)
     this.drawParticles(state.particles)
     this.drawDamageNumbers(state.damageNumbers)
@@ -140,6 +141,31 @@ export class GameRenderer {
     }
   }
 
+  private drawClone(state: DungeonState) {
+    const clone = state.clone
+    if (!clone || clone.isDead) return
+    const ctx = this.ctx
+    // 半透明分身
+    ctx.save()
+    ctx.globalAlpha = 0.6 + Math.sin(Date.now() * 0.008) * 0.2
+    ctx.fillStyle = clone.color
+    ctx.beginPath()
+    ctx.arc(clone.x, clone.y, 12, 0, Math.PI * 2)
+    ctx.fill()
+    // 分身光环
+    ctx.strokeStyle = clone.color
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(clone.x, clone.y, 16, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+    // 分身名字
+    ctx.fillStyle = '#9b59b6'
+    ctx.font = '9px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('分身', clone.x, clone.y - 18)
+  }
+
   private drawEnemies(enemies: EnemyState[]) {
     const ctx = this.ctx
     for (const enemy of enemies) {
@@ -192,6 +218,30 @@ export class GameRenderer {
         ctx.fillText('★', enemy.x, enemy.y - enemy.def.size - 5)
       }
 
+      // === 精英敌人发光圈 ===
+      if (enemy.isElite) {
+        ctx.save()
+        ctx.globalAlpha = 0.4 + Math.sin(Date.now() * 0.005) * 0.2
+        ctx.strokeStyle = enemy.eliteColor
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(enemy.x, enemy.y, enemy.def.size + 8, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.restore()
+
+        // 精英护盾可视化
+        if (enemy.shieldValue > 0) {
+          ctx.save()
+          ctx.globalAlpha = 0.5
+          ctx.strokeStyle = '#ffd600'
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          ctx.arc(enemy.x, enemy.y, enemy.def.size + 4, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.restore()
+        }
+      }
+
       // 血条
       if (enemy.hp < enemy.maxHp) {
         this.drawHealthBar(enemy.x - 15, enemy.y - enemy.def.size - 8, 30, 4, enemy.hp, enemy.maxHp, '#e74c3c')
@@ -203,6 +253,15 @@ export class GameRenderer {
         ctx.font = 'bold 11px sans-serif'
         ctx.textAlign = 'center'
         ctx.fillText(enemy.def.name, enemy.x, enemy.y - enemy.def.size - 14)
+      }
+
+      // === 精英词缀名称 ===
+      if (enemy.isElite) {
+        const affixNames: Record<string, string> = { swift: '迅捷', vampiric: '吸血', splitter: '分裂', shielded: '护盾', enraged: '狂怒' }
+        ctx.fillStyle = enemy.eliteColor
+        ctx.font = 'bold 10px sans-serif'
+        ctx.textAlign = 'center'
+        ctx.fillText(affixNames[enemy.eliteAffix] || '', enemy.x, enemy.y - enemy.def.size - 14)
       }
     }
   }
