@@ -81,6 +81,47 @@ export const SYNERGIES: SynergyDef[] = [
     color: '#03a9f4',
     effect: { type: 'freeze_field', value: 5000, duration: 5000 },
   },
+  // === 新增协同 ===
+  {
+    id: 'hunting_storm',
+    name: '猎杀风暴',
+    desc: '标记猎人 + 多重射击 = 每次命中都触发标记爆炸!',
+    tags: ['mark', 'multi'],
+    color: '#ff5722',
+    effect: { type: 'marked_explosion', value: 40 },
+  },
+  {
+    id: 'aura_storm',
+    name: '磁场风暴',
+    desc: '反伤磁场 + 荆棘护盾 = 磁场范围和伤害翻倍!',
+    tags: ['aura', 'thorns'],
+    color: '#4caf50',
+    effect: { type: 'aura_thorns', value: 2 },
+  },
+  {
+    id: 'clone_stop',
+    name: '时停分身',
+    desc: '影子分身 + 时间减速 = 分身召唤时全屏减速!',
+    tags: ['clone', 'slow'],
+    color: '#9c27b0',
+    effect: { type: 'clone_slow', value: 3000, duration: 3000 },
+  },
+  {
+    id: 'death_harvest',
+    name: '死亡收割',
+    desc: '击杀刷新 + 灵魂收割 = 击杀回血20%且技能无冷却!',
+    tags: ['kill', 'cooldown'],
+    color: '#7b1fa2',
+    effect: { type: 'kill_regen', value: 0.2 },
+  },
+  {
+    id: 'barrage_return',
+    name: '弹幕回力',
+    desc: '回旋镖 + 多重射击 = 所有弹道都回旋且无限穿透!',
+    tags: ['return', 'projectile'],
+    color: '#ff9800',
+    effect: { type: 'boomerang_barrage', value: 2 },
+  },
 ]
 
 export const SYNERGY_UNLOCK_COST = 60

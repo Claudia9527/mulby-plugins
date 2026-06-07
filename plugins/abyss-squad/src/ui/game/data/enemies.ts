@@ -25,6 +25,6 @@ export const FLOOR_ENEMY_POOLS: Record<number, string[]> = {
   6: ['wolf', 'golem', 'dark_mage', 'boss_dragon'],
   7: ['golem', 'dark_mage', 'mimic'],
   8: ['dark_mage', 'mimic', 'wolf'],
-  9: ['mimic', 'golem', 'dark_mage'],
+  9: ['mimic', 'golem', 'dark_mage', 'bat', 'goblin_archer', 'wolf'],
   10: ['mimic', 'dark_mage', 'golem', 'boss_lich'],
 }

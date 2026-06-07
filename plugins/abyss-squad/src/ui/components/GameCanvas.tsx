@@ -18,14 +18,15 @@ export default function GameCanvas({ meta, onRunEnd, onQuit }: Props) {
   const rendererRef = useRef<GameRenderer | null>(null)
   const [tick, setTick] = useState(0)
   const [levelUpChoices, setLevelUpChoices] = useState<AbilityDef[] | null>(null)
-  const [levelUpHero, setLevelUpHero] = useState<{ name: string; color: string } | null>(null)
+  const [levelUpHero, setLevelUpHero] = useState<{ name: string; color: string; abilities: any[] } | null>(null)
   const [synergyPopup, setSynergyPopup] = useState<{ name: string; desc: string; color: string } | null>(null)
 
   const handleEvent = useCallback((event: GameEvent) => {
     switch (event.type) {
       case 'level_up':
         setLevelUpChoices(event.choices)
-        setLevelUpHero({ name: event.heroName, color: event.heroColor })
+        const lvlHero = engineRef.current?.state.heroes.find(h => h.def.name === event.heroName)
+        setLevelUpHero({ name: event.heroName, color: event.heroColor, abilities: lvlHero?.abilities || [] })
         break
       case 'synergy':
         setSynergyPopup({ name: event.name, desc: event.desc, color: event.color })
@@ -108,7 +109,13 @@ export default function GameCanvas({ meta, onRunEnd, onQuit }: Props) {
       />
 
       {levelUpChoices && (
-        <LevelUpModal choices={levelUpChoices} heroName={levelUpHero?.name} heroColor={levelUpHero?.color} onSelect={handleSelectAbility} />
+        <LevelUpModal
+          choices={levelUpChoices}
+          heroName={levelUpHero?.name}
+          heroColor={levelUpHero?.color}
+          heroAbilities={levelUpHero?.abilities}
+          onSelect={handleSelectAbility}
+        />
       )}
 
       {synergyPopup && (

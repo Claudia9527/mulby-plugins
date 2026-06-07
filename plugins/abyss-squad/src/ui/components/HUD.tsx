@@ -76,6 +76,14 @@ export default function HUD({ heroes, activeHeroIndex, floorInfo, crystals, syne
                 </div>
               ))}
             </div>
+            {/* 能力数量 */}
+            <div style={{ fontSize: 10, color: '#ccc', marginTop: 2 }}>
+              {hero.abilities.length > 0 && (
+                <span title={hero.abilities.map(a => `${a.def.name}×${a.stacks}`).join(', ')}>
+                  ⚡{hero.abilities.length}/6
+                </span>
+              )}
+            </div>
             <span className="hero-key">{i + 1}</span>
           </div>
         ))}

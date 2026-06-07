@@ -1,5 +1,5 @@
 import { createInputState } from './input'
-import type { Vec2, InputState, Camera, HeroState, EnemyState, Projectile, LootDrop, DamageNumber, Particle, DungeonState, Floor, MetaProgress, AbilityDef, AbilityInstance, ItemDef, ActiveSynergy, AttackArc } from './types'
+import type { Vec2, InputState, Camera, HeroState, EnemyState, Projectile, LootDrop, DamageNumber, Particle, DungeonState, Floor, MetaProgress, AbilityDef, AbilityInstance, ItemDef, ActiveSynergy, AttackArc, CloneState } from './types'
 import { HEROES } from './data/heroes'
 import { ENEMIES, FLOOR_ENEMY_POOLS } from './data/enemies'
 import { ABILITIES } from './data/abilities'
@@ -70,6 +70,7 @@ export class GameEngine {
       screenShake: 0,
       hitstop: 0,
       attackArcs: [],
+      clone: null,
     }
     this.setupWave(1)
   }
@@ -160,6 +161,7 @@ export class GameEngine {
       burnTimer: 0, burnDps: 0,
       oilCovered: false,
       hitFlash: 0, knockbackVx: 0, knockbackVy: 0,
+      markHits: 0,
     })
   }
 
@@ -288,6 +290,21 @@ export class GameEngine {
         }
       }
 
+      // 反伤磁场：每秒伤害附近敌人
+      const auraStacks = this.getAbilityStacks(hero, 'damage_aura')
+      if (auraStacks > 0) {
+        const auraMult = this.hasActiveSynergy('aura_storm') ? 2 : 1
+        const auraRange = 80 * auraMult
+        const auraDmg = hero.def.attack * 0.15 * auraStacks * auraMult * dt / 1000
+        for (const enemy of this.state.floor.enemies) {
+          if (!enemy.isDead && this.dist(hero, enemy) < auraRange) {
+            enemy.hp -= auraDmg
+            if (Math.random() < 0.02) this.spawnParticles(enemy.x, enemy.y, '#3498db', 1)
+            if (enemy.hp <= 0) this.killEnemy(enemy)
+          }
+        }
+      }
+
       // 非活跃英雄跟随活跃英雄
       if (i !== this.state.activeHeroIndex && active && !active.isDead) {
         const followDist = 60 + i * 30
@@ -309,6 +326,62 @@ export class GameEngine {
         if (target && this.dist(hero, target) < hero.def.range + target.def.size + 20) {
           this.heroAttack(hero, target, 0.5)
           hero.attackCooldown = hero.def.attackSpeed * 3
+        }
+      }
+    }
+
+    // === 影子分身更新 ===
+    if (this.state.clone && !this.state.clone.isDead) {
+      const clone = this.state.clone
+      clone.timer -= dt
+      clone.attackCooldown = Math.max(0, clone.attackCooldown - dt)
+      if (clone.timer <= 0) {
+        clone.isDead = true
+        this.state.clone = null
+      } else if (active && !active.isDead) {
+        // 分身跟随活跃英雄
+        const cd = this.dist(clone, active)
+        if (cd > 50) {
+          const ca = Math.atan2(active.y - clone.y, active.x - clone.x)
+          clone.x += Math.cos(ca) * clone.speed * dt * 0.06
+          clone.y += Math.sin(ca) * clone.speed * dt * 0.06
+        }
+        // 分身自动攻击最近敌人
+        if (clone.attackCooldown <= 0) {
+          const nearest = this.findNearestEnemy(clone)
+          if (nearest && this.dist(clone, nearest) < 150) {
+            this.damageEnemy(nearest, clone.attack, false, active)
+            clone.attackCooldown = 600
+            const angle = Math.atan2(nearest.y - clone.y, nearest.x - clone.x)
+            this.state.projectiles.push({
+              id: uid(), x: clone.x, y: clone.y,
+              vx: Math.cos(angle) * 7, vy: Math.sin(angle) * 7,
+              damage: clone.attack, radius: 4, isEnemy: false,
+              pierce: 0, bounceCount: 0, maxBounces: 0, color: '#9b59b6',
+            })
+          }
+        }
+      }
+    }
+
+    // === 影子分身召唤检查 ===
+    if (!this.state.clone) {
+      for (const hero of heroes) {
+        if (!hero.isDead && this.getAbilityStacks(hero, 'shadow_clone') > 0 && hero.hp < hero.maxHp * 0.3) {
+          this.state.clone = {
+            id: uid(), x: hero.x + 30, y: hero.y,
+            hp: hero.maxHp * 0.5, maxHp: hero.maxHp * 0.5,
+            attack: hero.def.attack * 1.2, speed: hero.def.speed,
+            color: '#9b59b6', timer: 10000, attackCooldown: 0, isDead: false,
+          }
+          this.spawnParticles(hero.x + 30, hero.y, '#9b59b6', 15)
+          // 协同：时停分身
+          if (this.hasActiveSynergy('clone_stop')) {
+            for (const enemy of this.state.floor.enemies) {
+              if (!enemy.isDead) enemy.slowTimer = 3000
+            }
+          }
+          break
         }
       }
     }
@@ -388,7 +461,10 @@ export class GameEngine {
 
         if (target) {
           this.heroAttack(active, target)
-          active.attackCooldown = active.def.attackSpeed / (1 + this.getAttackSpeedBonus(active))
+          let cdTime = active.def.attackSpeed / (1 + this.getAttackSpeedBonus(active))
+          // 连鸳：攻速极快
+          if (active.items.some(it => it?.def.id === 'repeating_crossbow')) cdTime *= 0.5
+          active.attackCooldown = cdTime
         }
       }
 
@@ -396,7 +472,10 @@ export class GameEngine {
       const skillTriggered = this.input.justClicked === 'right' || this.input.justPressed.has(' ')
       if (skillTriggered && active.skillCooldown <= 0) {
         this.useHeroSkill(active)
-        active.skillCooldown = 8000
+        let skillCd = 8000
+        // 沙漏：技能冷却减少30%
+        if (active.items.some(it => it?.def.effect.special === 'cd_reduce')) skillCd *= 0.7
+        active.skillCooldown = skillCd
       }
 
       // 拾取掉落物
@@ -454,7 +533,9 @@ export class GameEngine {
   private heroAttack(hero: HeroState, target: EnemyState, damageMult = 1) {
     const atk = this.getHeroAttack(hero) * damageMult
     const isCrit = Math.random() < this.getCritChance(hero) * damageMult // 非活跃英雄降低暴击率
-    const damage = isCrit ? atk * 1.8 : atk
+    const hasGambleDice = hero.items.some(it => it?.def.id === 'gamblers_dice')
+    const critMult = hasGambleDice ? 3.0 : 1.8
+    const damage = isCrit ? atk * critMult : atk
     const isRanged = hero.def.range > 60
 
     // 血刃：攻击消耗生命
@@ -477,7 +558,7 @@ export class GameEngine {
         id: uid(), x: hero.x, y: hero.y,
         vx: Math.cos(angle) * projSpeed, vy: Math.sin(angle) * projSpeed,
         damage, radius: 5, isEnemy: false,
-        pierce: this.getAbilityStacks(hero, 'pierce'),
+        pierce: this.hasActiveSynergy('barrage_return') ? 99 : this.getAbilityStacks(hero, 'pierce'),
         bounceCount: 0,
         maxBounces: this.hasActiveSynergy('bullet_hell') ? 99 : (hero.items.some(it => it?.def.id === 'bounce_dagger') ? 3 : 0),
         color: hero.def.color,
@@ -485,6 +566,8 @@ export class GameEngine {
         splitCount: this.getAbilityStacks(hero, 'split_bullet') > 0 ? 3 : 0,
         burnDamage: this.getAbilityStacks(hero, 'fire_enchant') > 0 ? atk * 0.3 : 0,
         slowAmount: this.getAbilityStacks(hero, 'time_slow') > 0 ? 0.4 : 0,
+        returnShot: hero.items.some(it => it?.def.id === 'boomerang') || this.hasActiveSynergy('barrage_return'),
+        ownerId: this.state.heroes.indexOf(hero),
       }
 
       // 多重射击
@@ -728,6 +811,28 @@ export class GameEngine {
       }
     }
 
+    // 灵魂锁链：伤害分摊给队友
+    if (hero.items.some(it => it?.def.id === 'soul_chain')) {
+      const teammates = this.state.heroes.filter(h => !h.isDead && h !== hero)
+      if (teammates.length > 0) {
+        const sharedDmg = damage * 0.3
+        const perHero = sharedDmg / teammates.length
+        for (const t of teammates) {
+          t.hp -= perHero
+          this.spawnDamageNumber(t.x, t.y, Math.round(perHero), '#78909c', false)
+        }
+        damage *= 0.7
+      }
+    }
+
+    // 诅咒转化：受伤时30%概率转为治疗
+    if (this.getAbilityStacks(hero, 'curse_convert') > 0 && Math.random() < 0.3) {
+      hero.hp = Math.min(hero.maxHp, hero.hp + damage)
+      this.spawnDamageNumber(hero.x, hero.y, '+HP', '#8e44ad', false)
+      this.spawnParticles(hero.x, hero.y, '#8e44ad', 5)
+      return
+    }
+
     hero.hp -= damage
     this.spawnDamageNumber(hero.x, hero.y - 10, Math.round(damage), '#e74c3c', false)
 
@@ -769,7 +874,26 @@ export class GameEngine {
       this.spawnParticles(enemy.x, enemy.y, '#ff5722', 12)
     }
 
-    // 导电护符：小额电系附伤
+        // 标记猎人：连续命中伤害递增
+        const markedStacks = this.getAbilityStacks(source, 'marked_prey')
+        if (markedStacks > 0) {
+          enemy.markHits = (enemy.markHits || 0) + 1
+          if (enemy.markHits > 2) {
+            const markBonus = 1 + (enemy.markHits - 2) * 0.1 * markedStacks
+            damage *= markBonus
+          }
+          // 协同：猎杀风暴 - 标记3次后爆炸
+          if (this.hasActiveSynergy('hunting_storm') && enemy.markHits > 0 && enemy.markHits % 3 === 0) {
+            for (const e of this.state.floor.enemies) {
+              if (!e.isDead && e !== enemy && this.dist(enemy, e) < 60) {
+                this.damageEnemy(e, 40, false, source)
+              }
+            }
+            this.spawnParticles(enemy.x, enemy.y, '#ff5722', 10)
+          }
+        }
+    
+        // 导电护符：小额电系附伤
     if (source.items.some(it => it?.def.id === 'conductive_charm') && !source.items.some(it => it?.def.id === 'thunder_staff')) {
       damage += 5
     }
@@ -919,6 +1043,40 @@ export class GameEngine {
       }
     }
 
+    // 连锁爆炸：敌人死亡时爆炸伤害周围
+    for (const hero of this.state.heroes) {
+      const chainExplosionStacks = this.getAbilityStacks(hero, 'chain_explosion')
+      if (!hero.isDead && chainExplosionStacks > 0) {
+        const explodeDmg = enemy.def.maxHp * 0.3 * chainExplosionStacks
+        for (const e of this.state.floor.enemies) {
+          if (!e.isDead && e !== enemy && this.dist(enemy, e) < 80) {
+            this.damageEnemy(e, explodeDmg, false, hero)
+          }
+        }
+        this.spawnParticles(enemy.x, enemy.y, '#ff5722', 15)
+        this.state.screenShake = Math.max(this.state.screenShake, 150)
+        break
+      }
+    }
+
+    // 击杀刷新：击杀敌人重置技能冷却
+    for (const hero of this.state.heroes) {
+      if (!hero.isDead && this.getAbilityStacks(hero, 'kill_refresh') > 0) {
+        hero.skillCooldown = 0
+        this.spawnDamageNumber(hero.x, hero.y, 'CD刷新', '#2ecc71', false)
+        break
+      }
+    }
+
+    // 协同：死亡收割 - 击杀回血20%
+    if (this.hasActiveSynergy('death_harvest')) {
+      for (const hero of this.state.heroes) {
+        if (!hero.isDead) {
+          hero.hp = Math.min(hero.maxHp, hero.hp + hero.maxHp * 0.2)
+        }
+      }
+    }
+
     this.spawnParticles(enemy.x, enemy.y, enemy.def.color, 8)
   }
 
@@ -934,6 +1092,31 @@ export class GameEngine {
     for (const proj of this.state.projectiles) {
       proj.x += proj.vx * dt * 0.06
       proj.y += proj.vy * dt * 0.06
+
+      // 回旋镖：飞出一定距离后返回
+      if (!proj.isEnemy && proj.returnShot && !proj.returning) {
+        const ownerIdx = proj.ownerId ?? 0
+        const owner = this.state.heroes[ownerIdx]
+        if (owner) {
+          const distFromOwner = this.dist(proj, owner)
+          if (distFromOwner > 180) {
+            proj.returning = true
+          }
+        }
+      }
+      if (!proj.isEnemy && proj.returning && (proj.ownerId ?? 0) >= 0) {
+        const owner = this.state.heroes[proj.ownerId ?? 0]
+        if (owner && !owner.isDead) {
+          const returnAngle = Math.atan2(owner.y - proj.y, owner.x - proj.x)
+          proj.vx = Math.cos(returnAngle) * 7
+          proj.vy = Math.sin(returnAngle) * 7
+          // 回到英雄身边时移除
+          if (this.dist(proj, owner) < 20) {
+            toRemove.push(proj.id)
+            continue
+          }
+        }
+      }
 
       // 墙壁碰撞
       if (proj.x < WALL || proj.x > ROOM_W - WALL || proj.y < WALL || proj.y > ROOM_H - WALL) {
@@ -1060,7 +1243,9 @@ export class GameEngine {
   }
 
   private checkLootPickup(hero: HeroState) {
-    const magnetRange = 40 + this.getAbilityStacks(hero, 'xp_magnet') * 25
+    let magnetRange = 40 + this.getAbilityStacks(hero, 'xp_magnet') * 25
+    // 磁石：超强磁铁
+    if (hero.items.some(it => it?.def.effect.special === 'super_magnet')) magnetRange += 100
     const toRemove: number[] = []
 
     for (const loot of this.state.floor.loot) {
@@ -1069,8 +1254,9 @@ export class GameEngine {
       // 磁铁效果：远处慢慢吸过来
       if (d < magnetRange && d > loot.pickupRadius) {
         const angle = Math.atan2(hero.y - loot.y, hero.x - loot.x)
-        loot.x += Math.cos(angle) * 3
-        loot.y += Math.sin(angle) * 3
+        const pullSpeed = hero.items.some(it => it?.def.effect.special === 'super_magnet') ? 5 : 3
+        loot.x += Math.cos(angle) * pullSpeed
+        loot.y += Math.sin(angle) * pullSpeed
       }
 
       if (d < loot.pickupRadius + hero.def.size) {
@@ -1213,6 +1399,21 @@ export class GameEngine {
           }
         }
         break
+      case 'aura_thorns':
+        // 磁场风暴：反伤磁场范围和伤害翻倍（被动生效，由updateHeroes处理）
+        break
+      case 'clone_slow':
+        // 时停分身：分身召唤时全屏减速（已在分身召唤时触发）
+        break
+      case 'kill_regen':
+        // 死亡收割：击杀回血20%（已在killEnemy中处理）
+        break
+      case 'boomerang_barrage':
+        // 弹幕回力：所有弹道回旋（已在弹道创建时处理）
+        break
+      case 'marked_explosion':
+        // 猎杀风暴：每3次命中爆炸（已在damageEnemy中处理）
+        break
     }
   }
 
@@ -1310,12 +1511,12 @@ export class GameEngine {
     return angle
   }
 
-  private findNearestEnemy(hero: HeroState): EnemyState | null {
+  private findNearestEnemy(pos: { x: number; y: number }): EnemyState | null {
     let nearest: EnemyState | null = null
     let minDist = Infinity
     for (const enemy of this.state.floor.enemies) {
       if (enemy.isDead) continue
-      const d = this.dist(hero, enemy)
+      const d = this.dist(pos, enemy)
       if (d < minDist) { minDist = d; nearest = enemy }
     }
     return nearest

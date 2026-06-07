@@ -139,6 +139,7 @@ export interface EnemyState {
   hitFlash: number      // 受击闪白计时器(ms)
   knockbackVx: number   // 击退X速度
   knockbackVy: number   // 击退Y速度
+  markHits: number      // 标记猎人连续命中次数
 }
 
 // ========== 弹道 ==========
@@ -162,6 +163,9 @@ export interface Projectile {
   chainCount?: number
   burnDamage?: number
   slowAmount?: number
+  returnShot?: boolean   // 回旋镖返回弹道
+  returning?: boolean    // 是否正在返回
+  ownerId?: number       // 发射者英雄索引
 }
 
 // ========== 掉落物 ==========
@@ -211,7 +215,7 @@ export interface SynergyDef {
 }
 
 export interface SynergyEffect {
-  type: 'aoe_burn' | 'infinite_bounce' | 'thorns_lifesteal' | 'chain_lightning' | 'time_stop' | 'split_explosion' | 'damage_mult' | 'shield_burst' | 'poison_cloud' | 'freeze_field'
+  type: 'aoe_burn' | 'infinite_bounce' | 'thorns_lifesteal' | 'chain_lightning' | 'time_stop' | 'split_explosion' | 'damage_mult' | 'shield_burst' | 'poison_cloud' | 'freeze_field' | 'aura_thorns' | 'clone_slow' | 'kill_regen' | 'boomerang_barrage' | 'marked_explosion'
   value: number
   duration?: number
 }
@@ -219,6 +223,21 @@ export interface SynergyEffect {
 export interface ActiveSynergy {
   def: SynergyDef
   triggerCooldown: number
+}
+
+// ========== 影子分身 ==========
+export interface CloneState {
+  id: number
+  x: number
+  y: number
+  hp: number
+  maxHp: number
+  attack: number
+  speed: number
+  color: string
+  timer: number        // 剩余时间(ms)
+  attackCooldown: number
+  isDead: boolean
 }
 
 // ========== 地下城状态 ==========
@@ -240,6 +259,7 @@ export interface DungeonState {
   screenShake: number
   hitstop: number        // 顿帧计时器(ms)
   attackArcs: AttackArc[] // 近战攻击弧光
+  clone: CloneState | null // 影子分身
 }
 
 export interface DamageNumber {

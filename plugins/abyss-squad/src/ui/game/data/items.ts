@@ -19,6 +19,13 @@ export const ITEMS: ItemDef[] = [
   { id: 'crystal_amulet', name: '水晶护符', slot: 'accessory', rarity: 'rare', desc: '水晶掉落翻倍', color: '#e1bee7', tags: ['crystal', 'loot'], effect: { special: 'double_crystal' } },
   { id: 'healing_stone', name: '治愈石', slot: 'accessory', rarity: 'uncommon', desc: '每5秒恢复5%最大生命值', color: '#66bb6a', tags: ['heal', 'regen'], effect: { hpBonus: 15, special: 'periodic_heal' } },
   { id: 'berserker_ring', name: '狂战士戒指', slot: 'accessory', rarity: 'epic', desc: '攻击速度翻倍，防御减半', color: '#d32f2f', tags: ['berserk', 'speed'], effect: { attackBonus: 12, special: 'berserker' } },
+  // === 新增道具 ===
+  { id: 'boomerang', name: '回旋镖', slot: 'weapon', rarity: 'uncommon', desc: '弹道飞出后返回，二次命中', color: '#ff9800', tags: ['projectile', 'return'], effect: { attackBonus: 4, special: 'return_shot' } },
+  { id: 'repeating_crossbow', name: '连鸳', slot: 'weapon', rarity: 'uncommon', desc: '攻速极快但单发伤害降低', color: '#8d6e63', tags: ['projectile', 'rapid'], effect: { attackBonus: -5, special: 'rapid_fire' } },
+  { id: 'magnet_stone', name: '磁石', slot: 'artifact', rarity: 'common', desc: '自动吸引远处道具和经验', color: '#607d8b', tags: ['magnet', 'pickup'], effect: { special: 'super_magnet' } },
+  { id: 'hourglass', name: '沙漏', slot: 'artifact', rarity: 'uncommon', desc: '技能冷却减少30%', color: '#cfd8dc', tags: ['cooldown', 'time'], effect: { special: 'cd_reduce' } },
+  { id: 'gamblers_dice', name: '赌徒骰子', slot: 'accessory', rarity: 'rare', desc: '暴击伤害×3，但暴击率-10%', color: '#ffeb3b', tags: ['crit', 'gamble'], effect: { critChance: -0.1, special: 'gamble_crit' } },
+  { id: 'soul_chain', name: '灵魂锁链', slot: 'accessory', rarity: 'uncommon', desc: '队友受伤时分拃30%', color: '#78909c', tags: ['share', 'team'], effect: { hpBonus: 10, special: 'damage_share' } },
 ]
 
 export const ITEM_RARITY_COLORS: Record<string, string> = {

@@ -28,6 +28,13 @@ export const ABILITIES: AbilityDef[] = [
   { id: 'soul_harvest', name: '灵魂收割', category: 'mutant', desc: '击杀敌人恢复10%最大生命值', color: '#9b59b6', maxStacks: 1, tags: ['kill', 'heal'] },
   { id: 'double_edge', name: '双刃剑', category: 'mutant', desc: '攻击力+50%，但受到伤害+30%', color: '#8e44ad', maxStacks: 1, tags: ['risk', 'reward'] },
   { id: 'phoenix', name: '不死鸟', category: 'mutant', desc: '死亡时以50%生命复活(每局1次)', color: '#e74c3c', maxStacks: 1, tags: ['revive', 'phoenix'] },
+  // === 新增能力 ===
+  { id: 'chain_explosion', name: '连锁爆炸', category: 'attack', desc: '敌人死亡时爆炸，伤害周围敌人', color: '#ff5722', maxStacks: 3, tags: ['explosion', 'death_explode'] },
+  { id: 'marked_prey', name: '标记猎人', category: 'attack', desc: '连续攻击同一目标，伤害递增10%/层', color: '#e74c3c', maxStacks: 3, tags: ['mark', 'stack_damage'] },
+  { id: 'damage_aura', name: '反伤磁场', category: 'defense', desc: '靠近的敌人每秒受到伤害', color: '#3498db', maxStacks: 3, tags: ['aura', 'reflect'] },
+  { id: 'kill_refresh', name: '击杀刷新', category: 'support', desc: '击杀敌人时重置技能冷却', color: '#2ecc71', maxStacks: 2, tags: ['kill', 'cooldown'] },
+  { id: 'shadow_clone', name: '影子分身', category: 'mutant', desc: '低血量时召唤分身战斗10秒', color: '#9b59b6', maxStacks: 1, tags: ['clone', 'summon'] },
+  { id: 'curse_convert', name: '诅咒转化', category: 'mutant', desc: '受伤时30%概率把伤害转为治疗', color: '#8e44ad', maxStacks: 1, tags: ['curse', 'convert'] },
 ]
 
 export const ABILITY_CATEGORY_COLORS: Record<string, string> = {
