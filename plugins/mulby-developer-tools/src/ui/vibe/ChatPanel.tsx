@@ -33,6 +33,8 @@ interface Props {
   onSend: (text: string) => void
   disabled?: boolean
   busy?: boolean
+  /** busy 时指示器显示的文案（如「正在生成插件设定…」）；缺省回退到通用「AI 处理中…」 */
+  busyHint?: string
   aiActive?: boolean
   /** 正在用 LLM 判断这条消息该触发什么动作（意图路由），期间显示「理解中」并禁用发送 */
   routing?: boolean
@@ -68,7 +70,7 @@ interface Props {
 }
 
 export function ChatPanel({
-  onSend, disabled, busy, routing, aiActive, onStop, streamingText, messages,
+  onSend, disabled, busy, busyHint, routing, aiActive, onStop, streamingText, messages,
   brainstorm, onPickIdea, onMoreIdeas, onUseSeed, onDismissBrainstorm, examples,
   contractPending, onConfirmGenerate,
   plan, planPhase, onStartPlan, onReplan,
@@ -213,7 +215,7 @@ export function ChatPanel({
             </div>
           ) : (
             <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 anim-in">
-              <span className="thinking-dots"><span /><span /><span /></span> {iconProgress || 'AI 处理中…'}
+              <span className="thinking-dots"><span /><span /><span /></span> {busyHint || iconProgress || 'AI 处理中…'}
             </div>
           ))}
           <div ref={messagesEndRef} />

@@ -844,7 +844,8 @@ export function VibePanel({
     }
   }
 
-  const doPlan = (text?: string) => (vibeMode === 'edit' ? planEdit(text) : planCreate(text))
+  // 进入契约生成即自动展开顶部「详情」抽屉：让用户看到「正在生成插件设定…」并随后审阅契约
+  const doPlan = (text?: string) => { setDrawerOpen(true); return vibeMode === 'edit' ? planEdit(text) : planCreate(text) }
 
   // ---------------- AI agent ----------------
   const createSystemPrompt = (c: VibeContract, root: string, phase: 'minimal' | 'full' | 'expand') => [
@@ -2306,7 +2307,8 @@ export function VibePanel({
             <ChatPanel
               onSend={handleChatSend}
               disabled={busy && !iterating}
-              busy={iterating || generating || iconBusy}
+              busy={iterating || generating || iconBusy || planning}
+              busyHint={planning ? (vibeMode === 'edit' ? '正在分析改造点…' : '正在生成插件设定（契约）…') : ''}
               routing={routing}
               aiActive={aiActive}
               onStop={stopAgent}
@@ -2349,7 +2351,10 @@ export function VibePanel({
               <button className="btn-ghost h-7 w-7 p-0 justify-center" onClick={() => setDrawerOpen(false)} title="关闭"><X size={15} /></button>
             </div>
             <div className="flex-1 overflow-auto px-4 py-4 space-y-6">
-              {!contract && (
+              {!contract && planning && (
+                <div className="flex items-center gap-2 text-[12px] text-slate-500 dark:text-slate-400"><Loader2 size={14} className="animate-spin text-emerald-500" /> 正在生成插件设定（契约）…</div>
+              )}
+              {!contract && !planning && (
                 <div className="text-[12px] text-slate-400 dark:text-slate-500 leading-relaxed">还没有插件项目。在对话里描述需求、生成插件后，这里会显示契约设定、验收清单、版本历史等详情。</div>
               )}
               {contract && (
