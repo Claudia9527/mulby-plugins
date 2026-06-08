@@ -909,30 +909,10 @@ export function VibePanel({
   const apiSurfaceRef = useRef<string>('')
   useEffect(() => { apiSurfaceRef.current = collectMulbyApiSurface() }, [])
 
-  // 接入宿主维护的 develop-mulby-plugin 技能：把「插件开发知识」交还给单一真相源（技能），
-  // 而工具仍由本 harness 的 VIBE_TOOLS 提供（enableInternalTools:false + mcp:off，技能不会引入额外工具）。
-  // 探测不到（未安装/旧宿主）则优雅回退到 skills:off，行为不变。挂载时探测一次。
-  const devSkillIdRef = useRef<string>('')
-  useEffect(() => {
-    let mounted = true
-    void (async () => {
-      try {
-        const skills = ai()?.skills
-        const list: any[] = (await (skills?.listEnabled?.() ?? skills?.list?.())) || []
-        const hit = (Array.isArray(list) ? list : []).find((s) => {
-          const id = String(s?.id || '').toLowerCase()
-          const name = String(s?.name || '').toLowerCase()
-          return id.includes('develop-mulby-plugin') || name.includes('develop-mulby-plugin') || name.includes('mulby plugin')
-        })
-        if (mounted && hit?.id) devSkillIdRef.current = String(hit.id)
-      } catch { /* 优雅降级 */ }
-    })()
-    return () => { mounted = false }
-  }, [])
-
-  /** 生成阶段的技能选择：探测到宿主技能则手动挂载，否则关闭 */
-  const skillSelection = (): { mode: 'off' } | { mode: 'manual'; skillIds: string[] } =>
-    devSkillIdRef.current ? { mode: 'manual', skillIds: [devSkillIdRef.current] } : { mode: 'off' }
+  // 注：宿主 ai.skills.* 为 system-only（仅主应用窗口可调用，见宿主 ensureAiSystemWindowCaller）。
+  // 插件窗口调用会被拒绝并在宿主控制台报错，因此这里不再探测/挂载宿主技能（之前的探测对插件窗口本就恒失败、
+  // 仅产生噪声）。本 harness 的工具由 VIBE_TOOLS 提供，技能保持关闭即可，行为不变。
+  const skillSelection = (): { mode: 'off' } => ({ mode: 'off' })
 
   // 把「当前宿主真实可用的 Mulby API 清单」追加到 system prompt，杜绝臆造不存在的 API
   const withApiSurface = (sys: string): string => {
