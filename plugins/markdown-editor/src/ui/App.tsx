@@ -7,29 +7,13 @@ import {
 } from './editor/LiveMarkdownEditor'
 import { type CommandPayload } from './editor/markdownCommands'
 import {
-  Bold,
   ChevronDown,
   ChevronUp,
-  CheckSquare,
-  ClipboardPaste,
-  Code2,
-  Copy,
   FileDown,
   FileInput,
-  FilePlus2,
   FileUp,
-  Heading1,
-  Heading2,
-  Image as ImageIcon,
-  ImagePlus,
-  Images,
-  Italic,
-  Link2,
-  List,
-  Quote,
   Redo2,
   Save,
-  SeparatorHorizontal,
   Sparkles,
   Undo2
 } from 'lucide-react'
@@ -367,7 +351,6 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
   const [hydrated, setHydrated] = useState(false)
   const [, setSourceLabel] = useState('新草稿')
-  const [saving, setSaving] = useState(false)
   // Tab id pending an unsaved-changes confirmation before closing (null = none).
   const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null)
   const [chromeCollapsed, setChromeCollapsed] = useState(false)
@@ -1210,7 +1193,6 @@ export default function App() {
   }, [activeTabIdRef, storage, tabsRef])
 
   const persistDraft = useCallback(async (showToast: boolean) => {
-    setSaving(true)
     try {
       const current = editorRef.current?.getValue() ?? contentRef.current
       // Mark the active tab saved (clears the dirty dot) and flush the session.
@@ -1232,7 +1214,6 @@ export default function App() {
       console.error('[markdown-editor] persistDraft', error)
       notification.show('保存草稿失败', 'error')
     } finally {
-      setSaving(false)
       focusEditor()
     }
   }, [activeTabIdRef, draftStorage, focusEditor, notification, saveSession, setTabs])
@@ -2191,18 +2172,6 @@ export default function App() {
     }
   }, [clipboard, embedImage, extractMarkdownImages, insertMarkdownText, notification])
 
-  const handleCopyMarkdown = useCallback(async () => {
-    try {
-      const current = editorRef.current?.getValue() ?? contentRef.current
-      await clipboard.writeText(current)
-      notification.show('Markdown 已复制到剪贴板', 'success')
-      focusEditor()
-    } catch (error) {
-      console.error('[markdown-editor] handleCopyMarkdown', error)
-      notification.show('复制失败', 'error')
-    }
-  }, [clipboard, focusEditor, notification])
-
   // Close-tab confirmation (unsaved changes): keep / discard / save-then-close.
   const handleCancelCloseTab = useCallback(() => {
     setCloseConfirmId(null)
@@ -2452,6 +2421,12 @@ export default function App() {
         case 'ai':
           summonBubble()
           break
+        case 'ai-image':
+          openImageGen('')
+          break
+        case 'organize-images':
+          void handleOrganizeImages()
+          break
         case 'find':
           openFind('find')
           break
@@ -2534,7 +2509,7 @@ export default function App() {
           break
       }
     },
-    [applyTableEdit, clipboard, execCommand, handleInsertImage, handleInsertLink, handlePasteClipboard, openFind, summonBubble]
+    [applyTableEdit, clipboard, execCommand, handleInsertImage, handleInsertLink, handleOrganizeImages, handlePasteClipboard, openFind, openImageGen, summonBubble]
   )
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
@@ -2648,110 +2623,17 @@ export default function App() {
     { format: 'docx', label: 'Word (.docx)', description: '导出可在 Word / WPS 中编辑的文档' }
   ]
 
-  const toolbarActions: Array<{
-    label: string
-    title: string
-    icon: any
-    onClick: () => void
-  }> = [
-    {
-      label: 'H1',
-      title: '一级标题',
-      icon: Heading1,
-      onClick: () => execCommand('heading', { level: 1 })
-    },
-    {
-      label: 'H2',
-      title: '二级标题',
-      icon: Heading2,
-      onClick: () => execCommand('heading', { level: 2 })
-    },
-    {
-      label: '粗体',
-      title: '加粗',
-      icon: Bold,
-      onClick: () => execCommand('bold')
-    },
-    {
-      label: '斜体',
-      title: '斜体',
-      icon: Italic,
-      onClick: () => execCommand('italic')
-    },
-    {
-      label: '链接',
-      title: '插入链接',
-      icon: Link2,
-      onClick: handleInsertLink
-    },
-    {
-      label: '图片',
-      title: '插入图片',
-      icon: ImageIcon,
-      onClick: () => void handleInsertImage()
-    },
-    {
-      label: '引用',
-      title: '引用块',
-      icon: Quote,
-      onClick: () => execCommand('blockQuote')
-    },
-    {
-      label: '代码',
-      title: '行内代码',
-      icon: Code2,
-      onClick: () => execCommand('code')
-    },
-    {
-      label: '列表',
-      title: '无序列表',
-      icon: List,
-      onClick: () => execCommand('bulletList')
-    },
-    {
-      label: '任务',
-      title: '任务列表',
-      icon: CheckSquare,
-      onClick: () => execCommand('taskList')
-    },
-    {
-      label: '分割线',
-      title: '插入分割线',
-      icon: SeparatorHorizontal,
-      onClick: () => execCommand('hr')
-    }
-  ]
-
+  // Slim toolbar: only file-level ops + undo/redo + AI, which have no good home
+  // elsewhere. Markdown formatting / insert / clipboard live in the right-click
+  // menu (and direct typing), the tab bar has its own ＋, and 整理图片 / AI 生图
+  // moved into the right-click menu.
   const toolbarGroups: ToolbarButtonItem[][] = [
     [
-      {
-        key: 'undo',
-        title: '撤销 (Ctrl/Cmd+Z)',
-        icon: Undo2,
-        onClick: handleUndo
-      },
-      {
-        key: 'redo',
-        title: '重做 (Ctrl/Cmd+Shift+Z)',
-        icon: Redo2,
-        onClick: handleRedo
-      }
+      { key: 'undo', title: '撤销 (Ctrl/Cmd+Z)', icon: Undo2, onClick: handleUndo },
+      { key: 'redo', title: '重做 (Ctrl/Cmd+Shift+Z)', icon: Redo2, onClick: handleRedo }
     ],
     [
-      {
-        key: 'new',
-        title: '新建标签 (Ctrl/Cmd+T)',
-        icon: FilePlus2,
-        onClick: newUntitledTab
-      },
-      {
-        key: 'open',
-        title: '打开文件',
-        icon: FileInput,
-        onClick: handleOpenFile
-      }
-    ],
-    [
+      { key: 'open', title: '打开文件', icon: FileInput, onClick: handleOpenFile },
       {
         key: 'save-file',
         title: activeFilePath ? `保存到 ${basename(activeFilePath)} (Ctrl/Cmd+S)` : '保存到文件 (Ctrl/Cmd+S)',
@@ -2765,31 +2647,10 @@ export default function App() {
         onClick: () => void handleSaveFileAs()
       },
       {
-        key: 'save-draft',
-        title: saving ? '保存中' : '保存草稿',
-        icon: Save,
-        onClick: () => void persistDraft(true),
-        disabled: saving
-      },
-      {
         key: 'export',
-        title: '导出文件',
+        title: '导出文件（Markdown / HTML / PDF / Word）',
         icon: FileDown,
         onClick: handleOpenExportMenu
-      }
-    ],
-    [
-      {
-        key: 'copy',
-        title: '复制',
-        icon: Copy,
-        onClick: () => void handleCopyMarkdown()
-      },
-      {
-        key: 'paste',
-        title: '粘贴',
-        icon: ClipboardPaste,
-        onClick: handlePasteClipboard
       }
     ],
     [
@@ -2798,52 +2659,8 @@ export default function App() {
         title: 'AI 助手（润色/续写/翻译/总结，Ctrl/Cmd+K）',
         icon: Sparkles,
         onClick: openAiPanel
-      },
-      {
-        key: 'ai-image',
-        title: 'AI 生图（根据描述或选中文字生成图片）',
-        icon: ImagePlus,
-        onClick: () => openImageGen('')
       }
-    ],
-    toolbarActions.slice(0, 2).map((item) => ({
-      key: item.label,
-      title: item.title,
-      icon: item.icon,
-      onClick: item.onClick
-    })),
-    toolbarActions.slice(2, 4).map((item) => ({
-      key: item.label,
-      title: item.title,
-      icon: item.icon,
-      onClick: item.onClick
-    })),
-    [
-      ...toolbarActions.slice(4, 6).map((item) => ({
-        key: item.label,
-        title: item.title,
-        icon: item.icon,
-        onClick: item.onClick
-      })),
-      {
-        key: 'organize-images',
-        title: '整理图片（内联 base64 转文件引用）',
-        icon: Images,
-        onClick: () => void handleOrganizeImages()
-      }
-    ],
-    toolbarActions.slice(6, 8).map((item) => ({
-      key: item.label,
-      title: item.title,
-      icon: item.icon,
-      onClick: item.onClick
-    })),
-    toolbarActions.slice(8).map((item) => ({
-      key: item.label,
-      title: item.title,
-      icon: item.icon,
-      onClick: item.onClick
-    }))
+    ]
   ]
 
   const lineCount = content.length === 0 ? 0 : content.split('\n').length

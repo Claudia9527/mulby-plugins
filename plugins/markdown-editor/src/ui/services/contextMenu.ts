@@ -145,7 +145,9 @@ export function buildContextMenu(ctx: MenuContext): MenuItem[] {
           { id: 'ins-math', label: '公式块' }
         ]
       },
-      { id: 'ai', label: 'AI 工具条', shortcut: '⌘J' }
+      { id: 'ai', label: 'AI 工具条', shortcut: '⌘J' },
+      { id: 'ai-image', label: 'AI 生图' },
+      { id: 'organize-images', label: '整理图片（内联 base64 转文件）' }
     )
   }
   items.push(sep('sep-edit'))
