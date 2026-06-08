@@ -527,6 +527,16 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Width of one source-indent column, used to indent list-nested block widgets
+     (tables / math / mermaid / dl / details / standalone images) so they line up
+     under their list item. ~0.5ch ≈ a rendered space in the proportional editor
+     font; tune here if nested blocks look slightly mis-aligned with list text. */
+  --cm-md-indent-unit: 0.5ch;
+  /* Blockquote "rail" metrics. rem (not em) so a code block's smaller font never
+     shifts the bars out of line with the plain quote text above/below it. */
+  --cm-quote-step: 1.4rem; /* x distance between adjacent quote bars / per level */
+  --cm-quote-gap: 0.8rem; /* gap between the innermost bar and the content */
+  --cm-quote-bar: 3px; /* bar thickness */
 }
 
 .cm-editor-host .cm-editor {
@@ -553,6 +563,58 @@ button {
 .cm-editor-host .cm-line {
   font-size: 17px;
   line-height: 1.8;
+  /* Anchor for the absolutely-positioned list fold chevron (sits in the left
+     padding without shifting the text). */
+  position: relative;
+}
+
+/* List fold chevron — appears in the line's left padding on hover, stays on when
+   the item is folded. Click toggles the fold (handled in livePreview mousedown). */
+.cm-md-fold-toggle {
+  position: absolute;
+  left: -15px;
+  top: 0;
+  width: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.8em;
+  font-size: 0.85em;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  border-radius: 4px;
+  transition: opacity 0.12s ease, transform 0.12s ease, background 0.12s ease;
+  transform: rotate(90deg); /* base chevron › points down when open */
+  transform-origin: center;
+  user-select: none;
+}
+.cm-md-fold-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.cm-line:hover .cm-md-fold-toggle,
+.cm-md-fold-toggle-folded {
+  opacity: 0.65;
+}
+.cm-line:hover .cm-md-fold-toggle:hover,
+.cm-md-fold-toggle-folded {
+  opacity: 1;
+}
+/* Folded state: chevron points right (collapsed). */
+.cm-md-fold-toggle-folded {
+  transform: rotate(0deg);
+}
+/* The "…" placeholder CodeMirror shows for a collapsed range. */
+.cm-editor-host .cm-foldPlaceholder {
+  background: var(--accent-soft);
+  border: none;
+  color: var(--text-muted);
+  margin: 0 0.3em;
+  padding: 0 0.4em;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
 /* Rendered block lines (live preview) */
@@ -590,11 +652,106 @@ button {
   color: var(--text-secondary);
 }
 
+/* Blockquotes. Each nesting level draws one accent bar in a left "rail"; all
+   quote content (text, code, tables, lists…) indents to the right of the rail,
+   so `>`, `> >`, `> > >` read as clearly distinct levels.
+
+   The rail is driven by a single per-line depth variable (--cm-q-depth) and
+   measured in rem (NOT em). That's the fix for "the bar jumps at a code block":
+   a code block's smaller font (0.88em) used to scale the em-based bar offsets,
+   shifting them out of line with the plain quote text; rem is font-size
+   independent so every line's bar lands at the same x. */
 .cm-md-quote {
-  border-left: 3px solid var(--accent);
-  padding-left: 0.9em;
+  --cm-q-depth: 1;
+  /* x where content begins = just past the innermost bar. */
+  --cm-q-rail: calc((var(--cm-q-depth) - 1) * var(--cm-quote-step) + var(--cm-quote-gap));
   color: var(--text-secondary);
-  background: var(--accent-soft);
+  background-color: var(--accent-soft);
+}
+.cm-md-quote-1 {
+  --cm-q-depth: 1;
+}
+.cm-md-quote-2 {
+  --cm-q-depth: 2;
+}
+.cm-md-quote-3 {
+  --cm-q-depth: 3;
+}
+.cm-md-quote-4 {
+  --cm-q-depth: 4;
+}
+/* One accent bar per level, repeated every step across a depth-wide rail. Drawn
+   on an absolute ::before (not the line background) so any nested block's own
+   background can never cut the bars off — they stay continuous down the quote. */
+.cm-md-quote::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--cm-q-depth) * var(--cm-quote-step));
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--accent) 0 var(--cm-quote-bar),
+    transparent var(--cm-quote-bar) var(--cm-quote-step)
+  );
+  pointer-events: none;
+}
+/* Content indents past the rail. One rule covers every depth via the var.
+   `!important` beats CodeMirror's injected `.cm-line { padding: 0 }` theme rule
+   whose effective priority can otherwise shadow it depending on injection order. */
+.cm-editor-host .cm-line.cm-md-quote {
+  padding-left: var(--cm-q-rail) !important;
+}
+/* A code block inside a quote: the slab sits to the RIGHT of the rail (its
+   background starts at the rail edge via a gradient) so the bars show cleanly in
+   the gutter to its left and stay aligned with the plain quote lines. No left
+   border — the gradient edge is the slab's left side at every depth. */
+.cm-editor-host .cm-line.cm-md-quote.cm-md-codeblock {
+  padding-left: calc(var(--cm-q-rail) + 16px) !important;
+  border-left: none;
+  background: linear-gradient(
+    to right,
+    transparent 0 var(--cm-q-rail),
+    var(--cm-code-bg) var(--cm-q-rail)
+  );
+}
+/* Block widgets nested inside a quote (table / math / mermaid / dl / details)
+   replace whole lines, so they can't inherit the line's quote class. They opt
+   into the same rail by adding `.cm-md-quoted` + a depth class: the bars are
+   drawn by this ::before (reusing the same rem-based gradient) and the widget
+   sets its own left padding to clear the rail. This keeps the quote bar
+   continuous across the block instead of vanishing where the widget begins. */
+.cm-md-quoted {
+  position: relative;
+  --cm-q-depth: 1;
+  --cm-q-rail: calc((var(--cm-q-depth) - 1) * var(--cm-quote-step) + var(--cm-quote-gap));
+}
+.cm-md-quoted-1 {
+  --cm-q-depth: 1;
+}
+.cm-md-quoted-2 {
+  --cm-q-depth: 2;
+}
+.cm-md-quoted-3 {
+  --cm-q-depth: 3;
+}
+.cm-md-quoted-4 {
+  --cm-q-depth: 4;
+}
+.cm-md-quoted::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--cm-q-depth) * var(--cm-quote-step));
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--accent) 0 var(--cm-quote-bar),
+    transparent var(--cm-quote-bar) var(--cm-quote-step)
+  );
+  pointer-events: none;
 }
 
 /* Fenced code block lines render with a shared mono background slab framed by a
@@ -603,11 +760,13 @@ button {
   font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
   font-size: 0.88em;
   line-height: 1.6;
-  background: var(--cm-code-bg);
+  /* `background-color` (not the `background` shorthand) so it never resets other
+     background layers — important when a code block sits inside a quote. */
+  background-color: var(--cm-code-bg);
   border-left: 1px solid var(--cm-code-border);
   border-right: 1px solid var(--cm-code-border);
-  padding-left: 16px;
-  padding-right: 16px;
+  /* Horizontal padding is applied via a higher-specificity rule below — it must
+     beat CodeMirror's themed `.cm-line { padding: 0 }` (specificity 0,2,0). */
 }
 /* IMPORTANT: spacing here uses padding, never margin. A vertical `margin` on a
    `.cm-line` is excluded from CodeMirror's per-line height measurement, so its
@@ -618,13 +777,25 @@ button {
   border-top: 1px solid var(--cm-code-border);
   border-top-left-radius: 10px;
   border-top-right-radius: 10px;
-  padding-top: 12px;
 }
 .cm-md-codeblock-close {
   border-bottom: 1px solid var(--cm-code-border);
   border-bottom-left-radius: 10px;
   border-bottom-right-radius: 10px;
-  padding-bottom: 12px;
+}
+/* Re-apply code-block padding. CodeMirror injects a runtime `.cm-line {
+   padding: 0 }` theme rule; depending on injection order it can shadow even a
+   higher-specificity static rule, so `!important` is used here to guarantee the
+   inner padding of the code slab always applies (the "代码贴边" fix). */
+.cm-editor-host .cm-line.cm-md-codeblock {
+  padding-left: 18px !important;
+  padding-right: 18px !important;
+}
+.cm-editor-host .cm-line.cm-md-codeblock-open {
+  padding-top: 12px !important;
+}
+.cm-editor-host .cm-line.cm-md-codeblock-close {
+  padding-bottom: 12px !important;
 }
 /* Collapsed fence line (``` + language hidden) — a thin rounded cap; the line
    expands back to normal when the caret enters the block and reveals the fence. */
@@ -632,11 +803,19 @@ button {
   font-size: 0;
   line-height: 6px;
 }
-/* Fenced code nested inside a blockquote: let the code slab win over the quote
-   tint, but keep the quote's left bar/indent for context. */
-.cm-md-quote.cm-md-codeblock {
-  background: var(--cm-code-bg);
+/* Open fence carrying a language: shown as a small right-aligned label in the
+   rounded top cap (the "code block header"), instead of collapsing. */
+.cm-md-codeblock-lang {
+  text-align: right;
+  font-size: 0.72em;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  text-transform: lowercase;
 }
+/* (Fenced code nested inside a blockquote is handled above by the
+   `.cm-line.cm-md-quote.cm-md-codeblock` rule, which insets the slab past the
+   rail with a gradient so the bars stay visible and aligned.) */
 
 /* Rendered inline spans (live preview) */
 .cm-md-strong {
@@ -749,6 +928,33 @@ button {
   color: var(--text-secondary);
 }
 
+/* <details>/<summary> collapsible (block widget). Padding (not margin) for outer
+   spacing keeps CodeMirror's height map aligned. */
+.cm-md-details {
+  padding: 10px 14px;
+  border: 1px solid var(--cm-code-border);
+  border-radius: 10px;
+  background: var(--panel-muted);
+}
+.cm-md-details-summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary);
+  list-style-position: inside;
+}
+.cm-md-details[open] .cm-md-details-summary {
+  margin-bottom: 6px;
+}
+.cm-md-details-body {
+  color: var(--text-secondary);
+}
+.cm-md-details-body > :first-child {
+  margin-top: 0;
+}
+.cm-md-details-body > :last-child {
+  margin-bottom: 0;
+}
+
 /* Rendered widgets (live preview) */
 .cm-md-image-wrap {
   display: inline-block;
@@ -783,12 +989,26 @@ button {
   font-weight: 700;
 }
 
-/* Rendered GFM table (block widget) */
+/* Rendered GFM table (interactive block widget). The frame hosts the scrollable
+   table plus hover-revealed "add row/column" rails; per-row/column tools live in
+   the scroll padding so they never overlap the cells. */
 .cm-md-table {
   padding: 10px 0;
-  overflow-x: auto;
 }
-.cm-md-table table {
+.cm-md-table-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  /* Right/bottom room for the add-column / add-row rails. */
+  padding: 0 20px 18px 0;
+}
+.cm-md-table-scroll {
+  overflow-x: auto;
+  /* Top room for column tools, left room for row tools. */
+  padding: 22px 0 0 26px;
+}
+.cm-md-table table,
+.cm-md-table-el {
   border-collapse: separate;
   border-spacing: 0;
   width: auto;
@@ -804,6 +1024,7 @@ button {
   border-right: 1px solid var(--cm-code-border);
   padding: 7px 14px;
   text-align: left;
+  position: relative;
 }
 .cm-md-table th:last-child,
 .cm-md-table td:last-child {
@@ -819,6 +1040,115 @@ button {
 }
 .cm-md-table tbody tr:nth-child(even) td {
   background: var(--panel-muted);
+}
+/* Row being dragged-over: highlight the drop target. */
+.cm-md-table-el tr.cm-md-drop-target td {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.cm-md-table-el th.cm-md-drop-target {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ---- table control buttons (add / delete / drag) ---- */
+.cm-md-table-ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cm-code-border);
+  background: var(--panel);
+  color: var(--text-secondary);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+.cm-md-table-ctl:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.cm-md-col-grip,
+.cm-md-row-grip {
+  cursor: grab;
+}
+.cm-md-col-grip:active,
+.cm-md-row-grip:active {
+  cursor: grabbing;
+}
+
+/* Per-column tools, centered above each header cell (in the scroll's top pad). */
+.cm-md-col-tools {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding-bottom: 3px;
+  opacity: 0;
+  pointer-events: none;
+}
+.cm-md-col-tools .cm-md-table-ctl {
+  width: 18px;
+  height: 16px;
+}
+.cm-md-table th:hover .cm-md-col-tools,
+.cm-md-col-tools:hover {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Per-row tools, centered to the left of each row (in the scroll's left pad). */
+.cm-md-row-tools {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+.cm-md-row-tools .cm-md-table-ctl {
+  width: 18px;
+  height: 16px;
+}
+.cm-md-table-el tr:hover .cm-md-row-tools,
+.cm-md-row-tools:hover {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Add-column rail (right) and add-row bar (bottom), shown on table hover. */
+.cm-md-add-col {
+  position: absolute;
+  top: 22px;
+  right: 0;
+  bottom: 18px;
+  width: 16px;
+  opacity: 0;
+}
+.cm-md-add-row {
+  position: absolute;
+  left: 26px;
+  right: 20px;
+  bottom: 0;
+  height: 15px;
+  opacity: 0;
+}
+.cm-md-table-frame:hover .cm-md-add-col,
+.cm-md-table-frame:hover .cm-md-add-row {
+  opacity: 0.85;
+}
+.cm-md-add-col:hover,
+.cm-md-add-row:hover {
+  opacity: 1;
+}
+.cm-md-cellbody {
+  display: inline;
 }
 
 /* Rendered Mermaid diagram (block widget). */

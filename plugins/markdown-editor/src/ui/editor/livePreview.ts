@@ -16,18 +16,21 @@ import {
   type ViewUpdate,
   WidgetType
 } from '@codemirror/view'
-import { syntaxTree } from '@codemirror/language'
+import { foldedRanges, foldEffect, syntaxTree, unfoldEffect } from '@codemirror/language'
 import type { SyntaxNode } from '@lezer/common'
 import katex from 'katex'
 import {
   computeLivePreview,
   headingSlug,
   parseDefinitionList,
+  parseDetails,
   slugify,
   type HideRange,
   type LivePreviewDecorations,
   type WidgetRange
 } from './livePreviewModel'
+import { listFoldRange, type FoldRange } from './listFold'
+import { buildInteractiveTable, isTableControlEvent } from './tableEditor'
 import { renderMarkdownDocument } from '../services/markdownHtml'
 
 /** Resolves a Markdown image href into a URL the <img> can actually load. */
@@ -54,6 +57,51 @@ function toCssSize(value: string): string {
   return /^\d+$/.test(value) ? `${value}px` : value
 }
 
+/**
+ * Indents a block widget's root by `cols` structural columns so a list-nested
+ * block (table / math / mermaid / dl / details / standalone image) sits under
+ * its list item instead of flush at the far-left margin. The per-column width is
+ * a tunable CSS variable (`--cm-md-indent-unit`) so it can be aligned to the
+ * editor's rendered space width. A no-op for top-level blocks (cols === 0).
+ */
+function applyBlockIndent(el: HTMLElement, cols: number): void {
+  if (cols > 0) {
+    el.style.paddingLeft = `calc(${cols} * var(--cm-md-indent-unit, 0.5ch))`
+  }
+}
+
+/** Parses a widget's stored indent column count (defaults to 0). */
+function indentCols(data: Record<string, string>): number {
+  const n = Number.parseInt(data.indent ?? '', 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** Parses a widget's stored blockquote depth (defaults to 0). */
+function quoteDepthOf(data: Record<string, string>): number {
+  const n = Number.parseInt(data.quoteDepth ?? '', 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/**
+ * Wraps a block widget so it carries the blockquote "rail": `depth` accent bars
+ * down its left side (via the shared `.cm-md-quoted` ::before) plus left padding
+ * so the widget's own box sits to the right of the bars. This keeps the quote
+ * bars continuous across a table / math / mermaid / dl / details nested in a
+ * quote, instead of dropping them where the line-replacing widget begins.
+ * A no-op (returns the content as-is) when the block isn't in a quote.
+ */
+function wrapQuoted(content: HTMLElement, depth: number): HTMLElement {
+  if (depth <= 0) {
+    return content
+  }
+  const d = Math.min(depth, 4)
+  const wrap = document.createElement('div')
+  wrap.className = `cm-md-quoted cm-md-quoted-${d}`
+  wrap.style.paddingLeft = `calc((${d} - 1) * var(--cm-quote-step) + var(--cm-quote-gap))`
+  wrap.appendChild(content)
+  return wrap
+}
+
 class ImageWidget extends WidgetType {
   constructor(
     private readonly url: string,
@@ -63,7 +111,9 @@ class ImageWidget extends WidgetType {
     private readonly height = '',
     // Standalone-image lines render as block widgets, which must be block-level
     // elements (a <div>); inline images embedded in text stay as a <span>.
-    private readonly block = false
+    private readonly block = false,
+    // Structural indent (columns) for a list-nested standalone image.
+    private readonly indent = 0
   ) {
     super()
   }
@@ -73,12 +123,16 @@ class ImageWidget extends WidgetType {
       other.alt === this.alt &&
       other.width === this.width &&
       other.height === this.height &&
-      other.block === this.block
+      other.block === this.block &&
+      other.indent === this.indent
     )
   }
   toDOM() {
     const wrap = document.createElement(this.block ? 'div' : 'span')
     wrap.className = this.block ? 'cm-md-image-wrap cm-md-image-block' : 'cm-md-image-wrap'
+    if (this.block) {
+      applyBlockIndent(wrap, this.indent)
+    }
     const img = document.createElement('img')
     img.className = 'cm-md-image'
     img.src = this.resolve(this.url)
@@ -105,46 +159,116 @@ class ImageWidget extends WidgetType {
 }
 
 class DefinitionListWidget extends WidgetType {
-  constructor(private readonly source: string) {
+  constructor(
+    private readonly source: string,
+    private readonly indent = 0,
+    private readonly quoteDepth = 0
+  ) {
     super()
   }
   eq(other: DefinitionListWidget) {
-    return other.source === this.source
+    return (
+      other.source === this.source &&
+      other.indent === this.indent &&
+      other.quoteDepth === this.quoteDepth
+    )
   }
   toDOM() {
     // Built from text content only (never innerHTML) so embedded markup can't
     // inject anything.
     const dl = document.createElement('dl')
     dl.className = 'cm-md-dl'
+    applyBlockIndent(dl, this.indent)
     for (const item of parseDefinitionList(this.source)) {
       const el = document.createElement(item.term ? 'dt' : 'dd')
       el.textContent = item.text
       dl.appendChild(el)
     }
-    return dl
+    return wrapQuoted(dl, this.quoteDepth)
   }
   ignoreEvent() {
     return false
   }
 }
 
+class DetailsWidget extends WidgetType {
+  constructor(
+    private readonly source: string,
+    private readonly indent = 0,
+    private readonly quoteDepth = 0
+  ) {
+    super()
+  }
+  eq(other: DetailsWidget) {
+    return (
+      other.source === this.source &&
+      other.indent === this.indent &&
+      other.quoteDepth === this.quoteDepth
+    )
+  }
+  toDOM(view: EditorView) {
+    const { open, summary, body } = parseDetails(this.source)
+    const details = document.createElement('details')
+    details.className = 'cm-md-details'
+    applyBlockIndent(details, this.indent)
+    details.open = open
+    const sm = document.createElement('summary')
+    sm.className = 'cm-md-details-summary'
+    sm.textContent = summary // text only — never inject the summary as HTML
+    details.appendChild(sm)
+    const bodyEl = document.createElement('div')
+    bodyEl.className = 'cm-md-details-body'
+    bodyEl.innerHTML = renderMarkdownDocument(body)
+    details.appendChild(bodyEl)
+    // Expanding/collapsing changes the block height; tell CodeMirror to remeasure
+    // so the lines below stay aligned.
+    details.addEventListener('toggle', () => view.requestMeasure())
+    return wrapQuoted(details, this.quoteDepth)
+  }
+  ignoreEvent(event: Event) {
+    // Let clicks on the <summary> toggle the disclosure natively; clicks in the
+    // body fall through to CodeMirror so the source can be revealed for editing.
+    const target = event.target as HTMLElement | null
+    return !!target?.closest('summary')
+  }
+}
+
 class TableWidget extends WidgetType {
-  constructor(private readonly source: string) {
+  constructor(
+    private readonly source: string,
+    private readonly indent = 0,
+    private readonly quoteDepth = 0
+  ) {
     super()
   }
   eq(other: TableWidget) {
-    return other.source === this.source
+    return (
+      other.source === this.source &&
+      other.indent === this.indent &&
+      other.quoteDepth === this.quoteDepth
+    )
   }
-  toDOM() {
-    const wrap = document.createElement('div')
-    wrap.className = 'cm-md-table'
-    wrap.innerHTML = renderMarkdownDocument(this.source)
-    return wrap
+  toDOM(view: EditorView) {
+    let el: HTMLElement
+    if (this.quoteDepth > 0) {
+      // A table nested in a quote is rendered read-only: its source carries `>`
+      // prefixes (already stripped in the model for parsing), and writing edits
+      // back through the interleaved prefixes is unsafe. Click it to reveal the
+      // source for manual editing.
+      el = document.createElement('div')
+      el.className = 'cm-md-table'
+      el.innerHTML = renderMarkdownDocument(this.source)
+    } else {
+      el = buildInteractiveTable(view, this.source)
+    }
+    applyBlockIndent(el, this.indent)
+    return wrapQuoted(el, this.quoteDepth)
   }
-  ignoreEvent() {
-    // Allow clicks to position the caret in the table source (reveals it for
-    // editing); otherwise a rendered table swallows all clicks.
-    return false
+  ignoreEvent(event: Event) {
+    // Control elements (add / delete / drag grips) are owned by the widget, so
+    // CodeMirror must ignore those events. Clicks elsewhere on the table fall
+    // through so the caret lands in the source and reveals it for editing.
+    return isTableControlEvent(event)
   }
 }
 
@@ -161,18 +285,28 @@ function loadMermaid() {
 
 class MermaidWidget extends WidgetType {
   private readonly dark: boolean
-  constructor(private readonly code: string) {
+  constructor(
+    private readonly code: string,
+    private readonly indent = 0,
+    private readonly quoteDepth = 0
+  ) {
     super()
     // Capture the theme so a theme change (which re-runs the live preview)
     // produces a non-equal widget and re-renders the diagram with the new theme.
     this.dark = document.documentElement.classList.contains('dark')
   }
   eq(other: MermaidWidget) {
-    return other.code === this.code && other.dark === this.dark
+    return (
+      other.code === this.code &&
+      other.dark === this.dark &&
+      other.indent === this.indent &&
+      other.quoteDepth === this.quoteDepth
+    )
   }
   toDOM() {
     const wrap = document.createElement('div')
     wrap.className = 'cm-md-mermaid'
+    applyBlockIndent(wrap, this.indent)
     const { code, dark } = this
     loadMermaid()
       .then((mermaid) => {
@@ -189,7 +323,7 @@ class MermaidWidget extends WidgetType {
         pre.textContent = code
         wrap.replaceChildren(pre)
       })
-    return wrap
+    return wrapQuoted(wrap, this.quoteDepth)
   }
   ignoreEvent() {
     return false
@@ -199,16 +333,26 @@ class MermaidWidget extends WidgetType {
 class MathWidget extends WidgetType {
   constructor(
     private readonly tex: string,
-    private readonly display: boolean
+    private readonly display: boolean,
+    private readonly indent = 0,
+    private readonly quoteDepth = 0
   ) {
     super()
   }
   eq(other: MathWidget) {
-    return other.tex === this.tex && other.display === this.display
+    return (
+      other.tex === this.tex &&
+      other.display === this.display &&
+      other.indent === this.indent &&
+      other.quoteDepth === this.quoteDepth
+    )
   }
   toDOM() {
     const el = document.createElement(this.display ? 'div' : 'span')
     el.className = this.display ? 'cm-md-math cm-md-math-block' : 'cm-md-math cm-md-math-inline'
+    if (this.display) {
+      applyBlockIndent(el, this.indent)
+    }
     try {
       el.innerHTML = katex.renderToString(this.tex, {
         displayMode: this.display,
@@ -220,7 +364,7 @@ class MathWidget extends WidgetType {
       // back to the raw source so the user never loses content.
       el.textContent = this.display ? `$$${this.tex}$$` : `$${this.tex}$`
     }
-    return el
+    return this.display ? wrapQuoted(el, this.quoteDepth) : el
   }
   ignoreEvent() {
     // Let clicks position the caret so the math source reveals for editing.
@@ -283,6 +427,56 @@ class CheckboxWidget extends WidgetType {
 }
 
 /**
+ * A clickable fold chevron shown on foldable list items. It sits in the line's
+ * left padding (absolutely positioned), hidden until the line is hovered, and
+ * stays visible while the item is folded. Clicking it toggles the fold (handled
+ * in the plugin's mousedown via the `.cm-md-fold-toggle` class).
+ */
+class FoldToggleWidget extends WidgetType {
+  constructor(private readonly folded: boolean) {
+    super()
+  }
+  eq(other: FoldToggleWidget) {
+    return other.folded === this.folded
+  }
+  toDOM() {
+    const el = document.createElement('span')
+    el.className = 'cm-md-fold-toggle' + (this.folded ? ' cm-md-fold-toggle-folded' : '')
+    el.setAttribute('aria-hidden', 'true')
+    el.title = this.folded ? '展开' : '折叠'
+    // Right-pointing when folded, down-pointing when open (CSS rotates a base
+    // chevron glyph so the two states animate).
+    el.textContent = '\u203A'
+    return el
+  }
+  ignoreEvent() {
+    return false
+  }
+}
+
+/** True when a fold range starting at `range.from` is currently collapsed. */
+function isRangeFolded(state: EditorState, range: FoldRange): boolean {
+  let folded = false
+  foldedRanges(state).between(range.from, range.from, (from) => {
+    if (from === range.from) {
+      folded = true
+      return false
+    }
+    return undefined
+  })
+  return folded
+}
+
+/** All currently folded spans, used to skip block widgets hidden by a fold. */
+function foldedSpans(state: EditorState): HideRange[] {
+  const out: HideRange[] = []
+  foldedRanges(state).between(0, state.doc.length, (from, to) => {
+    out.push({ from, to })
+  })
+  return out
+}
+
+/**
  * A widget must be provided as a *block* decoration (and therefore from a
  * StateField, not a ViewPlugin) when it is flagged block-level or when its range
  * crosses a line boundary — CodeMirror forbids both of those from plugins
@@ -334,9 +528,16 @@ function rangeOverlaps(from: number, to: number, ranges: HideRange[]): boolean {
 function buildBlockDecorations(state: EditorState): DecorationSet {
   const model = computeLivePreview(state)
   const resolve = state.facet(imageUrlResolver)
+  // Block widgets hidden inside a collapsed fold must be dropped: a fold is also
+  // a block replace, and two overlapping block decorations are illegal (this is
+  // exactly the "list item containing a table, then folded" case).
+  const folds = foldedSpans(state)
   const ranges: Range<Decoration>[] = []
   for (const widget of model.widgets) {
     if (widget.to <= widget.from || !widgetIsBlock(state, widget)) {
+      continue
+    }
+    if (rangeOverlaps(widget.from, widget.to, folds)) {
       continue
     }
     if (widget.kind === 'image') {
@@ -346,7 +547,8 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
         resolve,
         widget.data.width ?? '',
         widget.data.height ?? '',
-        true
+        true,
+        indentCols(widget.data)
       )
       if (widget.reveal) {
         // The line is being edited: keep its raw source visible and draw the
@@ -359,24 +561,35 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
       }
     } else if (widget.kind === 'table') {
       ranges.push(
-        Decoration.replace({ widget: new TableWidget(widget.data.source ?? ''), block: true }).range(
-          widget.from,
-          widget.to
-        )
+        Decoration.replace({
+          widget: new TableWidget(widget.data.source ?? '', indentCols(widget.data), quoteDepthOf(widget.data)),
+          block: true
+        }).range(widget.from, widget.to)
       )
     } else if (widget.kind === 'dl') {
       ranges.push(
-        Decoration.replace({ widget: new DefinitionListWidget(widget.data.source ?? ''), block: true }).range(
-          widget.from,
-          widget.to
-        )
+        Decoration.replace({
+          widget: new DefinitionListWidget(
+            widget.data.source ?? '',
+            indentCols(widget.data),
+            quoteDepthOf(widget.data)
+          ),
+          block: true
+        }).range(widget.from, widget.to)
+      )
+    } else if (widget.kind === 'details') {
+      ranges.push(
+        Decoration.replace({
+          widget: new DetailsWidget(widget.data.source ?? '', indentCols(widget.data), quoteDepthOf(widget.data)),
+          block: true
+        }).range(widget.from, widget.to)
       )
     } else if (widget.kind === 'mermaid') {
       ranges.push(
-        Decoration.replace({ widget: new MermaidWidget(widget.data.code ?? ''), block: true }).range(
-          widget.from,
-          widget.to
-        )
+        Decoration.replace({
+          widget: new MermaidWidget(widget.data.code ?? '', indentCols(widget.data), quoteDepthOf(widget.data)),
+          block: true
+        }).range(widget.from, widget.to)
       )
     } else if (widget.kind === 'math') {
       // `block: true` is only valid over whole lines (the model sets it for
@@ -384,7 +597,12 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
       // line-spanning inline replace — allowed from a field, but not as a block.
       ranges.push(
         Decoration.replace({
-          widget: new MathWidget(widget.data.tex ?? '', widget.data.display === '1'),
+          widget: new MathWidget(
+            widget.data.tex ?? '',
+            widget.data.display === '1',
+            indentCols(widget.data),
+            quoteDepthOf(widget.data)
+          ),
           block: widget.block === true
         }).range(widget.from, widget.to)
       )
@@ -403,7 +621,9 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   const state = view.state
   const model = computeLivePreview(state)
   const resolve = state.facet(imageUrlResolver)
-  const blocks = blockWidgetRanges(state, model)
+  // Skip anything inside a block widget *or* a collapsed fold: decorations inside
+  // hidden content would otherwise fight the fold's block replace.
+  const blocks = [...blockWidgetRanges(state, model), ...foldedSpans(state)]
   const ranges: Range<Decoration>[] = []
 
   for (const line of model.lineClasses) {
@@ -467,6 +687,29 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
       ranges.push(
         Decoration.replace({ widget: new EmojiWidget(widget.data.emoji ?? '') }).range(widget.from, widget.to)
       )
+    }
+  }
+
+  // Fold chevrons for foldable list items. Only scan the viewport (folded lines
+  // are excluded from visibleRanges, so collapsed items never get a duplicate
+  // toggle). The chevron is an inline widget at the line start, positioned into
+  // the left padding via CSS so it never shifts the text.
+  for (const { from, to } of view.visibleRanges) {
+    let pos = from
+    while (pos <= to) {
+      const line = view.state.doc.lineAt(pos)
+      if (!posWithin(line.from, blocks)) {
+        const foldRange = listFoldRange(view.state, line.from)
+        if (foldRange) {
+          ranges.push(
+            Decoration.widget({
+              widget: new FoldToggleWidget(isRangeFolded(view.state, foldRange)),
+              side: -1
+            }).range(line.from)
+          )
+        }
+      }
+      pos = line.to + 1
     }
   }
 
@@ -673,7 +916,10 @@ export function livePreviewExtension(): Extension {
           }
           return
         }
-        if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        const foldChanged = update.transactions.some((tr) =>
+          tr.effects.some((e) => e.is(foldEffect) || e.is(unfoldEffect))
+        )
+        if (update.docChanged || update.selectionSet || update.viewportChanged || foldChanged) {
           this.decorations = buildInlineDecorations(update.view)
         }
       }
@@ -683,6 +929,22 @@ export function livePreviewExtension(): Extension {
       eventHandlers: {
         mousedown: (event, view) => {
           const target = event.target as HTMLElement
+          // Fold chevron: toggle the list item's fold and consume the event so it
+          // doesn't move the caret / reveal the source.
+          const foldToggle = target?.closest?.('.cm-md-fold-toggle') as HTMLElement | null
+          if (foldToggle) {
+            const line = view.state.doc.lineAt(view.posAtDOM(foldToggle))
+            const range = listFoldRange(view.state, line.from)
+            if (range) {
+              view.dispatch({
+                effects: isRangeFolded(view.state, range)
+                  ? unfoldEffect.of(range)
+                  : foldEffect.of(range)
+              })
+            }
+            event.preventDefault()
+            return true
+          }
           if (target && target.classList.contains('cm-md-checkbox')) {
             const pos = view.posAtDOM(target)
             if (toggleTaskAt(view, pos)) {

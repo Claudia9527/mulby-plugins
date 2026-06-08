@@ -50,6 +50,7 @@ export type WidgetKind =
   | 'dl'
   | 'emoji'
   | 'mermaid'
+  | 'details'
 
 export interface WidgetRange {
   from: number
@@ -126,6 +127,20 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     return false
   }
 
+  // Per-token reveal (Obsidian-style): an inline construct keeps its raw source
+  // visible only when a selection range actually touches *its* [from, to] span —
+  // not merely its line. This lets you click one `**bold**` in a mixed line and
+  // reveal only that token's markers while the rest of the line stays rendered.
+  // Boundaries are inclusive so a caret resting right at an edge still reveals it.
+  const isRangeActive = (from: number, to: number): boolean => {
+    for (const range of state.selection.ranges) {
+      if (range.from <= to && range.to >= from) {
+        return true
+      }
+    }
+    return false
+  }
+
   // For block widgets (tables, display math): reveal the raw source only when a
   // selection range sits *entirely inside* the block — i.e. the caret is in it,
   // or the user is selecting text within it. A selection that merely spans across
@@ -148,6 +163,18 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     }
   }
 
+  // Structural indent (in columns) of the line containing `pos`. Used so block
+  // widgets nested in a list render indented under their list item instead of
+  // jumping to the far-left margin.
+  const indentColsAt = (pos: number): number =>
+    leadingIndentColumns(doc.lineAt(pos).text)
+
+  // Blockquote nesting depth of the line containing `pos`. Used so block widgets
+  // nested in a quote draw the quote bar(s) themselves (the line they replace
+  // can't carry the quote line-class) and strip the `>` prefixes from their
+  // source so they parse/render correctly.
+  const quoteDepthAt = (pos: number): number => quoteDepth(doc.lineAt(pos).text)
+
   // Emits an image widget. A *standalone* image (the only content on its single
   // line) becomes a block widget: replaced by the image when idle, and — while
   // the line is being edited — kept rendered *below* the revealed source (the
@@ -162,12 +189,12 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
         from: line.from,
         to: line.to,
         kind: 'image',
-        data,
+        data: { ...data, indent: String(leadingIndentColumns(line.text)) },
         block: true,
         reveal: isActive(line.from, line.to)
       })
       occupied.push({ from: line.from, to: line.to })
-    } else if (!isActive(from, to)) {
+    } else if (!isRangeActive(from, to)) {
       widgets.push({ from, to, kind: 'image', data })
       occupied.push({ from, to })
     }
@@ -211,7 +238,10 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       }
 
       if (name === 'EmphasisMark' || name === 'StrikethroughMark') {
-        if (!isActive(node.from, node.to)) {
+        // Reveal both markers when the caret is anywhere inside the emphasis
+        // span (the word between the markers), not only on the markers.
+        const span = node.node.parent ?? node.node
+        if (!isRangeActive(span.from, span.to)) {
           hideRange(node.from, node.to)
         }
         return
@@ -227,7 +257,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       // (leave fenced-code fences alone so the block layout is preserved).
       if (name === 'CodeMark') {
         const parent = node.node.parent
-        if (parent && parent.name === 'InlineCode' && !isActive(node.from, node.to)) {
+        if (parent && parent.name === 'InlineCode' && !isRangeActive(parent.from, parent.to)) {
           hideRange(node.from, node.to)
         }
         return
@@ -242,7 +272,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
         }
         // Only render inline links ([label](url)); leave reference/bare links raw.
         const url = node.node.getChild('URL')
-        if (url && !isActive(node.from, node.to)) {
+        if (url && !isRangeActive(node.from, node.to)) {
           // Hide the leading "[" and the trailing "](url)" so only the label
           // shows; style the label as a link.    [label](url)
           const labelStart = findLabelEnd(state, node.from, node.to)
@@ -281,12 +311,24 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       }
 
       if (name === 'Blockquote') {
-        // Class every line of the quote (not just the first) so multi-line
-        // blockquotes render with a continuous bar.
+        // Nested blockquotes appear as Blockquote-inside-Blockquote in the tree;
+        // only the outermost one drives the per-line classing (it spans every
+        // line). Each line's nesting depth is read from its leading '>' markers
+        // so `>`, `> >`, `> > >` render with 1/2/3 distinct bars + indentation.
+        let ancestor = node.node.parent
+        while (ancestor) {
+          if (ancestor.name === 'Blockquote') {
+            return
+          }
+          ancestor = ancestor.parent
+        }
         const startLine = doc.lineAt(node.from).number
         const endLine = doc.lineAt(Math.min(node.to, doc.length)).number
         for (let n = startLine; n <= endLine; n += 1) {
-          lineClasses.push({ pos: doc.line(n).from, cls: 'cm-md-quote' })
+          const line = doc.line(n)
+          const depth = Math.min(quoteDepth(line.text) || 1, 4)
+          lineClasses.push({ pos: line.from, cls: 'cm-md-quote' })
+          lineClasses.push({ pos: line.from, cls: `cm-md-quote-${depth}` })
         }
         return
       }
@@ -310,7 +352,19 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
         const from = doc.lineAt(node.from).from
         const to = doc.lineAt(Math.min(node.to, doc.length)).to
         if (!isBlockActive(from, to)) {
-          widgets.push({ from, to, kind: 'table', data: { source: doc.sliceString(from, to) }, block: true })
+          const qd = quoteDepthAt(from)
+          const raw = doc.sliceString(from, to)
+          widgets.push({
+            from,
+            to,
+            kind: 'table',
+            data: {
+              source: qd > 0 ? stripQuotePrefix(raw, qd) : raw,
+              indent: String(indentColsAt(from)),
+              quoteDepth: String(qd)
+            },
+            block: true
+          })
           occupied.push({ from, to })
           return false // don't decorate inside the replaced block
         }
@@ -352,10 +406,22 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
           const code = hasBody
             ? doc.sliceString(doc.line(startLine + 1).from, doc.line(endLine - 1).to)
             : ''
-          widgets.push({ from, to, kind: 'mermaid', data: { code }, block: true })
+          const qd = quoteDepthAt(from)
+          widgets.push({
+            from,
+            to,
+            kind: 'mermaid',
+            data: {
+              code: qd > 0 ? stripQuotePrefix(code, qd) : code,
+              indent: String(indentColsAt(from)),
+              quoteDepth: String(qd)
+            },
+            block: true
+          })
           occupied.push({ from, to })
           return false
         }
+        const hasLang = fenceLang.length > 0
         for (let n = startLine; n <= endLine; n += 1) {
           const line = doc.line(n)
           lineClasses.push({ pos: line.from, cls: 'cm-md-codeblock' })
@@ -365,13 +431,21 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
           if (n === endLine) {
             lineClasses.push({ pos: line.from, cls: 'cm-md-codeblock-close' })
           }
-          if (!blockActive && (n === startLine || n === endLine)) {
+          if (!blockActive && n === endLine) {
             lineClasses.push({ pos: line.from, cls: 'cm-md-codefence' })
+          }
+          if (!blockActive && n === startLine) {
+            // Open fence: when the block declares a language, keep that token
+            // visible as a right-aligned label in the top cap; otherwise collapse
+            // the fence line to a thin cap like the closing fence.
+            lineClasses.push({ pos: line.from, cls: hasLang ? 'cm-md-codeblock-lang' : 'cm-md-codefence' })
           }
         }
         if (!blockActive) {
           for (let child = node.node.firstChild; child; child = child.nextSibling) {
-            if (child.name === 'CodeMark' || child.name === 'CodeInfo') {
+            // Always hide the ``` markers. Keep CodeInfo (the language) visible —
+            // it renders as the top-right label.
+            if (child.name === 'CodeMark') {
               hideRange(child.from, child.to)
             }
           }
@@ -417,17 +491,23 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       if (isBlockActive(startLine.from, endLine.to)) {
         continue
       }
+      const qd = quoteDepthAt(startLine.from)
       widgets.push({
         from: startLine.from,
         to: endLine.to,
         kind: 'math',
-        data: { tex: m.inner, display: '1' },
+        data: {
+          tex: qd > 0 ? stripQuotePrefix(m.inner, qd) : m.inner,
+          display: '1',
+          indent: String(leadingIndentColumns(startLine.text)),
+          quoteDepth: String(qd)
+        },
         block: true
       })
       occupied.push({ from: startLine.from, to: endLine.to })
     } else {
-      // Inline-positioned display math: reveal on the active line.
-      if (isActive(m.start, m.end)) {
+      // Inline-positioned display math: reveal when the caret is inside it.
+      if (isRangeActive(m.start, m.end)) {
         continue
       }
       widgets.push({ from: m.start, to: m.end, kind: 'math', data: { tex: m.inner, display: '1' } })
@@ -436,7 +516,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
   }
 
   for (const m of findInlineMathMatches(text)) {
-    if (rangesOverlap(m.start, m.end, occupied) || isActive(m.start, m.end)) {
+    if (rangesOverlap(m.start, m.end, occupied) || isRangeActive(m.start, m.end)) {
       continue
     }
     widgets.push({ from: m.start, to: m.end, kind: 'math', data: { tex: m.inner, display: '' } })
@@ -447,10 +527,10 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     if (rangesOverlap(m.start, m.end, occupied)) {
       continue
     }
-    // Always style the highlighted span; only hide the "==" fences off the
-    // active line so the marker can be edited where the cursor sits.
+    // Always style the highlighted span; only hide the "==" fences when the
+    // caret isn't inside this span so the marker can be edited where it sits.
     marks.push({ from: m.start, to: m.end, cls: 'cm-md-highlight' })
-    if (!isActive(m.start, m.end)) {
+    if (!isRangeActive(m.start, m.end)) {
       hideRange(m.start, m.start + 2)
       hideRange(m.end - 2, m.end)
     }
@@ -464,7 +544,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       continue
     }
     occupied.push({ from: c.start, to: c.end })
-    if (isActive(c.start, c.end)) {
+    if (isRangeActive(c.start, c.end)) {
       continue
     }
     const singleLine = doc.lineAt(c.start).number === doc.lineAt(Math.min(c.end, doc.length)).number
@@ -473,6 +553,33 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     } else {
       marks.push({ from: c.start, to: c.end, cls: 'cm-md-comment' })
     }
+  }
+
+  // <details>…</details> -> collapsible block widget. Scanned before <dl> so a
+  // dl nested inside the details isn't also matched separately.
+  for (const d of findHtmlDetails(text)) {
+    if (rangesOverlap(d.start, d.end, occupied)) {
+      continue
+    }
+    const from = doc.lineAt(d.start).from
+    const to = doc.lineAt(Math.min(d.end, doc.length)).to
+    occupied.push({ from, to })
+    if (isBlockActive(from, to)) {
+      continue
+    }
+    const qd = quoteDepthAt(from)
+    const raw = doc.sliceString(from, to)
+    widgets.push({
+      from,
+      to,
+      kind: 'details',
+      data: {
+        source: qd > 0 ? stripQuotePrefix(raw, qd) : raw,
+        indent: String(indentColsAt(from)),
+        quoteDepth: String(qd)
+      },
+      block: true
+    })
   }
 
   // <dl>…</dl> definition lists -> block widget (revealed when selected inside).
@@ -486,7 +593,19 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     if (isBlockActive(from, to)) {
       continue
     }
-    widgets.push({ from, to, kind: 'dl', data: { source: doc.sliceString(from, to) }, block: true })
+    const qd = quoteDepthAt(from)
+    const raw = doc.sliceString(from, to)
+    widgets.push({
+      from,
+      to,
+      kind: 'dl',
+      data: {
+        source: qd > 0 ? stripQuotePrefix(raw, qd) : raw,
+        indent: String(indentColsAt(from)),
+        quoteDepth: String(qd)
+      },
+      block: true
+    })
   }
 
   // <img …> with optional width/height -> image widget (same standalone/block
@@ -520,7 +639,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
               ? 'cm-md-kbd'
               : 'cm-md-highlight'
     marks.push({ from: t.innerStart, to: t.innerEnd, cls })
-    if (!isActive(t.start, t.end)) {
+    if (!isRangeActive(t.start, t.end)) {
       hideRange(t.start, t.innerStart)
       hideRange(t.innerEnd, t.end)
     }
@@ -536,7 +655,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     if (s.style) {
       marks.push({ from: s.innerStart, to: s.innerEnd, cls: 'cm-md-styled', attrs: { style: s.style } })
     }
-    if (!isActive(s.start, s.end)) {
+    if (!isRangeActive(s.start, s.end)) {
       hideRange(s.start, s.innerStart)
       hideRange(s.innerEnd, s.end)
     }
@@ -568,7 +687,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     }
     occupied.push({ from: a.start, to: a.end })
     marks.push({ from: a.start + 1, to: a.end - 1, cls: 'cm-md-link' })
-    if (!isActive(a.start, a.end)) {
+    if (!isRangeActive(a.start, a.end)) {
       hideRange(a.start, a.start + 1)
       hideRange(a.end - 1, a.end)
     }
@@ -581,7 +700,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
     }
     occupied.push({ from: f.start, to: f.end })
     marks.push({ from: f.labelStart, to: f.labelEnd, cls: 'cm-md-footnote-ref' })
-    if (!isActive(f.start, f.end)) {
+    if (!isRangeActive(f.start, f.end)) {
       hideRange(f.start, f.labelStart)
       hideRange(f.labelEnd, f.end)
     }
@@ -593,7 +712,7 @@ export function computeLivePreview(state: EditorState): LivePreviewDecorations {
       continue
     }
     occupied.push({ from: e.start, to: e.end })
-    if (!isActive(e.start, e.end)) {
+    if (!isRangeActive(e.start, e.end)) {
       widgets.push({ from: e.start, to: e.end, kind: 'emoji', data: { emoji: e.emoji } })
     }
   }
@@ -821,6 +940,36 @@ export function findHtmlDefinitionLists(text: string): RawMatch[] {
   return out
 }
 
+/** Finds `<details>…</details>` collapsible blocks (with optional attributes). */
+export function findHtmlDetails(text: string): RawMatch[] {
+  const out: RawMatch[] = []
+  const re = /<details\b[^>]*>[\s\S]*?<\/details>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    out.push({ start: m.index, end: m.index + m[0].length, inner: m[0] })
+  }
+  return out
+}
+
+export interface DetailsParts {
+  /** Whether the source declares `<details open>` (rendered expanded). */
+  open: boolean
+  /** Plain-text summary label (markup stripped for safety). */
+  summary: string
+  /** Markdown body between </summary> and </details>. */
+  body: string
+}
+
+/** Splits a `<details>` block source into its open flag, summary, and body. */
+export function parseDetails(source: string): DetailsParts {
+  const open = /^<details\b[^>]*\bopen\b/i.test(source)
+  const inner = source.replace(/^<details\b[^>]*>/i, '').replace(/<\/details>\s*$/i, '')
+  const sm = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i.exec(inner)
+  const summary = sm ? stripHtmlTags(sm[1]).trim() || '详情' : '详情'
+  const body = (sm ? inner.slice(sm.index + sm[0].length) : inner).trim()
+  return { open, summary, body }
+}
+
 // --- Links / footnotes / emoji (Batch B) -----------------------------------
 
 export interface AutolinkMatch {
@@ -991,4 +1140,67 @@ export function slugify(text: string): string {
 export function headingSlug(lineText: string): string | null {
   const m = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(lineText)
   return m ? slugify(m[1]) : null
+}
+
+/**
+ * Counts the blockquote nesting depth of a line from its leading `>` markers
+ * (`> >` → 2). Returns 0 when the line has no quote prefix (a lazy
+ * continuation line, which the caller treats as depth 1).
+ */
+export function quoteDepth(lineText: string): number {
+  const m = /^[ \t]*((?:>[ \t]?)+)/.exec(lineText)
+  return m ? (m[1].match(/>/g) ?? []).length : 0
+}
+
+/**
+ * Counts a line's leading-indent columns (a tab counts as 4). This is the
+ * structural indentation a block construct sits at when it's nested inside a
+ * list (e.g. a table indented under a list item has leading spaces). It is used
+ * to indent list-nested *block widgets* — tables, mermaid, display math,
+ * definition lists, `<details>`, standalone images — which otherwise replace the
+ * whole line and would render flush at the far-left margin, detached from the
+ * list item that contains them. (Plain text, code and quotes keep their indent
+ * for free because their leading whitespace is rendered as-is.)
+ */
+export function leadingIndentColumns(text: string): number {
+  let cols = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (ch === ' ') {
+      cols += 1
+    } else if (ch === '\t') {
+      cols += 4
+    } else {
+      break
+    }
+  }
+  return cols
+}
+
+/**
+ * Strips up to `depth` leading blockquote markers (`>` + optional space) from
+ * each line of `text`. Block constructs nested in a quote (tables, fenced code,
+ * `$$` math, mermaid, `<dl>`, `<details>`) are rendered by a widget built from
+ * the raw line range, which still carries the `> ` prefixes; this recovers the
+ * inner source so the widget parses/renders correctly. Lazy-continuation lines
+ * (no `>`) are left as-is.
+ */
+export function stripQuotePrefix(text: string, depth: number): string {
+  if (depth <= 0) {
+    return text
+  }
+  return text
+    .split('\n')
+    .map((line) => {
+      let s = line
+      for (let i = 0; i < depth; i += 1) {
+        const m = /^[ \t]*>[ \t]?/.exec(s)
+        if (!m) {
+          break
+        }
+        s = s.slice(m[0].length)
+      }
+      return s
+    })
+    .join('\n')
 }

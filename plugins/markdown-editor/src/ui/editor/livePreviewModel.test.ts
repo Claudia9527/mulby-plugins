@@ -14,13 +14,18 @@ import {
   findHighlightMatches,
   findHtmlComments,
   findHtmlDefinitionLists,
+  findHtmlDetails,
   findHtmlImages,
   findHtmlInlineTags,
   findHtmlStyledSpans,
   findInlineMathMatches,
   findReferenceDefinition,
   headingSlug,
+  leadingIndentColumns,
   parseDefinitionList,
+  parseDetails,
+  quoteDepth,
+  stripQuotePrefix,
   sanitizeInlineStyle,
   slugify,
   type HideRange,
@@ -92,6 +97,23 @@ assert.equal(headingSlug('not a heading'), null)
   assert.ok(!hasHide(deco.hides, 0, 2), 'opening ** revealed on active line')
 }
 
+// Per-token (Obsidian-style) reveal: with the caret in plain text elsewhere on
+// the SAME line, an inline construct stays rendered (its markers stay hidden);
+// only the token the caret is inside reveals its source.
+{
+  const doc = '**bold** and `code` here\n\ntail'
+  // Caret in the word "here" — neither the bold nor the inline code is touched.
+  const inText = computeLivePreview(stateFor(doc, doc.indexOf('here')))
+  assert.ok(hasHide(inText.hides, 0, 2), 'bold ** stays hidden when caret is elsewhere on the line')
+  const codeOpen = doc.indexOf('`')
+  assert.ok(hasHide(inText.hides, codeOpen, codeOpen + 1), 'inline code ` stays hidden too')
+
+  // Caret inside the bold word reveals only the bold markers, code stays hidden.
+  const inBold = computeLivePreview(stateFor(doc, 3))
+  assert.ok(!hasHide(inBold.hides, 0, 2), 'bold ** revealed when caret is inside the bold word')
+  assert.ok(hasHide(inBold.hides, codeOpen, codeOpen + 1), 'inline code stays rendered while editing bold')
+}
+
 // Inline code off the active line hides the backticks.
 {
   const doc = '`code`\n\ntail'
@@ -137,16 +159,20 @@ assert.equal(headingSlug('not a heading'), null)
   assert.equal(editing?.reveal, true, 'editing reveals source above and keeps image below')
 }
 
-// An image embedded inline in text keeps the inline replace (not a block) and is
-// hidden while its line is edited (standalone images are the common case).
+// An image embedded inline in text keeps the inline replace (not a block).
+// Per-token reveal: the source shows only when the caret is inside the image
+// construct; with the caret elsewhere on the line the image stays rendered.
 {
   const doc = 'see ![x](y.png) here\n\ntail'
   const idle = findWidget(computeLivePreview(stateFor(doc, doc.indexOf('tail'))).widgets, 'image')
   assert.ok(idle, 'inline image widget present')
   assert.ok(!idle?.block, 'inline image is not a block widget')
 
-  const editing = computeLivePreview(stateFor(doc, doc.indexOf('see')))
-  assert.ok(!findWidget(editing.widgets, 'image'), 'inline image source revealed while editing')
+  const editing = computeLivePreview(stateFor(doc, doc.indexOf('y.png')))
+  assert.ok(!findWidget(editing.widgets, 'image'), 'inline image source revealed when caret is inside it')
+
+  const elsewhere = computeLivePreview(stateFor(doc, doc.indexOf('see')))
+  assert.ok(findWidget(elsewhere.widgets, 'image'), 'inline image stays rendered when caret is elsewhere on the line')
 }
 
 // A linked image [![alt](img)](href) renders as ONE image unit: the image shows,
@@ -420,6 +446,34 @@ assert.equal(headingSlug('not a heading'), null)
   assert.equal(dl?.block, true, 'dl is block')
 }
 
+// #1: <details>/<summary> parsing (open flag, summary text, markdown body).
+{
+  const found = findHtmlDetails('a\n<details open><summary>More</summary>\nbody **x**\n</details>\nb')
+  assert.equal(found.length, 1, 'one details block')
+  const parts = parseDetails(found[0].inner)
+  assert.equal(parts.open, true, 'open flag parsed')
+  assert.equal(parts.summary, 'More', 'summary text parsed')
+  assert.ok(parts.body.includes('body **x**'), 'body markdown preserved')
+  // Missing summary falls back to a default label; tags are stripped for safety.
+  assert.equal(parseDetails('<details><summary><b>S</b></summary>x</details>').summary, 'S', 'summary tags stripped')
+  assert.equal(parseDetails('<details>no summary</details>').summary, '详情', 'default summary label')
+}
+
+// #1: a <details> block off the active line becomes a block details widget.
+// (Caret sentinel avoids the substring "tail" inside "details".)
+{
+  const doc = 'intro\n\n<details>\n<summary>More</summary>\nhidden body\n</details>\n\nOUTSIDE'
+  const state = stateFor(doc, doc.indexOf('OUTSIDE'))
+  const deco = computeLivePreview(state)
+  const details = findWidget(deco.widgets, 'details')
+  assert.ok(details, 'details widget present')
+  assert.equal(details?.block, true, 'details is block')
+
+  // With the caret inside the block, the source is revealed (no widget).
+  const editing = computeLivePreview(stateFor(doc, doc.indexOf('hidden')))
+  assert.ok(!findWidget(editing.widgets, 'details'), 'details source revealed when caret is inside')
+}
+
 // Single-line HTML comment off the active line is hidden.
 {
   const doc = 'before <!-- secret --> after\n\ntail'
@@ -496,15 +550,29 @@ assert.equal(headingSlug('not a heading'), null)
 }
 
 // --- Code / quote / list (Batch C) ----------------------------------------
-// #11: off the active block, the ``` fences + language are hidden and the fence
-// lines get the thin-cap class.
+// #11/#4: off the active block, the ``` markers are hidden but the language
+// token stays visible as a top-right label; the close fence collapses to a cap.
 {
   const doc = '```js\nconst a = 1\n```\n\ntail'
   const state = stateFor(doc, doc.indexOf('tail'))
   const deco = computeLivePreview(state)
   assert.ok(hasHide(deco.hides, 0, 3), 'hides opening ``` ')
-  assert.ok(hasHide(deco.hides, 3, 5), 'hides the language token')
-  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codefence'), 'thin fence cap class')
+  assert.ok(!hasHide(deco.hides, 3, 5), 'keeps the language token visible as a label')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock-lang'), 'open fence shows a language label')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codefence'), 'close fence collapses to a thin cap')
+}
+
+// #4: a fenced block with no language collapses both fence lines to thin caps.
+{
+  const doc = '```\nplain code\n```\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(!deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock-lang'), 'no language label without a language')
+  assert.equal(
+    deco.lineClasses.filter((l) => l.cls === 'cm-md-codefence').length,
+    2,
+    'both fence lines collapse when there is no language'
+  )
 }
 
 // #11: while the caret is inside the block, the fences are revealed for editing.
@@ -523,6 +591,24 @@ assert.equal(headingSlug('not a heading'), null)
   const deco = computeLivePreview(state)
   assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock'), 'code block inside quote')
   assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-quote'), 'quote class still present')
+}
+
+// #3: quoteDepth counts leading '>' markers for nesting levels.
+{
+  assert.equal(quoteDepth('> a'), 1, 'single level')
+  assert.equal(quoteDepth('> > b'), 2, 'two levels')
+  assert.equal(quoteDepth('>>> c'), 3, 'three levels, no spaces')
+  assert.equal(quoteDepth('plain'), 0, 'no quote prefix')
+}
+
+// #3: nested blockquote lines carry per-level depth classes.
+{
+  const doc = '> a\n> > b\n> > > c\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-quote-1'), 'depth-1 class')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-quote-2'), 'depth-2 class')
+  assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-quote-3'), 'depth-3 class')
 }
 
 // #9: nested bullet list renders a bullet for each marker at every depth.
@@ -554,6 +640,75 @@ assert.equal(headingSlug('not a heading'), null)
   const deco = computeLivePreview(state)
   assert.ok(!findWidget(deco.widgets, 'mermaid'), 'mermaid source revealed while editing')
   assert.ok(deco.lineClasses.some((l) => l.cls === 'cm-md-codeblock'), 'shows as code block while editing')
+}
+
+// --- Container indent for list-nested block widgets ------------------------
+// leadingIndentColumns counts leading whitespace (tab = 4 columns).
+assert.equal(leadingIndentColumns('no indent'), 0, 'no leading ws')
+assert.equal(leadingIndentColumns('   three'), 3, 'three spaces')
+assert.equal(leadingIndentColumns('\tt'), 4, 'one tab = 4 cols')
+assert.equal(leadingIndentColumns('  \tmixed'), 6, 'two spaces + tab')
+assert.equal(leadingIndentColumns('> > quoted'), 0, 'quote markers are not indent ws')
+
+// A table nested in a list carries its structural indent so it renders under the
+// list item instead of jumping to the far-left margin.
+{
+  const doc = '- item\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const table = findWidget(deco.widgets, 'table')
+  assert.ok(table, 'nested table widget present')
+  assert.equal(table?.data.indent, '2', 'table indent = 2 columns')
+}
+
+// A top-level table has zero indent.
+{
+  const doc = '| A | B |\n| - | - |\n| 1 | 2 |\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const table = findWidget(deco.widgets, 'table')
+  assert.equal(table?.data.indent, '0', 'top-level table indent = 0')
+}
+
+// A standalone image nested in a list carries its structural indent too.
+{
+  const doc = '- item\n\n  ![pic](a.png)\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const img = findWidget(deco.widgets, 'image')
+  assert.ok(img, 'nested image widget present')
+  assert.equal(img?.block, true, 'standalone image is block')
+  assert.equal(img?.data.indent, '2', 'image indent = 2 columns')
+}
+
+// --- Quote-nested blocks: bars + prefix stripping --------------------------
+// stripQuotePrefix removes up to `depth` leading `>` markers per line.
+assert.equal(stripQuotePrefix('> a\n> b', 1), 'a\nb', 'strip one level')
+assert.equal(stripQuotePrefix('> > a\n> > b', 2), 'a\nb', 'strip two levels')
+assert.equal(stripQuotePrefix('> > a', 1), '> a', 'strip only one of two levels')
+assert.equal(stripQuotePrefix('plain', 1), 'plain', 'no prefix to strip')
+assert.equal(stripQuotePrefix('no change', 0), 'no change', 'depth 0 is a no-op')
+
+// A table nested in a blockquote renders as a table widget that records the
+// quote depth and whose source has the `>` prefixes stripped (so it parses).
+{
+  const doc = '> intro\n>\n> | A | B |\n> | - | - |\n> | 1 | 2 |\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const table = findWidget(deco.widgets, 'table')
+  assert.ok(table, 'quoted table widget present')
+  assert.equal(table?.data.quoteDepth, '1', 'records quote depth 1')
+  assert.ok(!(table?.data.source ?? '').includes('>'), 'source has > prefixes stripped')
+  assert.ok((table?.data.source ?? '').includes('| A | B |'), 'source keeps table content')
+}
+
+// A plain (non-quoted) table records quote depth 0.
+{
+  const doc = '| A | B |\n| - | - |\n| 1 | 2 |\n\ntail'
+  const state = stateFor(doc, doc.indexOf('tail'))
+  const deco = computeLivePreview(state)
+  const table = findWidget(deco.widgets, 'table')
+  assert.equal(table?.data.quoteDepth, '0', 'plain table quote depth 0')
 }
 
 console.log('markdown-editor livePreviewModel unit tests passed')

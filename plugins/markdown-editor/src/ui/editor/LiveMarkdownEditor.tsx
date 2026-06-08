@@ -3,9 +3,10 @@ import 'katex/dist/katex.min.css'
 import { Compartment, EditorSelection, EditorState } from '@codemirror/state'
 import { EditorView, keymap, placeholder as cmPlaceholder } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { codeFolding, foldKeymap, HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { createMarkdownLanguage } from './markdownLanguage'
+import { listFoldService } from './listFold'
 import { imageUrlResolver, livePreviewExtension } from './livePreview'
 import { runMarkdownCommand, type CommandPayload } from './markdownCommands'
 
@@ -130,10 +131,12 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
       () => () =>
         [
           history(),
-          keymap.of([...defaultKeymap, ...historyKeymap]),
+          keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap]),
           EditorView.lineWrapping,
           createMarkdownLanguage(),
           syntaxHighlighting(markdownHighlight),
+          codeFolding(),
+          listFoldService,
           livePreviewExtension(),
           resolverCompartment.of(imageUrlResolver.of(resolveImageUrl ?? ((href: string) => href))),
           themeCompartment.of([baseTheme, themeExtension(theme)]),

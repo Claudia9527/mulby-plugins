@@ -6,6 +6,8 @@ import './markdown.test'
 import './imageGen.test'
 import './imageHistory.test'
 import '../editor/livePreviewModel.test'
+import '../editor/listFold.test'
+import '../editor/tableModel.test'
 import './export/enhance.test'
 
 console.log('markdown-editor unit tests passed')

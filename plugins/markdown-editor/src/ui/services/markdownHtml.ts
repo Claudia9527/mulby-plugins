@@ -23,3 +23,9 @@ function getRenderer(): MarkdownIt {
 export function renderMarkdownDocument(markdown: string): string {
   return getRenderer().render(markdown ?? '')
 }
+
+/** Renders inline Markdown (no block wrapper) — used for individual table cells
+ *  in the interactive table widget so bold/italic/code/links render inside cells. */
+export function renderMarkdownInline(markdown: string): string {
+  return getRenderer().renderInline(markdown ?? '')
+}
