@@ -64,7 +64,7 @@ export const AI_ACTIONS: AiActionMeta[] = [
   {
     id: 'custom',
     label: '自定义',
-    hint: '用你自己的指令处理选中文字（无选区则用全文）',
+    hint: '用你自己的指令处理选中文字（无选区用全文，空文档则直接按指令生成）',
     needsSelection: false,
     needsLanguage: false,
     needsInstruction: true
@@ -87,6 +87,15 @@ export const TRANSLATE_LANGUAGES: Array<{ value: string; label: string }> = [
 export function getAiAction(id: AiActionId): AiActionMeta {
   return AI_ACTIONS.find((action) => action.id === id) ?? AI_ACTIONS[0]
 }
+
+/** One-click refinements applied to a previous AI result (iterate on output). */
+export const REFINE_PRESETS: Array<{ id: string; label: string; instruction: string }> = [
+  { id: 'shorter', label: '更短', instruction: '在保留核心信息的前提下让它更精简。' },
+  { id: 'longer', label: '更详细', instruction: '在不偏题的前提下补充细节，让内容更充实。' },
+  { id: 'formal', label: '更正式', instruction: '改写成更正式、更专业的书面语气。' },
+  { id: 'casual', label: '更口语', instruction: '改写成更自然、口语化的表达。' },
+  { id: 'rephrase', label: '换个说法', instruction: '用不同的措辞重写，意思保持不变。' }
+]
 
 const SHARED_SYSTEM_RULES = [
   '你是嵌入 Markdown 编辑器里的写作助手。',
@@ -163,11 +172,32 @@ export function buildPrompt(input: PromptInput): AiPrompt {
     case 'custom':
     default: {
       const instruction = (input.instruction || '').trim() || '请改进下面的内容。'
+      // No source text → pure generation: follow the instruction on its own
+      // (e.g. "写一首关于春天的诗" on an empty document).
+      if (!text.trim()) {
+        return {
+          system: SHARED_SYSTEM_RULES,
+          user: instruction
+        }
+      }
       return {
         system: SHARED_SYSTEM_RULES,
         user: `${instruction}\n下面是待处理的内容：\n${fenceText(text)}`
       }
     }
+  }
+}
+
+/**
+ * Builds a prompt that refines a previous AI result with a follow-up instruction
+ * (e.g. "再短一点"). The previous output is the material to transform; the model
+ * returns the full revised text.
+ */
+export function buildRefinePrompt(previous: string, instruction: string): AiPrompt {
+  const instr = (instruction || '').trim() || '请进一步改进下面的内容。'
+  return {
+    system: `${SHARED_SYSTEM_RULES}\n这是对上一轮输出的继续修改：在它的基础上按要求调整，仍然只输出修改后的完整正文。`,
+    user: `请按下面的要求修改这段内容：${instr}\n${fenceText(previous)}`
   }
 }
 

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import {
   AI_ACTIONS,
+  REFINE_PRESETS,
   TRANSLATE_LANGUAGES,
   buildPrompt,
+  buildRefinePrompt,
   extractAiText,
   getAiAction,
   runAiAction,
@@ -73,8 +75,33 @@ assert.ok(TRANSLATE_LANGUAGES.some((lang) => lang.value === '英文'))
   const custom = buildPrompt({ action: 'custom', text: 'body', instruction: '改成标题' })
   assert.ok(custom.user.includes('改成标题'))
   assert.ok(custom.user.includes('body'))
+  assert.ok(custom.user.includes('<<<SOURCE'))
   const fallback = buildPrompt({ action: 'custom', text: 'body', instruction: '   ' })
   assert.ok(fallback.user.includes('请改进'))
+}
+
+{
+  // custom with no source text → pure generation: instruction only, no SOURCE block
+  const gen = buildPrompt({ action: 'custom', text: '', instruction: '写一首关于春天的诗' })
+  assert.ok(gen.user.includes('写一首关于春天的诗'))
+  assert.ok(!gen.user.includes('<<<SOURCE'))
+  // whitespace-only source is treated the same as empty
+  const genWs = buildPrompt({ action: 'custom', text: '   \n  ', instruction: '列出三个要点' })
+  assert.ok(!genWs.user.includes('<<<SOURCE'))
+}
+
+{
+  // buildRefinePrompt wraps the previous output + the follow-up instruction
+  const refine = buildRefinePrompt('上一轮结果', '再短一点')
+  assert.ok(refine.user.includes('再短一点'))
+  assert.ok(refine.user.includes('上一轮结果'))
+  assert.ok(refine.user.includes('<<<SOURCE'))
+  assert.ok(refine.system.length > 0)
+  // empty instruction falls back to a default
+  assert.ok(buildRefinePrompt('x', '   ').user.includes('请进一步改进'))
+  // refine presets are well-formed
+  assert.ok(REFINE_PRESETS.length >= 3)
+  assert.ok(REFINE_PRESETS.every((p) => p.id && p.label && p.instruction))
 }
 
 // extractAiText: string / array / null handling

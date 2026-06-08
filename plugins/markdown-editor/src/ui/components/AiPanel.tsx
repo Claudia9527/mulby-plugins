@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Copy, CornerDownLeft, Loader2, Replace, Sparkles, Square, X } from 'lucide-react'
 import {
   AI_ACTIONS,
+  REFINE_PRESETS,
   TRANSLATE_LANGUAGES,
   buildPrompt,
+  buildRefinePrompt,
   getAiAction,
   runAiAction,
   stripCodeFence,
@@ -58,6 +60,8 @@ export function AiPanel({
   const [loadingModels, setLoadingModels] = useState(false)
   const [output, setOutput] = useState('')
   const [running, setRunning] = useState(false)
+  // Free-form follow-up that refines the current result (multi-turn on output).
+  const [refineText, setRefineText] = useState('')
   const handleRef = useRef<AiRequestHandle | null>(null)
   const modelsFetchedRef = useRef(false)
   const outputRef = useRef<HTMLDivElement>(null)
@@ -99,6 +103,7 @@ export function AiPanel({
       handleRef.current = null
       setRunning(false)
       setOutput('')
+      setRefineText('')
     }
   }, [open])
 
@@ -126,7 +131,9 @@ export function AiPanel({
       onNotify('请先填写自定义指令', 'warning')
       return
     }
-    if (!primaryText.trim()) {
+    // Custom can generate from the instruction alone (empty doc is fine);
+    // other actions still need source text to operate on.
+    if (action !== 'custom' && !primaryText.trim()) {
       onNotify('没有可处理的内容', 'warning')
       return
     }
@@ -163,6 +170,45 @@ export function AiPanel({
       setRunning(false)
     }
   }, [action, ai, documentText, hasSelection, instruction, language, meta.needsSelection, model, onNotify, primaryText, running])
+
+  // Refine the current result with a follow-up instruction (iterates on output).
+  const refine = useCallback(
+    async (instr: string) => {
+      if (running) {
+        return
+      }
+      const base = output.trim()
+      const ins = instr.trim()
+      if (!base || !ins) {
+        return
+      }
+      const prompt = buildRefinePrompt(base, ins)
+      setRefineText('')
+      setOutput('')
+      setRunning(true)
+      const handle = runAiAction({
+        ai,
+        model: model || undefined,
+        prompt,
+        onDelta: (delta) => setOutput((prev) => prev + delta)
+      })
+      handleRef.current = handle
+      try {
+        const result = await handle.result
+        if (!result.aborted) {
+          setOutput(stripCodeFence(result.text))
+        }
+      } catch (error) {
+        onNotify(error instanceof Error ? error.message : 'AI 调用失败', 'error')
+      } finally {
+        if (handleRef.current === handle) {
+          handleRef.current = null
+        }
+        setRunning(false)
+      }
+    },
+    [ai, model, onNotify, output, running]
+  )
 
   if (!open) {
     return null
@@ -269,6 +315,50 @@ export function AiPanel({
             </span>
           )}
         </div>
+
+        {!running && trimmedOutput.length > 0 && (
+          <div className="ai-refine">
+            <div className="ai-refine-chips">
+              {REFINE_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className="ai-refine-chip"
+                  title={preset.instruction}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void refine(preset.instruction)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            <div className="ai-refine-row">
+              <input
+                type="text"
+                className="ai-refine-input"
+                placeholder="继续追问 / 修改要求，回车发送"
+                value={refineText}
+                onChange={(event) => setRefineText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void refine(refineText)
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="action-btn ai-refine-send"
+                disabled={!refineText.trim()}
+                title="发送追问"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void refine(refineText)}
+              >
+                <CornerDownLeft size={14} />
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="ai-dialog-actions">
           <div className="ai-actions-left">

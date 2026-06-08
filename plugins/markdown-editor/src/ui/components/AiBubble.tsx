@@ -20,8 +20,10 @@ import {
   X
 } from 'lucide-react'
 import {
+  REFINE_PRESETS,
   TRANSLATE_LANGUAGES,
   buildPrompt,
+  buildRefinePrompt,
   getAiAction,
   runAiAction,
   stripCodeFence,
@@ -110,6 +112,8 @@ export function AiBubble({
   const [language, setLanguage] = useState<string>(TRANSLATE_LANGUAGES[1].value)
   const [instruction, setInstruction] = useState('')
   const [output, setOutput] = useState('')
+  // Free-form follow-up that refines the current result (multi-turn on output).
+  const [refineText, setRefineText] = useState('')
   const [pos, setPos] = useState<BubblePosition | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const bubbleRef = useRef<HTMLDivElement>(null)
@@ -216,7 +220,9 @@ export function AiBubble({
         onNotify('请先填写自定义指令', 'warning')
         return
       }
-      if (!primaryText.trim()) {
+      // Custom can generate from the instruction alone (empty doc is fine);
+      // other actions still need source text to operate on.
+      if (act !== 'custom' && !primaryText.trim()) {
         onNotify('没有可处理的内容', 'warning')
         return
       }
@@ -259,6 +265,44 @@ export function AiBubble({
     [ai, hasSelection, instruction, language, model, onNotify, primaryText]
   )
 
+  // Refine the current result with a follow-up instruction. Operates on the
+  // latest output (not the original source), so refinements stack across rounds.
+  const refine = useCallback(
+    async (instr: string) => {
+      const base = output.trim()
+      const ins = instr.trim()
+      if (!base || !ins) {
+        return
+      }
+      const prompt = buildRefinePrompt(base, ins)
+      setRefineText('')
+      setOutput('')
+      setPhase('running')
+      const handle = runAiAction({
+        ai,
+        model: model || undefined,
+        prompt,
+        onDelta: (delta) => setOutput((prev) => prev + delta)
+      })
+      handleRef.current = handle
+      try {
+        const result = await handle.result
+        if (!result.aborted) {
+          setOutput(stripCodeFence(result.text))
+          setPhase('result')
+        }
+      } catch (error) {
+        onNotify(error instanceof Error ? error.message : 'AI 调用失败', 'error')
+        setPhase('result')
+      } finally {
+        if (handleRef.current === handle) {
+          handleRef.current = null
+        }
+      }
+    },
+    [ai, model, onNotify, output]
+  )
+
   const handlePick = useCallback(
     (act: AiActionId) => {
       // Fire synchronously while the editor selection is still alive (buttons
@@ -299,6 +343,7 @@ export function AiBubble({
     handleRef.current?.abort()
     handleRef.current = null
     setOutput('')
+    setRefineText('')
     setMoreOpen(false)
     setPhase('menu')
   }, [])
@@ -491,6 +536,50 @@ export function AiBubble({
                   </span>
                 )}
               </div>
+
+              {phase === 'result' && trimmedOutput.length > 0 && (
+                <div className="ai-bubble-refine">
+                  <div className="ai-bubble-refine-chips">
+                    {REFINE_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className="ai-bubble-refine-chip"
+                        title={preset.instruction}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => void refine(preset.instruction)}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="ai-bubble-refine-row">
+                    <input
+                      type="text"
+                      className="ai-bubble-refine-input"
+                      placeholder="继续追问 / 修改要求，回车发送"
+                      value={refineText}
+                      onChange={(event) => setRefineText(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          void refine(refineText)
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="ai-bubble-btn ai-bubble-btn-primary ai-bubble-refine-send"
+                      disabled={!refineText.trim()}
+                      title="发送追问"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => void refine(refineText)}
+                    >
+                      <CornerDownLeft size={13} />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {phase === 'running' ? (
                 <div className="ai-bubble-actions">

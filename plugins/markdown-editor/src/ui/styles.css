@@ -1844,6 +1844,60 @@ button {
   font-size: 13px;
 }
 
+/* Result follow-up (full panel): quick-refine chips + instruction input. */
+.ai-refine {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ai-refine-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ai-refine-chip {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ai-refine-chip:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+.ai-refine-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ai-refine-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13.5px;
+}
+.ai-refine-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ai-refine-send {
+  flex: 0 0 auto;
+  padding: 0 12px;
+}
+
 .ai-dialog-actions {
   display: flex;
   align-items: center;
@@ -2408,6 +2462,62 @@ button {
 
 .ai-bubble-actions-spacer {
   flex: 1 1 auto;
+}
+
+/* Result follow-up: quick-refine chips + free-form instruction input. */
+.ai-bubble-refine {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.ai-bubble-refine-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ai-bubble-refine-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ai-bubble-refine-chip:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+.ai-bubble-refine-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-bubble-refine-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.ai-bubble-refine-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ai-bubble-refine-send {
+  flex: 0 0 auto;
+  padding: 0 10px;
 }
 
 .ai-bubble-btn {
