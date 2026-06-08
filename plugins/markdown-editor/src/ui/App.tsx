@@ -35,6 +35,9 @@ import {
 } from 'lucide-react'
 import { useMulby } from './hooks/useMulby'
 import { useDraftStorage } from './hooks/useDraftStorage'
+import { useFileExplorer } from './hooks/useFileExplorer'
+import { getFsBridge, isFsBridgeAvailable } from './services/fsBridge'
+import { FileExplorer } from './components/FileExplorer'
 import { FindReplaceBar, type FindReplaceMode } from './components/FindReplaceBar'
 import { AiPanel } from './components/AiPanel'
 import { AiBubble } from './components/AiBubble'
@@ -97,6 +100,7 @@ const STORAGE_CHROME_KEY = 'ui:markdown-editor:chrome-collapsed:v1'
 const STORAGE_AI_MODEL_KEY = 'ai:markdown-editor:model:v1'
 const STORAGE_AI_IMAGE_MODEL_KEY = 'ai:markdown-editor:image-model:v1'
 const STORAGE_AI_IMAGE_HISTORY_KEY = 'ai:markdown-editor:image-history:v1'
+const STORAGE_LEFT_TAB_KEY = 'ui:markdown-editor:left-tab:v1'
 const IMAGE_HISTORY_DIRNAME = 'gen-history'
 
 /** A document offset range in the CodeMirror editor. */
@@ -318,6 +322,7 @@ export default function App() {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [chromeCollapsed, setChromeCollapsed] = useState(false)
+  const [leftTab, setLeftTab] = useState<'files' | 'outline'>('files')
   const [activeOutlineId, setActiveOutlineId] = useState<string | null>(null)
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
@@ -363,6 +368,27 @@ export default function App() {
   const imageHistoryMapRef = useRef<ImageHistoryMap>({})
   const { ai, clipboard, dialog, filesystem, notification, storage, system } = useMulby(PLUGIN_ID)
   const draftStorage = useDraftStorage(storage, STORAGE_DRAFT_KEY)
+  // Keep the editor's bound file path in sync when the tree renames/deletes it.
+  const handleFilePathRenamed = useCallback((oldPath: string, newPath: string) => {
+    if (activeFilePathRef.current === oldPath) {
+      setActiveFilePath(newPath)
+      setSourceLabel(`已重命名 ${basename(newPath)}`)
+    }
+  }, [])
+  const handleFilePathDeleted = useCallback((path: string) => {
+    if (activeFilePathRef.current === path) {
+      setActiveFilePath(null)
+      setSourceLabel('文件已删除')
+    }
+  }, [])
+  const explorer = useFileExplorer({
+    storage,
+    dialog,
+    notification,
+    clipboard,
+    onFileRenamed: handleFilePathRenamed,
+    onFileDeleted: handleFilePathDeleted
+  })
 
   contentRef.current = content
   activeFilePathRef.current = activeFilePath
@@ -422,16 +448,20 @@ export default function App() {
 
     async function loadDraft() {
       try {
-        const [draft, collapsedValue, savedModel, savedImageModel, savedImageHistory] = await Promise.all([
+        const [draft, collapsedValue, savedModel, savedImageModel, savedImageHistory, savedLeftTab] = await Promise.all([
           draftStorage.loadDraft(),
           storage.get(STORAGE_CHROME_KEY),
           storage.get(STORAGE_AI_MODEL_KEY),
           storage.get(STORAGE_AI_IMAGE_MODEL_KEY),
-          storage.get(STORAGE_AI_IMAGE_HISTORY_KEY)
+          storage.get(STORAGE_AI_IMAGE_HISTORY_KEY),
+          storage.get(STORAGE_LEFT_TAB_KEY)
         ])
 
         if (!cancelled) {
           setChromeCollapsed(collapsedValue === true)
+          if (savedLeftTab === 'files' || savedLeftTab === 'outline') {
+            setLeftTab(savedLeftTab)
+          }
           if (typeof savedModel === 'string') {
             setAiModel(savedModel)
           }
@@ -658,13 +688,49 @@ export default function App() {
       startTransition(() => {
         setContent(fileContent)
       })
+      explorer.noteRecentFile(path)
       notification.show('文件已载入', 'success')
       focusEditor()
     } catch (error) {
       console.error('[markdown-editor] handleOpenFile', error)
       notification.show('读取文件失败', 'error')
     }
-  }, [dialog, filesystem, focusEditor, notification])
+  }, [dialog, explorer, filesystem, focusEditor, notification])
+
+  // Open a file by path (from the file tree / recent list). Reads through the
+  // preload fs bridge so paths that never came from a native dialog are readable
+  // (the renderer's window.mulby.filesystem is sandboxed for such paths).
+  const openFileFromPath = useCallback(
+    async (path: string) => {
+      try {
+        const fileContent = isFsBridgeAvailable()
+          ? await getFsBridge().readText(path)
+          : await readFileAsUtf8(filesystem.readFile, path)
+        lastPersistedRef.current = fileContent
+        setActiveFilePath(path)
+        setSourceLabel(`载入 ${basename(path)}`)
+        setSavedAt(Date.now())
+        startTransition(() => {
+          setContent(fileContent)
+        })
+        explorer.noteRecentFile(path)
+        notification.show('文件已载入', 'success')
+        focusEditor()
+      } catch (error) {
+        console.error('[markdown-editor] openFileFromPath', error)
+        notification.show('读取文件失败', 'error')
+      }
+    },
+    [explorer, filesystem, focusEditor, notification]
+  )
+
+  const selectLeftTab = useCallback(
+    (tab: 'files' | 'outline') => {
+      setLeftTab(tab)
+      void storage.set(STORAGE_LEFT_TAB_KEY, tab).catch(() => undefined)
+    },
+    [storage]
+  )
 
   const writeToFile = useCallback(async (path: string) => {
     const current = editorRef.current?.getValue() ?? contentRef.current
@@ -2245,29 +2311,56 @@ export default function App() {
           <div className="editor-shell">
             <div className="editor-layout">
               <aside className="editor-outline-slot">
-                <div className="editor-pane-header outline-pane-header">
-                  <span className="pane-header-label">大纲</span>
+                <div className="editor-pane-header sidebar-tabs" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={leftTab === 'files'}
+                    className={`sidebar-tab ${leftTab === 'files' ? 'active' : ''}`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectLeftTab('files')}
+                  >
+                    文件
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={leftTab === 'outline'}
+                    className={`sidebar-tab ${leftTab === 'outline' ? 'active' : ''}`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectLeftTab('outline')}
+                  >
+                    大纲
+                  </button>
                 </div>
-                <div className="outline-panel">
-                  {outlineEntries.length === 0 ? (
-                    <div className="outline-empty">当前文档还没有标题</div>
-                  ) : (
-                    <nav className="outline-nav" aria-label="文档大纲">
-                      {outlineEntries.map((entry) => (
-                        <button
-                          key={entry.id}
-                          type="button"
-                          className={`outline-item outline-level-${Math.min(entry.level, 6)} ${activeOutlineId === entry.id ? 'active' : ''}`}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => handleOutlineSelect(entry)}
-                          title={entry.text}
-                        >
-                          {entry.text}
-                        </button>
-                      ))}
-                    </nav>
-                  )}
-                </div>
+                {leftTab === 'files' ? (
+                  <FileExplorer
+                    state={explorer}
+                    activeFilePath={activeFilePath}
+                    onOpenFile={openFileFromPath}
+                  />
+                ) : (
+                  <div className="outline-panel">
+                    {outlineEntries.length === 0 ? (
+                      <div className="outline-empty">当前文档还没有标题</div>
+                    ) : (
+                      <nav className="outline-nav" aria-label="文档大纲">
+                        {outlineEntries.map((entry) => (
+                          <button
+                            key={entry.id}
+                            type="button"
+                            className={`outline-item outline-level-${Math.min(entry.level, 6)} ${activeOutlineId === entry.id ? 'active' : ''}`}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => handleOutlineSelect(entry)}
+                            title={entry.text}
+                          >
+                            {entry.text}
+                          </button>
+                        ))}
+                      </nav>
+                    )}
+                  </div>
+                )}
               </aside>
               <div className="editor-canvas">
                 <div className="editor-pane-header editor-canvas-header">

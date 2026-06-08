@@ -1,7 +1,7 @@
 {
   "id": "markdown-editor",
   "name": "markdown-editor",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Mulby",
   "homepage": "https://github.com/Unicellular-SU/mulby_plugins",
   "displayName": "Markdown 编辑器",
@@ -9,6 +9,7 @@
   "type": "productivity",
   "main": "dist/main.js",
   "ui": "ui/index.html",
+  "preload": "preload.cjs",
   "icon": "icon.png",
   "permissions": {
     "clipboard": true,

@@ -97,6 +97,15 @@ interface WindowMulby {
       buttonLabel?: string
       filters?: { name: string; extensions: string[] }[]
     }) => Promise<string | null>
+    showMessageBox?: (options: {
+      type?: 'none' | 'info' | 'error' | 'question' | 'warning'
+      title?: string
+      message: string
+      detail?: string
+      buttons?: string[]
+      defaultId?: number
+      cancelId?: number
+    }) => Promise<{ response: number; checkboxChecked: boolean }>
   }
   filesystem?: {
     readFile: (path: string, encoding?: 'utf-8' | 'base64') => Promise<string | ArrayBuffer | Uint8Array>
@@ -146,7 +155,18 @@ export function useMulby(pluginId?: string) {
         defaultPath?: string
         buttonLabel?: string
         filters?: { name: string; extensions: string[] }[]
-      }) => window.mulby?.dialog?.showSaveDialog(options) ?? Promise.resolve(null)
+      }) => window.mulby?.dialog?.showSaveDialog(options) ?? Promise.resolve(null),
+      showMessageBox: (options: {
+        type?: 'none' | 'info' | 'error' | 'question' | 'warning'
+        title?: string
+        message: string
+        detail?: string
+        buttons?: string[]
+        defaultId?: number
+        cancelId?: number
+      }) =>
+        window.mulby?.dialog?.showMessageBox?.(options) ??
+        Promise.resolve({ response: 1, checkboxChecked: false })
     },
     filesystem: {
       readFile: (path: string, encoding?: 'utf-8' | 'base64') =>
