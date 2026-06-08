@@ -23,6 +23,21 @@
   --radius-xl: 20px;
   --radius-lg: 14px;
   --radius-md: 12px;
+  /* Code syntax-highlight palette (light) */
+  --cm-code-bg: #f6f7f9;
+  --cm-keyword: #a626a4;
+  --cm-string: #50a14f;
+  --cm-number: #b76b01;
+  --cm-comment: #a0a1a7;
+  --cm-function: #4078f2;
+  --cm-type: #c18401;
+  --cm-property: #e45649;
+  --cm-variable: #383a42;
+  --cm-punct: #8a8f98;
+  --cm-code-border: #e3e6ea;
+  /* ==highlight== marker (light) */
+  --cm-highlight-bg: rgba(255, 209, 64, 0.45);
+  --cm-highlight-text: #5c4a00;
 }
 
 :root.dark {
@@ -42,6 +57,21 @@
   --accent-soft: rgba(125, 164, 215, 0.14);
   --danger: #e17a7a;
   --shadow-sm: 0 10px 28px rgba(0, 0, 0, 0.22);
+  /* Code syntax-highlight palette (dark) */
+  --cm-code-bg: #282c34;
+  --cm-keyword: #c678dd;
+  --cm-string: #98c379;
+  --cm-number: #d19a66;
+  --cm-comment: #7f848e;
+  --cm-function: #61afef;
+  --cm-type: #e5c07b;
+  --cm-property: #e06c75;
+  --cm-variable: #abb2bf;
+  --cm-punct: #abb2bf;
+  --cm-code-border: #3a3f4b;
+  /* ==highlight== marker (dark) */
+  --cm-highlight-bg: rgba(250, 204, 21, 0.32);
+  --cm-highlight-text: #fde68a;
 }
 
 * {
@@ -189,6 +219,10 @@ button {
 
 .toolbar {
   background: var(--panel-bg);
+  /* Establish a stacking context above the editor so button tooltips that hang
+     below the toolbar are never covered by the editor canvas. */
+  position: relative;
+  z-index: 5;
 }
 
 .toolbar {
@@ -297,6 +331,18 @@ button {
   color: var(--danger);
 }
 
+.action-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.action-btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
+}
+
 .action-btn:disabled {
   opacity: 0.6;
   cursor: wait;
@@ -334,7 +380,19 @@ button {
   transition:
     opacity 0.14s ease,
     transform 0.14s ease;
-  z-index: 30;
+  z-index: 60;
+}
+
+/* The :hover transform on these buttons creates a stacking context that would
+   otherwise trap the tooltip behind later sibling buttons. Lifting the hovered
+   button's own z-index keeps its tooltip above every neighbour. */
+.action-btn-icon:hover,
+.action-btn-icon:focus-visible,
+.formatter-btn-icon:hover,
+.formatter-btn-icon:focus-visible,
+.mode-btn-icon:hover,
+.mode-btn-icon:focus-visible {
+  z-index: 50;
 }
 
 .action-btn-icon:hover::after,
@@ -474,6 +532,927 @@ button {
   flex: 1;
 }
 
+/* ── Editor tab bar (multi-document) ─────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  background: var(--panel-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tab-strip::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: 200px;
+  padding: 0 8px 0 14px;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-item:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+
+.tab-item.active {
+  background: var(--editor-paper);
+  color: var(--text-primary);
+}
+
+/* Accent strip on the active tab. */
+.tab-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+/* The tab being dragged is dimmed while a reorder is in flight. */
+.tab-item.dragging {
+  opacity: 0.4;
+}
+
+/* Drop indicator: a vertical accent bar on the side where the tab will land. */
+.tab-item.drop-before::after,
+.tab-item.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.tab-item.drop-before::after {
+  left: -1px;
+}
+
+.tab-item.drop-after::after {
+  right: -1px;
+}
+
+.tab-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.tab-item.dirty .tab-title {
+  font-style: italic;
+}
+
+.tab-close {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-close:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.tab-dirty-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  display: none;
+}
+
+.tab-close-x {
+  display: inline-flex;
+  opacity: 0;
+}
+
+/* Show the close icon for the active tab and on hover; hide it (showing the
+   dirty dot instead) when the tab is dirty and not hovered — VS Code behavior. */
+.tab-item:hover .tab-close-x,
+.tab-item.active .tab-close-x {
+  opacity: 0.75;
+}
+
+.tab-close:hover .tab-close-x {
+  opacity: 1;
+}
+
+.tab-item.dirty .tab-dirty-dot {
+  display: block;
+}
+
+.tab-item.dirty:hover .tab-dirty-dot,
+.tab-item.dirty .tab-close:hover .tab-dirty-dot {
+  display: none;
+}
+
+.tab-item.dirty:hover .tab-close-x {
+  opacity: 0.75;
+}
+
+.tab-item.dirty .tab-close:hover .tab-close-x {
+  opacity: 1;
+}
+
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-new:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+
+/* CodeMirror live-preview editor */
+/* Inline AI completion ghost text (Copilot-style dimmed suggestion at caret). */
+.cm-ghost-text {
+  color: var(--text-muted);
+  opacity: 0.55;
+  white-space: pre-wrap;
+  /* Never capture clicks — let the caret land in the real document. */
+  pointer-events: none;
+}
+
+/* Inline AI completion loading hint: three pulsing dots at the caret while the
+   model is generating, so the wait is visible (cleared on the first token). */
+.cm-ghost-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 0.15em;
+  vertical-align: middle;
+  pointer-events: none;
+  user-select: none;
+}
+.cm-ghost-loading i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent, var(--text-muted));
+  opacity: 0.35;
+  animation: cm-ghost-loading-pulse 1s infinite ease-in-out both;
+}
+.cm-ghost-loading i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.cm-ghost-loading i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes cm-ghost-loading-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.7);
+  }
+  40% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-ghost-loading i {
+    animation-duration: 2s;
+  }
+}
+
+.cm-editor-host {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Width of one source-indent column, used to indent list-nested block widgets
+     (tables / math / mermaid / dl / details / standalone images) so they line up
+     under their list item. ~0.5ch ≈ a rendered space in the proportional editor
+     font; tune here if nested blocks look slightly mis-aligned with list text. */
+  --cm-md-indent-unit: 0.5ch;
+  /* Blockquote "rail" metrics. rem (not em) so a code block's smaller font never
+     shifts the bars out of line with the plain quote text above/below it. */
+  --cm-quote-step: 1.4rem; /* x distance between adjacent quote bars / per level */
+  --cm-quote-gap: 0.8rem; /* gap between the innermost bar and the content */
+  --cm-quote-bar: 3px; /* bar thickness */
+}
+
+.cm-editor-host .cm-editor {
+  height: 100%;
+  background: transparent;
+  font-family:
+    "PingFang SC", "Helvetica Neue", "Helvetica", "Noto Sans CJK SC", sans-serif;
+}
+
+.cm-editor-host .cm-content {
+  padding-bottom: 40vh;
+}
+
+.cm-editor-host .cm-cursor {
+  border-left-color: var(--accent);
+}
+
+.cm-editor-host .cm-selectionBackground,
+.cm-editor-host .cm-focused .cm-selectionBackground,
+.cm-editor-host .cm-line ::selection {
+  background: var(--accent-soft) !important;
+}
+
+.cm-editor-host .cm-line {
+  font-size: 17px;
+  line-height: 1.8;
+  /* Anchor for the absolutely-positioned list fold chevron (sits in the left
+     padding without shifting the text). */
+  position: relative;
+}
+
+/* List fold chevron — appears in the line's left padding on hover, stays on when
+   the item is folded. Click toggles the fold (handled in livePreview mousedown). */
+.cm-md-fold-toggle {
+  position: absolute;
+  left: -15px;
+  top: 0;
+  width: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.8em;
+  font-size: 0.85em;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  border-radius: 4px;
+  transition: opacity 0.12s ease, transform 0.12s ease, background 0.12s ease;
+  transform: rotate(90deg); /* base chevron › points down when open */
+  transform-origin: center;
+  user-select: none;
+}
+.cm-md-fold-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.cm-line:hover .cm-md-fold-toggle,
+.cm-md-fold-toggle-folded {
+  opacity: 0.65;
+}
+.cm-line:hover .cm-md-fold-toggle:hover,
+.cm-md-fold-toggle-folded {
+  opacity: 1;
+}
+/* Folded state: chevron points right (collapsed). */
+.cm-md-fold-toggle-folded {
+  transform: rotate(0deg);
+}
+/* The "…" placeholder CodeMirror shows for a collapsed range. */
+.cm-editor-host .cm-foldPlaceholder {
+  background: var(--accent-soft);
+  border: none;
+  color: var(--text-muted);
+  margin: 0 0.3em;
+  padding: 0 0.4em;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Rendered block lines (live preview).
+   The heading class lives on the `.cm-line` element, so every size rule must be
+   scoped `.cm-editor-host .cm-md-hN` (specificity 0,2,0) to beat the editor's own
+   `.cm-editor-host .cm-line { font-size: 17px; line-height: 1.8 }` — otherwise a
+   bare `.cm-md-hN` (0,1,0) loses and ALL headings collapse to the body size,
+   which is why H3–H6 looked identical. */
+.cm-editor-host .cm-md-h1,
+.cm-editor-host .cm-md-h2,
+.cm-editor-host .cm-md-h3,
+.cm-editor-host .cm-md-h4,
+.cm-editor-host .cm-md-h5,
+.cm-editor-host .cm-md-h6 {
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.cm-editor-host .cm-md-h1 {
+  font-size: 2.4rem;
+  padding-bottom: 0.12em;
+  border-bottom: 1px solid var(--border);
+}
+.cm-editor-host .cm-md-h2 {
+  font-size: 1.95rem;
+  padding-bottom: 0.1em;
+  border-bottom: 1px solid var(--border);
+}
+.cm-editor-host .cm-md-h3 {
+  font-size: 1.62rem;
+}
+.cm-editor-host .cm-md-h4 {
+  font-size: 1.35rem;
+}
+.cm-editor-host .cm-md-h5 {
+  font-size: 1.15rem;
+}
+.cm-editor-host .cm-md-h6 {
+  font-size: 0.96rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+/* Blockquotes. Each nesting level draws one accent bar in a left "rail"; all
+   quote content (text, code, tables, lists…) indents to the right of the rail,
+   so `>`, `> >`, `> > >` read as clearly distinct levels.
+
+   The rail is driven by a single per-line depth variable (--cm-q-depth) and
+   measured in rem (NOT em). That's the fix for "the bar jumps at a code block":
+   a code block's smaller font (0.88em) used to scale the em-based bar offsets,
+   shifting them out of line with the plain quote text; rem is font-size
+   independent so every line's bar lands at the same x. */
+.cm-md-quote {
+  --cm-q-depth: 1;
+  /* x where content begins = just past the innermost bar. */
+  --cm-q-rail: calc((var(--cm-q-depth) - 1) * var(--cm-quote-step) + var(--cm-quote-gap));
+  color: var(--text-secondary);
+  background-color: var(--accent-soft);
+}
+.cm-md-quote-1 {
+  --cm-q-depth: 1;
+}
+.cm-md-quote-2 {
+  --cm-q-depth: 2;
+}
+.cm-md-quote-3 {
+  --cm-q-depth: 3;
+}
+.cm-md-quote-4 {
+  --cm-q-depth: 4;
+}
+/* One accent bar per level, repeated every step across a depth-wide rail. Drawn
+   on an absolute ::before (not the line background) so any nested block's own
+   background can never cut the bars off — they stay continuous down the quote. */
+.cm-md-quote::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--cm-q-depth) * var(--cm-quote-step));
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--accent) 0 var(--cm-quote-bar),
+    transparent var(--cm-quote-bar) var(--cm-quote-step)
+  );
+  pointer-events: none;
+}
+/* Content indents past the rail. One rule covers every depth via the var.
+   `!important` beats CodeMirror's injected `.cm-line { padding: 0 }` theme rule
+   whose effective priority can otherwise shadow it depending on injection order. */
+.cm-editor-host .cm-line.cm-md-quote {
+  padding-left: var(--cm-q-rail) !important;
+}
+/* A code block inside a quote: the slab sits to the RIGHT of the rail (its
+   background starts at the rail edge via a gradient) so the bars show cleanly in
+   the gutter to its left and stay aligned with the plain quote lines. No left
+   border — the gradient edge is the slab's left side at every depth. */
+.cm-editor-host .cm-line.cm-md-quote.cm-md-codeblock {
+  padding-left: calc(var(--cm-q-rail) + 16px) !important;
+  border-left: none;
+  background: linear-gradient(
+    to right,
+    transparent 0 var(--cm-q-rail),
+    var(--cm-code-bg) var(--cm-q-rail)
+  );
+}
+/* Block widgets nested inside a quote (table / math / mermaid / dl / details)
+   replace whole lines, so they can't inherit the line's quote class. They opt
+   into the same rail by adding `.cm-md-quoted` + a depth class: the bars are
+   drawn by this ::before (reusing the same rem-based gradient) and the widget
+   sets its own left padding to clear the rail. This keeps the quote bar
+   continuous across the block instead of vanishing where the widget begins. */
+.cm-md-quoted {
+  position: relative;
+  --cm-q-depth: 1;
+  --cm-q-rail: calc((var(--cm-q-depth) - 1) * var(--cm-quote-step) + var(--cm-quote-gap));
+}
+.cm-md-quoted-1 {
+  --cm-q-depth: 1;
+}
+.cm-md-quoted-2 {
+  --cm-q-depth: 2;
+}
+.cm-md-quoted-3 {
+  --cm-q-depth: 3;
+}
+.cm-md-quoted-4 {
+  --cm-q-depth: 4;
+}
+.cm-md-quoted::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--cm-q-depth) * var(--cm-quote-step));
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--accent) 0 var(--cm-quote-bar),
+    transparent var(--cm-quote-bar) var(--cm-quote-step)
+  );
+  pointer-events: none;
+}
+
+/* Fenced code block lines render with a shared mono background slab framed by a
+   thin border; the first/last fence lines round the corners. */
+.cm-md-codeblock {
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
+  font-size: 0.88em;
+  line-height: 1.6;
+  /* `background-color` (not the `background` shorthand) so it never resets other
+     background layers — important when a code block sits inside a quote. */
+  background-color: var(--cm-code-bg);
+  border-left: 1px solid var(--cm-code-border);
+  border-right: 1px solid var(--cm-code-border);
+  /* Horizontal padding is applied via a higher-specificity rule below — it must
+     beat CodeMirror's themed `.cm-line { padding: 0 }` (specificity 0,2,0). */
+}
+/* IMPORTANT: spacing here uses padding, never margin. A vertical `margin` on a
+   `.cm-line` is excluded from CodeMirror's per-line height measurement, so its
+   height map drifts below the block and clicks/selection land on the wrong line
+   (the bug where you had to click slightly higher to edit below a code block).
+   Padding is part of the measured box, so it stays aligned. */
+.cm-md-codeblock-open {
+  border-top: 1px solid var(--cm-code-border);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+}
+.cm-md-codeblock-close {
+  border-bottom: 1px solid var(--cm-code-border);
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+/* Re-apply code-block padding. CodeMirror injects a runtime `.cm-line {
+   padding: 0 }` theme rule; depending on injection order it can shadow even a
+   higher-specificity static rule, so `!important` is used here to guarantee the
+   inner padding of the code slab always applies (the "代码贴边" fix). */
+.cm-editor-host .cm-line.cm-md-codeblock {
+  padding-left: 18px !important;
+  padding-right: 18px !important;
+}
+.cm-editor-host .cm-line.cm-md-codeblock-open {
+  padding-top: 12px !important;
+}
+.cm-editor-host .cm-line.cm-md-codeblock-close {
+  padding-bottom: 12px !important;
+}
+/* Collapsed fence line (``` + language hidden) — a thin rounded cap; the line
+   expands back to normal when the caret enters the block and reveals the fence. */
+.cm-md-codefence {
+  font-size: 0;
+  line-height: 6px;
+}
+/* Open fence carrying a language: shown as a small right-aligned label in the
+   rounded top cap (the "code block header"), instead of collapsing. */
+.cm-md-codeblock-lang {
+  text-align: right;
+  font-size: 0.72em;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+/* (Fenced code nested inside a blockquote is handled above by the
+   `.cm-line.cm-md-quote.cm-md-codeblock` rule, which insets the slab past the
+   rail with a gradient so the bars stay visible and aligned.) */
+
+/* Rendered inline spans (live preview) */
+.cm-md-strong {
+  font-weight: 700;
+}
+.cm-md-em {
+  font-style: italic;
+}
+.cm-md-strike {
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+.cm-md-code {
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
+  font-size: 0.9em;
+  padding: 0.12em 0.38em;
+  border-radius: 6px;
+  background: var(--panel-muted);
+  border: 1px solid var(--cm-code-border);
+}
+.cm-md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+/* ==highlight== marker — Obsidian-style yellow marker, theme-aware. */
+.cm-md-highlight {
+  background: var(--cm-highlight-bg);
+  color: var(--cm-highlight-text);
+  border-radius: 4px;
+  padding: 0.04em 0.12em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* <sup>/<sub> superscript & subscript. */
+.cm-md-sup,
+.cm-md-sub {
+  font-size: 0.74em;
+  line-height: 0;
+}
+.cm-md-sup {
+  vertical-align: super;
+}
+.cm-md-sub {
+  vertical-align: sub;
+}
+/* <u> underline. */
+.cm-md-underline {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* <kbd> keyboard key. */
+.cm-md-kbd {
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
+  font-size: 0.82em;
+  padding: 0.1em 0.45em;
+  border: 1px solid var(--cm-code-border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--panel-muted);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+/* Multi-line HTML comments are dimmed in place (single-line ones are hidden). */
+.cm-md-comment {
+  color: var(--text-muted);
+  opacity: 0.65;
+  font-style: italic;
+}
+/* Reference-style link definitions, dimmed as metadata. */
+.cm-md-linkdef {
+  color: var(--text-muted);
+  opacity: 0.7;
+  font-size: 0.92em;
+}
+/* Footnote reference [^id] -> small superscript marker. */
+.cm-md-footnote-ref {
+  vertical-align: super;
+  font-size: 0.72em;
+  color: var(--accent);
+  cursor: pointer;
+}
+/* Footnote definition marker [^id]: */
+.cm-md-footnote-def {
+  color: var(--accent);
+  font-weight: 600;
+}
+/* :shortcode: emoji. */
+.cm-md-emoji {
+  font-family:
+    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Segoe UI Symbol", sans-serif;
+  font-style: normal;
+}
+/* <dl> definition list (block widget). */
+/* Block widgets use padding (not margin) for outer spacing — a block widget's
+   root margin is excluded from CodeMirror's measured height and drifts the
+   height map / click hit-testing for everything below it (same reason as the
+   code-block caps above). Transparent padding looks identical to margin here. */
+.cm-md-dl {
+  padding: 12px 0;
+}
+.cm-md-dl dt {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 6px;
+}
+.cm-md-dl dd {
+  margin: 2px 0 0 18px;
+  color: var(--text-secondary);
+}
+
+/* <details>/<summary> collapsible (block widget). Padding (not margin) for outer
+   spacing keeps CodeMirror's height map aligned. */
+.cm-md-details {
+  padding: 10px 14px;
+  border: 1px solid var(--cm-code-border);
+  border-radius: 10px;
+  background: var(--panel-muted);
+}
+.cm-md-details-summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary);
+  list-style-position: inside;
+}
+.cm-md-details[open] .cm-md-details-summary {
+  margin-bottom: 6px;
+}
+.cm-md-details-body {
+  color: var(--text-secondary);
+}
+.cm-md-details-body > :first-child {
+  margin-top: 0;
+}
+.cm-md-details-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* Rendered widgets (live preview) */
+.cm-md-image-wrap {
+  display: inline-block;
+  max-width: 100%;
+}
+/* Standalone image rendered as its own block (idle, or below the source while
+   the line is being edited). */
+.cm-md-image-block {
+  display: block;
+  padding: 0.35em 0;
+}
+.cm-md-image {
+  max-width: 100%;
+  max-height: 480px;
+  border-radius: 8px;
+  vertical-align: bottom;
+}
+.cm-md-hr {
+  display: inline-block;
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  margin: 0;
+}
+.cm-md-checkbox {
+  margin: 0 0.4em 0 0;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.cm-md-bullet {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Rendered GFM table (interactive block widget). The frame hosts the scrollable
+   table plus hover-revealed "add row/column" rails; per-row/column tools live in
+   the scroll padding so they never overlap the cells. */
+.cm-md-table {
+  padding: 10px 0;
+}
+.cm-md-table-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  /* Right/bottom room for the add-column / add-row rails. */
+  padding: 0 20px 18px 0;
+}
+.cm-md-table-scroll {
+  overflow-x: auto;
+  /* Top room for column tools, left room for row tools. */
+  padding: 22px 0 0 26px;
+}
+.cm-md-table table,
+.cm-md-table-el {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: auto;
+  max-width: 100%;
+  font-size: 0.94em;
+  border: 1px solid var(--cm-code-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cm-md-table th,
+.cm-md-table td {
+  border-bottom: 1px solid var(--cm-code-border);
+  border-right: 1px solid var(--cm-code-border);
+  padding: 7px 14px;
+  text-align: left;
+  position: relative;
+}
+.cm-md-table th:last-child,
+.cm-md-table td:last-child {
+  border-right: none;
+}
+.cm-md-table tr:last-child td {
+  border-bottom: none;
+}
+.cm-md-table th {
+  background: var(--accent-soft);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.cm-md-table tbody tr:nth-child(even) td {
+  background: var(--panel-muted);
+}
+/* Row being dragged-over: highlight the drop target. */
+.cm-md-table-el tr.cm-md-drop-target td {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.cm-md-table-el th.cm-md-drop-target {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ---- table control buttons (add / delete / drag) ---- */
+.cm-md-table-ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cm-code-border);
+  background: var(--panel);
+  color: var(--text-secondary);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+.cm-md-table-ctl:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.cm-md-col-grip,
+.cm-md-row-grip {
+  cursor: grab;
+}
+.cm-md-col-grip:active,
+.cm-md-row-grip:active {
+  cursor: grabbing;
+}
+
+/* Per-column tools, centered above each header cell (in the scroll's top pad). */
+.cm-md-col-tools {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding-bottom: 3px;
+  opacity: 0;
+  pointer-events: none;
+}
+.cm-md-col-tools .cm-md-table-ctl {
+  width: 18px;
+  height: 16px;
+}
+.cm-md-table th:hover .cm-md-col-tools,
+.cm-md-col-tools:hover {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Per-row tools, centered to the left of each row (in the scroll's left pad). */
+.cm-md-row-tools {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+.cm-md-row-tools .cm-md-table-ctl {
+  width: 18px;
+  height: 16px;
+}
+.cm-md-table-el tr:hover .cm-md-row-tools,
+.cm-md-row-tools:hover {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Add-column rail (right) and add-row bar (bottom), shown on table hover. */
+.cm-md-add-col {
+  position: absolute;
+  top: 22px;
+  right: 0;
+  bottom: 18px;
+  width: 16px;
+  opacity: 0;
+}
+.cm-md-add-row {
+  position: absolute;
+  left: 26px;
+  right: 20px;
+  bottom: 0;
+  height: 15px;
+  opacity: 0;
+}
+.cm-md-table-frame:hover .cm-md-add-col,
+.cm-md-table-frame:hover .cm-md-add-row {
+  opacity: 0.85;
+}
+.cm-md-add-col:hover,
+.cm-md-add-row:hover {
+  opacity: 1;
+}
+/* Editable cell body: idle shows the inline-Markdown render, focus swaps to the
+   raw cell text (Obsidian-style in-place editing). No frame or highlight —
+   clicking a cell simply places the text caret. A min size keeps empty cells
+   clickable. */
+.cm-md-cellbody {
+  display: inline-block;
+  min-width: 1.2em;
+  min-height: 1.2em;
+  outline: none;
+  cursor: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Rendered Mermaid diagram (block widget). */
+.cm-md-mermaid {
+  padding: 12px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.cm-md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.cm-md-mermaid-error {
+  text-align: left;
+}
+.cm-md-mermaid-error pre {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--cm-code-border);
+  border-radius: 10px;
+  background: var(--cm-code-bg);
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
+  font-size: 0.88em;
+  white-space: pre-wrap;
+}
+
+/* Rendered TeX math (KaTeX) — inline and display. */
+.cm-md-math-inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+.cm-md-math-block {
+  display: block;
+  padding: 12px 0;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.cm-md-math .katex {
+  font-size: 1.05em;
+}
+.cm-md-math-block .katex-display {
+  margin: 0;
+}
+
 .editor-pane-header {
   position: relative;
   height: var(--pane-header-height);
@@ -583,247 +1562,6 @@ button {
   transform: translateY(0);
 }
 
-.editor-panel .toastui-editor-defaultUI {
-  flex: 1;
-  min-height: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  font-family: inherit;
-}
-
-.editor-panel .toastui-editor-toolbar,
-.editor-panel .toastui-editor-defaultUI-toolbar,
-.editor-panel .toastui-editor-mode-switch,
-.editor-panel .toastui-editor-md-tab-container {
-  display: none !important;
-}
-
-.editor-panel .toastui-editor-main {
-  top: 0;
-  height: 100%;
-  min-height: 0;
-}
-
-.editor-panel .toastui-editor-main-container,
-.editor-panel .toastui-editor-md-container,
-.editor-panel .toastui-editor-ww-container,
-.editor-panel .toastui-editor {
-  height: 100% !important;
-  min-height: 0;
-  background: transparent;
-}
-
-.editor-panel .toastui-editor-contents,
-.editor-panel .ProseMirror {
-  min-height: 100%;
-  background: transparent;
-}
-
-.editor-panel .toastui-editor-ww-container .toastui-editor-contents,
-.editor-panel .toastui-editor-md-container .toastui-editor,
-.editor-panel
-  .toastui-editor-md-container
-  .toastui-editor-md-preview
-  .toastui-editor-contents {
-  max-width: none;
-  margin: 0;
-  color: var(--text-primary);
-}
-
-.editor-panel .toastui-editor-contents > *:first-child {
-  margin-top: 0 !important;
-}
-
-.editor-panel.mode-wysiwyg
-  .toastui-editor-ww-container
-  .toastui-editor-contents {
-  padding: 8px var(--canvas-pad-end) 18px var(--canvas-pad-start);
-  height: auto !important;
-}
-
-.editor-panel.mode-wysiwyg .toastui-editor-ww-container {
-  overflow: auto;
-}
-
-.editor-panel.mode-wysiwyg .toastui-editor-ww-container .ProseMirror {
-  height: auto !important;
-  min-height: 100%;
-}
-
-.editor-panel.mode-wysiwyg
-  .toastui-editor-ww-container
-  .toastui-editor-contents
-  > * {
-  max-width: min(var(--content-max-width), 100%);
-  margin-right: auto;
-}
-
-.editor-panel .toastui-editor-ww-container .toastui-editor-contents p,
-.editor-panel .toastui-editor-contents p {
-  margin: 0 0 0.78em;
-  font-family:
-    "PingFang SC", "Helvetica Neue", "Helvetica", "Noto Sans CJK SC", sans-serif;
-  font-size: 17px;
-  line-height: 1.8;
-}
-
-.editor-panel .toastui-editor-contents h1,
-.editor-panel .toastui-editor-contents h2,
-.editor-panel .toastui-editor-contents h3,
-.editor-panel .toastui-editor-contents h4,
-.editor-panel .toastui-editor-contents h5,
-.editor-panel .toastui-editor-contents h6 {
-  font-family:
-    "PingFang SC", "Helvetica Neue", "Helvetica", "Noto Sans CJK SC", sans-serif;
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
-.editor-panel .toastui-editor-contents h1 {
-  margin: 0 0 0.56em;
-  padding-bottom: 0.16em;
-  border-bottom: 1px solid var(--border);
-  font-size: 3rem;
-  line-height: 1.16;
-}
-
-.editor-panel .toastui-editor-contents h2 {
-  margin: 1em 0 0.48em;
-  padding-bottom: 0.16em;
-  border-bottom: 1px solid var(--border);
-  font-size: 2.15rem;
-  line-height: 1.22;
-}
-
-.editor-panel .toastui-editor-contents h3 {
-  margin: 0.95em 0 0.42em;
-  font-size: 1.7rem;
-  line-height: 1.28;
-}
-
-.editor-panel .toastui-editor-contents ul,
-.editor-panel .toastui-editor-contents ol {
-  margin: 0.35em 0 0.9em 1.45em;
-  padding-left: 0.2em;
-  font-family:
-    "PingFang SC", "Helvetica Neue", "Helvetica", "Noto Sans CJK SC", sans-serif;
-  font-size: 17px;
-  line-height: 1.8;
-}
-
-.editor-panel .toastui-editor-contents li {
-  margin: 0.18em 0;
-}
-
-.editor-panel .toastui-editor-contents blockquote {
-  margin: 0.85em 0;
-  padding-left: 1em;
-  border-left: 3px solid var(--border-strong);
-  color: var(--text-secondary);
-}
-
-.editor-panel .toastui-editor-contents pre {
-  margin: 0.85em 0 1em;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #f7f7f6;
-}
-
-:root.dark .editor-panel .toastui-editor-contents pre {
-  background: #23252a;
-}
-
-.editor-panel .toastui-editor-contents code,
-.editor-panel .toastui-editor-md-code,
-.editor-panel .toastui-editor-md-code-block,
-.editor-panel.mode-source .CodeMirror-lines,
-.editor-panel.mode-source .CodeMirror pre {
-  font-family: "SFMono-Regular", "Menlo", "Monaco", "JetBrains Mono", monospace;
-}
-
-.editor-panel .toastui-editor-contents code {
-  padding: 0.12em 0.34em;
-  border-radius: 6px;
-  background: #f5f5f4;
-  font-size: 0.92em;
-}
-
-:root.dark .editor-panel .toastui-editor-contents code {
-  background: #30333a;
-}
-
-.editor-panel .toastui-editor-ww-code-block-language {
-  position: absolute;
-  border-color: var(--border);
-  border-radius: 8px;
-  background: var(--panel-strong);
-  box-shadow: var(--shadow-sm);
-  z-index: 40;
-}
-
-.editor-panel .toastui-editor-ww-code-block-language input {
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.editor-panel .toastui-editor-md-container .toastui-editor-md-preview,
-.editor-panel .toastui-editor-md-splitter {
-  display: none !important;
-}
-
-.editor-panel.mode-source .toastui-editor-md-container {
-  overflow: auto;
-}
-
-.editor-panel.mode-source .toastui-editor-md-container .toastui-editor {
-  width: 100% !important;
-  height: auto !important;
-  max-width: none;
-  margin: 0;
-  padding: 8px var(--canvas-pad-end) 18px var(--canvas-pad-start);
-  color: var(--text-primary);
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.editor-panel.mode-source
-  .toastui-editor-md-container
-  .toastui-editor-contents {
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.editor-panel.mode-source .toastui-editor-md-heading1,
-.editor-panel.mode-source .toastui-editor-md-heading2,
-.editor-panel.mode-source .toastui-editor-md-heading3,
-.editor-panel.mode-source .toastui-editor-md-heading4,
-.editor-panel.mode-source .toastui-editor-md-heading5,
-.editor-panel.mode-source .toastui-editor-md-heading6 {
-  font-size: inherit;
-}
-
-.editor-panel.mode-source
-  .toastui-editor-md-heading.toastui-editor-md-delimiter.setext,
-.editor-panel.mode-source .toastui-editor-md-code,
-.editor-panel.mode-source .toastui-editor-md-code-block,
-.editor-panel.mode-source .toastui-editor-md-meta,
-.editor-panel.mode-source .toastui-editor-md-delimiter,
-.editor-panel.mode-source .toastui-editor-md-link,
-.editor-panel.mode-source .toastui-editor-md-table,
-.editor-panel.mode-source .toastui-editor-md-block-quote {
-  line-height: inherit;
-}
-
-.editor-panel.mode-source .toastui-editor-ww-container {
-  display: none !important;
-}
-
-.editor-panel.mode-wysiwyg .toastui-editor-md-container {
-  display: none !important;
-}
-
 @media (max-width: 980px) {
   .app {
     padding: 12px;
@@ -862,21 +1600,1530 @@ button {
     gap: 8px;
   }
 
-  .editor-panel.mode-wysiwyg
-    .toastui-editor-ww-container
-    .toastui-editor-contents {
-    padding: 8px 16px 14px;
+  .cm-editor-host .cm-md-h1 {
+    font-size: 2.1rem;
   }
 
-  .editor-panel.mode-source .toastui-editor-md-container .toastui-editor {
-    padding: 8px 14px 14px;
+  .cm-editor-host .cm-md-h2 {
+    font-size: 1.75rem;
   }
+}
 
-  .editor-panel .toastui-editor-contents h1 {
-    font-size: 2.45rem;
-  }
+/* Find & replace bar */
+.find-replace-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 12px;
+  margin: 6px var(--canvas-pad-end) 0 var(--canvas-pad-start);
+  background: var(--panel-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
 
-  .editor-panel .toastui-editor-contents h2 {
-    font-size: 1.88rem;
+.find-toggle-mode {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+}
+
+.find-toggle-mode:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.find-toggle-mode.expanded svg {
+  transform: rotate(90deg);
+}
+
+.find-replace-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.find-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--editor-paper);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.find-input:focus {
+  border-color: var(--accent);
+}
+
+.find-count {
+  flex: 0 0 auto;
+  min-width: 48px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.find-flag-btn,
+.find-nav-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+}
+
+.find-flag-btn:hover,
+.find-nav-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.find-flag-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.find-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.find-close-btn:hover {
+  color: var(--danger);
+}
+
+/* AI assistant dialog */
+.ai-dialog {
+  width: min(620px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0;
+}
+
+.ai-dialog-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+}
+
+.ai-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.ai-close-btn:hover {
+  background: var(--panel-muted);
+  color: var(--danger);
+}
+
+.ai-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-action-chip {
+  min-height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.ai-action-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.ai-action-chip.active {
+  background: var(--accent-soft);
+  border-color: rgba(92, 126, 168, 0.3);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ai-action-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.ai-hint-warn {
+  color: var(--danger);
+}
+
+.ai-hint-muted {
+  color: var(--text-muted);
+}
+
+.ai-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* AI panel header: gear (settings) + close grouped on the right. */
+.ai-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ai-close-btn.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Inline-completion settings page (gear view). */
+.ai-settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0 6px;
+}
+
+.ai-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ai-settings-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ai-settings-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ai-settings-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ai-settings-field {
+  flex: none;
+}
+
+/* On/off switch for the inline-completion toggle. */
+.ai-switch {
+  flex: none;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.ai-switch.is-on {
+  background: var(--accent);
+}
+
+.ai-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s ease;
+}
+
+.ai-switch.is-on .ai-switch-knob {
+  transform: translateX(18px);
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-field-model {
+  flex: 1;
+  min-width: 160px;
+}
+
+.ai-field-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ai-select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--editor-paper);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.ai-select:focus {
+  border-color: var(--accent);
+}
+
+.ai-select:disabled {
+  opacity: 0.6;
+}
+
+.ai-instruction {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--editor-paper);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.ai-instruction:focus {
+  border-color: var(--accent);
+}
+
+.ai-output {
+  min-height: 140px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-muted);
+}
+
+.ai-output-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family:
+    "PingFang SC", "Helvetica Neue", "Helvetica", "Noto Sans CJK SC", sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+.ai-output-placeholder {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* AI before→after diff preview (shared by the panel and the floating bubble). */
+.ai-output-diff,
+.ai-bubble-output-diff {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+.ai-output-diff {
+  font-size: 14px;
+}
+.ai-bubble-output-diff {
+  font-size: 13px;
+}
+.ai-diff-ins {
+  background: rgba(34, 197, 94, 0.22);
+  border-radius: 2px;
+}
+.ai-diff-del {
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--text-muted);
+  text-decoration: line-through;
+  border-radius: 2px;
+}
+
+/* Streamed reasoning ("thinking") shown before the answer arrives. */
+.ai-output-reasoning,
+.ai-bubble-output-reasoning {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+  font-style: italic;
+  line-height: 1.6;
+}
+.ai-output-reasoning {
+  font-size: 13px;
+}
+.ai-bubble-output-reasoning {
+  font-size: 12px;
+}
+
+/* Result follow-up (full panel): quick-refine chips + instruction input. */
+.ai-refine {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ai-refine-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ai-refine-chip {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ai-refine-chip:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+.ai-refine-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ai-refine-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13.5px;
+}
+.ai-refine-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ai-refine-send {
+  flex: 0 0 auto;
+  padding: 0 12px;
+}
+
+.ai-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ai-actions-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-dialog-actions .action-btn {
+  gap: 6px;
+}
+
+.ai-run-btn {
+  background: var(--accent-soft);
+  border-color: rgba(92, 126, 168, 0.24);
+  color: var(--accent);
+}
+
+.ai-run-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.ai-stop-btn {
+  border-color: rgba(192, 91, 91, 0.24);
+  color: var(--danger);
+}
+
+.ai-apply-btn:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: rgba(92, 126, 168, 0.24);
+  color: var(--accent);
+}
+
+.ai-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ai-spin {
+  animation: ai-spin 0.9s linear infinite;
+}
+
+@keyframes ai-spin {
+  to {
+    transform: rotate(360deg);
   }
+}
+
+/* AI image generation dialog */
+.image-gen-dialog {
+  width: min(560px, 100%);
+}
+
+.image-gen-prompt {
+  min-height: 72px;
+}
+
+.image-gen-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-muted);
+}
+
+.image-gen-stage {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.image-gen-img {
+  display: block;
+  max-width: 100%;
+  max-height: 336px;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--editor-paper);
+}
+
+.image-gen-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 13px;
+}
+
+.image-gen-empty,
+.image-gen-placeholder {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.image-gen-history {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.image-gen-history-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.image-gen-history-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.image-gen-thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--editor-paper);
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    transform 0.14s ease;
+}
+
+.image-gen-thumb:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.image-gen-thumb.is-active {
+  border-color: var(--accent);
+}
+
+.image-gen-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ai-actions-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Floating AI selection bubble */
+.ai-bubble {
+  position: fixed;
+  z-index: 9999;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel-strong);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.18);
+  animation: ai-bubble-in 0.13s ease;
+}
+
+:root.dark .ai-bubble {
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
+}
+
+@keyframes ai-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ai-bubble-card {
+  width: min(360px, calc(100vw - 24px));
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-bubble-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+}
+
+.ai-bubble-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.ai-bubble-chip:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ai-bubble-chip svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.ai-bubble-chip.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* "更多" overflow dropdown — keeps the inline toolbar compact while every tool
+   stays one click away. */
+.ai-bubble-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.ai-bubble-more-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 2;
+  min-width: 140px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+}
+
+:root.dark .ai-bubble-more-pop {
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.46);
+}
+
+.ai-bubble-more-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-bubble-more-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ai-bubble-more-item svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.ai-bubble-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--border-strong);
+}
+
+.ai-bubble-scope {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.ai-bubble-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.ai-bubble-icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ai-bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ai-bubble-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-bubble-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-bubble-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-bubble-field-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ai-bubble-select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--editor-paper);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.ai-bubble-select:focus {
+  border-color: var(--accent);
+}
+
+.ai-bubble-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--editor-paper);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.ai-bubble-textarea:focus {
+  border-color: var(--accent);
+}
+
+.ai-bubble-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.ai-bubble-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-bubble-output {
+  min-height: 56px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.ai-bubble-output-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family:
+    "PingFang SC", "Helvetica Neue", "Helvetica", "Noto Sans CJK SC", sans-serif;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+.ai-bubble-output-placeholder {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Rendered Markdown for the "问一问" explanation. */
+.ai-bubble-output-md {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.ai-bubble-output-md > :first-child {
+  margin-top: 0;
+}
+
+.ai-bubble-output-md > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-bubble-output-md p,
+.ai-bubble-output-md ul,
+.ai-bubble-output-md ol,
+.ai-bubble-output-md blockquote,
+.ai-bubble-output-md pre {
+  margin: 0 0 0.6em;
+}
+
+.ai-bubble-output-md h1,
+.ai-bubble-output-md h2,
+.ai-bubble-output-md h3,
+.ai-bubble-output-md h4,
+.ai-bubble-output-md h5,
+.ai-bubble-output-md h6 {
+  margin: 0.8em 0 0.4em;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.ai-bubble-output-md h1 {
+  font-size: 1.3em;
+}
+
+.ai-bubble-output-md h2 {
+  font-size: 1.2em;
+}
+
+.ai-bubble-output-md h3 {
+  font-size: 1.1em;
+}
+
+.ai-bubble-output-md h4,
+.ai-bubble-output-md h5,
+.ai-bubble-output-md h6 {
+  font-size: 1em;
+}
+
+.ai-bubble-output-md ul,
+.ai-bubble-output-md ol {
+  padding-left: 1.4em;
+}
+
+.ai-bubble-output-md li + li {
+  margin-top: 0.2em;
+}
+
+.ai-bubble-output-md a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.ai-bubble-output-md a:hover {
+  text-decoration: underline;
+}
+
+.ai-bubble-output-md code {
+  padding: 0.1em 0.35em;
+  border-radius: 5px;
+  background: var(--code-bg, rgba(127, 127, 127, 0.16));
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.ai-bubble-output-md pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--code-bg, rgba(127, 127, 127, 0.16));
+}
+
+.ai-bubble-output-md pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.ai-bubble-output-md blockquote {
+  margin-left: 0;
+  padding: 0.2em 0.9em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.ai-bubble-output-md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
+
+.ai-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-bubble-actions-result {
+  flex-wrap: wrap;
+}
+
+.ai-bubble-actions-spacer {
+  flex: 1 1 auto;
+}
+
+/* Result follow-up: quick-refine chips + free-form instruction input. */
+.ai-bubble-refine {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.ai-bubble-refine-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ai-bubble-refine-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ai-bubble-refine-chip:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+.ai-bubble-refine-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-bubble-refine-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.ai-bubble-refine-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ai-bubble-refine-send {
+  flex: 0 0 auto;
+  padding: 0 10px;
+}
+
+.ai-bubble-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.ai-bubble-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--panel-muted);
+  color: var(--accent);
+}
+
+.ai-bubble-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-bubble-btn-primary:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: rgba(92, 126, 168, 0.3);
+  color: var(--accent);
+}
+
+.ai-bubble-btn-stop {
+  border-color: rgba(192, 91, 91, 0.3);
+  color: var(--danger);
+}
+
+.ai-bubble-btn-stop:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: rgba(192, 91, 91, 0.08);
+  color: var(--danger);
+}
+
+.ai-bubble-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ai-bubble-spin {
+  animation: ai-spin 0.9s linear infinite;
+}
+
+/* ---- Right-click context menu (themed, portal to body) ---- */
+.ctx-menu-root {
+  position: fixed;
+  z-index: 10000;
+  animation: ctx-menu-in 0.09s ease-out;
+}
+@keyframes ctx-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ctx-menu {
+  min-width: 184px;
+  padding: 5px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.ctx-item-wrap {
+  position: relative;
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  border-radius: 7px;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.ctx-item:hover:not(:disabled),
+.ctx-item:focus-visible:not(:disabled),
+.ctx-item.ctx-has-sub[aria-expanded='true'] {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+.ctx-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.6;
+}
+.ctx-item.ctx-danger {
+  color: var(--danger);
+}
+.ctx-item.ctx-danger:hover:not(:disabled),
+.ctx-item.ctx-danger:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+.ctx-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.ctx-shortcut {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.ctx-caret {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1;
+}
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.ctx-sub {
+  position: absolute;
+  left: 100%;
+  top: -6px;
+  padding-left: 3px;
+}
+
+/* ── Sidebar tabs (文件 | 大纲) ──────────────────────────────────────── */
+.sidebar-tabs {
+  justify-content: flex-start;
+  gap: 2px;
+  padding: 0 8px;
+}
+.sidebar-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0 10px;
+  height: calc(var(--pane-header-height) - 10px);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.sidebar-tab:hover {
+  color: var(--text-secondary);
+}
+.sidebar-tab.active {
+  color: var(--text-primary);
+  background: var(--panel-strong);
+}
+
+/* ── File explorer (file manager sidebar) ───────────────────────────── */
+.fm-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--outline-bg);
+}
+.fm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.fm-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.fm-tool-btn:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+.fm-tool-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.fm-spin {
+  animation: fm-spin 0.8s linear infinite;
+}
+@keyframes fm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.fm-section {
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.fm-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.fm-section-title {
+  flex: 1;
+  text-align: left;
+}
+.fm-recent-list {
+  padding-bottom: 4px;
+  max-height: 26vh;
+  overflow-y: auto;
+}
+.fm-tree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.fm-root-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--outline-bg);
+}
+.fm-root-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fm-rows {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 12px;
+  outline: none;
+}
+.fm-row.fm-focused {
+  outline: 1px solid var(--accent, var(--border-strong, var(--border)));
+  outline-offset: -1px;
+}
+.fm-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding-right: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm, 6px);
+}
+.fm-row:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+.fm-row:hover .fm-row-action {
+  opacity: 1;
+}
+.fm-row.active {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.fm-row-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.fm-row.active .fm-row-icon {
+  color: var(--accent, var(--text-primary));
+}
+/* Workspace-root header rows (multi-root explorer). */
+.fm-row.fm-root-row {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.fm-row.fm-root-row .fm-row-label {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.fm-row.fm-pinned-root .fm-row-icon {
+  color: var(--accent, var(--text-primary));
+}
+.fm-row-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.fm-row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.fm-row-action:hover {
+  background: var(--border);
+  color: var(--text-primary);
+}
+.fm-recent-row {
+  padding-left: 8px;
+}
+.fm-twistie-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+}
+.fm-twistie {
+  color: var(--text-muted);
+  transition: transform 0.12s ease;
+}
+.fm-twistie.open {
+  transform: rotate(90deg);
+}
+.fm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.fm-empty-hint {
+  font-size: 12px;
+}
+.fm-empty-inline {
+  padding: 12px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.fm-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-strong);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.fm-open-btn:hover {
+  border-color: var(--accent, var(--border));
+}
+.fm-inline-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 5px;
+  color: var(--text-primary);
+  background: var(--panel-strong);
+  border: 1px solid var(--accent, var(--border-strong, var(--border)));
+  border-radius: 4px;
+  outline: none;
+}
+.fm-drop-target {
+  background: var(--panel-strong);
+  outline: 1px dashed var(--accent, var(--border-strong, var(--border)));
+  outline-offset: -2px;
+  border-radius: var(--radius-sm, 6px);
+}
+.fm-cut {
+  opacity: 0.5;
 }

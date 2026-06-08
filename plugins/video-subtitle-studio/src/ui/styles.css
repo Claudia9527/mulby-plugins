@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: #020617;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-3xl border border-white/10 bg-white/[0.045] p-4 shadow-2xl shadow-black/25 backdrop-blur;
+  }
+
+  .section-title {
+    @apply text-sm font-semibold uppercase tracking-[0.22em] text-slate-300;
+  }
+
+  .btn-primary,
+  .btn-secondary,
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .btn-primary {
+    @apply bg-cyan-300 text-slate-950 hover:bg-cyan-200;
+  }
+
+  .btn-secondary {
+    @apply border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15;
+  }
+
+  .btn-ghost {
+    @apply text-slate-300 hover:bg-white/10 hover:text-white;
+  }
+
+  .field {
+    @apply block text-sm text-slate-300;
+  }
+
+  .field span {
+    @apply mb-1 block text-xs uppercase tracking-[0.18em] text-slate-500;
+  }
+
+  .field input,
+  .field select {
+    @apply w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-300;
+  }
+
+  .field.compact input {
+    @apply py-1.5;
+  }
+
+  .cue-card {
+    @apply rounded-2xl border border-white/10 bg-slate-900/80 p-4;
+  }
+
+  .cue-card-active {
+    @apply border-cyan-300/70 bg-cyan-400/10 ring-1 ring-cyan-300/40;
+  }
+
+  .cue-card textarea {
+    @apply mt-3 min-h-[74px] w-full resize-y rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm leading-relaxed text-slate-100 outline-none transition focus:border-cyan-300;
+  }
+
+  .icon-button {
+    @apply rounded-lg p-2 text-slate-400 transition hover:bg-white/10 hover:text-red-200;
+  }
+
+  .modal-overlay {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm;
+  }
+
+  .modal-card {
+    @apply flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-900 shadow-2xl shadow-black/60;
+  }
+
+  .modal-header {
+    @apply flex items-center justify-between gap-4 border-b border-white/10 px-6 py-4;
+  }
+
+  .modal-body {
+    @apply space-y-3 overflow-y-auto px-6 py-5;
+  }
+
+  .modal-footer {
+    @apply border-t border-white/10 px-6 py-4;
+  }
+}

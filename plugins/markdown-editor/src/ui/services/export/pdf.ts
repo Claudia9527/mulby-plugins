@@ -1,3 +1,4 @@
+import { exportNeedsRenderWait } from './enhance'
 import type { ExportDocument } from './types'
 
 interface InBrowserBuilder {
@@ -22,17 +23,26 @@ function toDataUrl(html: string) {
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
 }
 
-export async function exportPdfFile(document: ExportDocument, path: string) {
+/**
+ * Exports the document to PDF via the headless browser. When `pageUrl` is given
+ * (a file:// URL to the HTML on disk) it is loaded instead of a data: URL — the
+ * latter overflows Chromium's navigation URL length limit once images are
+ * inlined as data URLs, so the caller writes a temp file and passes its URL.
+ */
+export async function exportPdfFile(document: ExportDocument, path: string, pageUrl?: string) {
   const inbrowser = (window.mulby?.inbrowser as InBrowserApi | undefined)
 
   if (!inbrowser) {
     throw new Error('当前环境不支持 PDF 导出')
   }
 
+  // Math/mermaid render asynchronously via injected CDN scripts; give them time.
+  const renderWaitMs = exportNeedsRenderWait(document.fullHtml) ? 1800 : 250
+
   await inbrowser
-    .goto(toDataUrl(document.fullHtml))
+    .goto(pageUrl ?? toDataUrl(document.fullHtml))
     .viewport(1280, 1800)
-    .wait(250)
+    .wait(renderWaitMs)
     .pdf({
       printBackground: true,
       preferCSSPageSize: true,

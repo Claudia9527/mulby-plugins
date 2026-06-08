@@ -1,0 +1,3054 @@
+import { useEffect, useRef, useState, useCallback } from 'react'
+import {
+  Sparkles, Wand2, FolderSearch, Loader2, Check, ChevronRight, ChevronLeft,
+  Hammer, ShieldCheck, FolderOpen, Play, AlertTriangle,
+  StopCircle, RefreshCw, Image as ImageIcon, Settings2, Rocket, FileText, Lightbulb,
+  Pencil, Boxes, FileEdit, FileSearch, Terminal, Bug, Wrench, ListChecks,
+  ChevronUp, ChevronDown, History, RotateCcw, GitCommit, Tag, Plus
+} from 'lucide-react'
+import type { LogLevel } from '../types'
+import type { UseDeveloperResult } from '../hooks/useDeveloper'
+import { ContractEditor } from './ContractEditor'
+import {
+  type VibeContract, defaultContract, normalizeContract, manifestToContract,
+  manifestJson, primaryTrigger, primaryFeatureCode, contractSummary, triggerLabel
+} from '../lib/vibeContract'
+import { useSession, SessionSwitcher, ChatPanel } from '../vibe'
+import type { VibeSessionState, VibeAction, BrainstormOption, VibeMessage, VibePlanTodo, VibePlanPhase } from '../vibe'
+
+export interface VibeEditTarget {
+  path: string
+  id?: string
+  displayName?: string
+  token: number
+}
+
+export interface KnownPlugin {
+  path: string
+  id: string
+  displayName: string
+}
+
+/** 一条版本历史记录（来自后端 vcs_log） */
+export interface VcsCommit {
+  hash: string
+  short: string
+  message: string
+  dateISO: string
+  tags: string[]
+}
+
+/** 本次 Vibe 会话相对开始时的单个文件改动（来自后端 vibe_changes） */
+export interface VibeChange {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  before: string | null
+  after: string | null
+  truncated?: boolean
+}
+
+/** 契约一致性校验的单条问题（来自后端 check_conformance） */
+export interface ConformanceIssue {
+  level: 'error' | 'warn' | 'info'
+  code: string
+  message: string
+  hint?: string
+}
+export interface ConformanceResult {
+  ok: boolean
+  ran: boolean
+  issues: ConformanceIssue[]
+  summary?: string
+}
+
+/** 用示例输入真实跑一次某功能的结果（运行验证 smoke） */
+export interface SmokeResult {
+  code: string
+  label: string
+  input: string
+  status: 'pass' | 'fail' | 'skipped'
+  hasUI?: boolean
+  error?: string
+  note?: string
+}
+
+interface Props {
+  dev: UseDeveloperResult
+  addLog: (level: LogLevel, text: string) => void
+  pushToast: (kind: 'success' | 'error' | 'info', text: string) => void
+  onPickDir: () => Promise<string | null>
+  onAfterCreate: () => void
+  onSyncWorkbench?: () => Promise<void> | void
+  knownPlugins?: KnownPlugin[]
+  editTarget?: VibeEditTarget | null
+  onConsumeEditTarget?: () => void
+}
+
+type Stage = 0 | 1 | 2 | 3
+type VibeMode = 'create' | 'edit'
+
+const STAGES = [
+  { id: 0, title: '描述', sub: 'Describe', icon: Lightbulb },
+  { id: 1, title: '契约', sub: 'Contract', icon: FileEdit },
+  { id: 2, title: '生成', sub: 'Build', icon: Wand2 },
+  { id: 3, title: '交付', sub: 'Ship & Debug', icon: Rocket }
+] as const
+
+type EventPhase = 'plan' | 'scaffold' | 'manifest' | 'minimal' | 'full' | 'build' | 'load' | 'icon' | 'expand' | 'repair' | 'debug' | 'pack'
+type EventKind = 'read' | 'write' | 'build' | 'load' | 'error' | 'note' | 'ai'
+
+interface TimelineEvent {
+  id: string
+  ts: number
+  phase: EventPhase
+  kind: EventKind
+  text: string
+  detail?: string
+}
+
+const PHASE_LABEL: Record<EventPhase, string> = {
+  plan: '规划', scaffold: '脚手架', manifest: '契约', minimal: '最小可跑', full: '完整实现',
+  build: '构建', load: '载入', icon: '图标', expand: '扩展', repair: '修复', debug: '调试', pack: '打包'
+}
+
+const EXAMPLES = [
+  '把剪贴板里的图片上传并返回 Markdown 链接',
+  'JSON 格式化、压缩与转义工具',
+  '番茄钟计时器，到点桌面通知',
+  '生成指定内容的二维码并可复制图片',
+  '批量重命名选中的文件'
+]
+const EDIT_EXAMPLES = [
+  '界面改成暗色风格',
+  '加一个一键复制结果的按钮',
+  '支持拖拽文件进来处理',
+  '修复点击没反应的问题',
+  '多语言：增加英文界面'
+]
+
+const VIBE_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'list_dir',
+      description: '列出插件目录内的文件（相对路径数组），用于了解结构。',
+      parameters: { type: 'object', properties: { path: { type: 'string', description: '相对子目录，默认 "."' } }, additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: '读取插件目录内的文本文件内容。',
+      parameters: { type: 'object', properties: { path: { type: 'string', description: '相对路径' } }, required: ['path'], additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: '写入或覆盖插件目录内的文件（提供完整内容，自动创建父目录）。新文件或整体重写用它。',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description: '对已存在文件做查找替换式增量编辑（改少量代码时优先用它，比 write_file 省 token、更稳）。oldText 必须与文件内容逐字一致（含缩进/换行）；多处匹配需 replaceAll:true。',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string', description: '要被替换的原文片段（需唯一）' }, newText: { type: 'string', description: '替换后的新内容' }, replaceAll: { type: 'boolean' } }, required: ['path', 'oldText', 'newText'], additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grep',
+      description: '在插件目录内按内容搜索（文本或正则），可选 glob 过滤文件，返回命中的文件与行。用于快速定位代码。',
+      parameters: { type: 'object', properties: { query: { type: 'string' }, glob: { type: 'string', description: '如 "src/**/*.ts"' }, isRegex: { type: 'boolean' }, ignoreCase: { type: 'boolean' }, maxResults: { type: 'number' } }, required: ['query'], additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'build_check',
+      description: '在插件目录运行 `npm run build` 自检，返回是否通过与日志尾部。写完关键改动后调用它，根据报错自行修复，直到构建通过。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_conformance',
+      description: '静态校验 manifest.json 与真实文件/源码是否一致（UI 形态、功能码处理分支、工具注册、preload 路径等）。完成实现、停止之前必须调用一次，并据返回的 error 级问题自行修复，直到 ok:true。这是「插件能正确装载运行」的硬门禁，不要跳过。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false }
+    }
+  }
+] as const
+
+/** 只读工具子集：用于「问答」意图，绝不包含写入/构建工具 */
+const VIBE_READ_TOOLS = VIBE_TOOLS.filter((t) => ['list_dir', 'read_file', 'grep'].includes(t.function.name))
+
+export type VibeIntent = 'ask' | 'create' | 'modify' | 'run' | 'package' | 'rollback' | 'icon'
+// LLM 路由可选动作：在意图之外多一个「resume（继续未完成任务）」
+export type RouteAction = VibeIntent | 'resume'
+
+/**
+ * 规则优先的意图识别（零延迟、零成本）。模糊时降级为 'ask'（只读问答），杜绝擅自改代码。
+ * ctx.hasPlugin：当前会话是否已有可操作的插件目录（createdPath）。
+ */
+export function classifyIntent(text: string, ctx: { hasPlugin: boolean }): { intent: VibeIntent; confidence: number } {
+  const t = (text || '').trim()
+  if (!t) return { intent: 'ask', confidence: 0 }
+  const reRollback = /撤销|回滚|还原|退回(上一?版)?|恢复到/
+  const rePackage = /打包|发布|导出|inplugin|出包/i
+  const reRun = /运行|试一?下|试用|跑一?下|跑跑|打开插件|验证一?下|测一?下/
+  const reModify = /改|修复|修一?下|加(个|一个|上)?|增加|去掉|删掉|移除|换成|替换|支持|优化|重构|调整|美化|变成|做成|新增|实现|让它|不能|没反应|报错|bug|崩溃|不对|失效|多语言/i
+  const reAsk = /[?？]\s*$|^(为什么|为啥|怎么|如何|是不是|有没有|能不能|可不可以|什么是|啥是|解释|说明|介绍|看一?下|查一?下|现在|目前|当前|状态|结构|哪些|多少|是否|讲讲|说说)/
+  // 「问句强信号」：以 ？结尾，或以纯疑问词开头——即便含「支持/优化/没反应」等改动关键词也优先当只读问答，
+  // 落实「默认不动代码」（修复「为什么没反应？」「它支持 PDF 吗？」被误判为 modify 而擅自改代码）。
+  const reStrongAsk = /[?？]\s*$|^\s*(为什么|为啥|为何|是不是|是否|有没有|能不能|可不可以|什么是|啥是|有什么|怎么回事|怎么办|干嘛|干啥|解释|介绍|讲讲|说说)/
+  // 图标意图：含「图标/icon/logo」名词 + 重做/更换/美化等诉求，且不是在问问题。需已有插件项目。
+  const reIcon = /图标|icon|logo|标志|图案/i
+  const reIconWant = /重新|重做|重画|重绘|再(来|画|做|生成|搞)|换|更换|换个|换成|生成|设计|做个|画个|画一|做一|美化|优化|调整|改成?|变(成|得)?|搞个|来个|换掉|重置|不好看|难看|太丑|丑|不满意|不喜欢/
+  const reIconAsk = /[?？]\s*$|怎么|如何|为什么|为啥|是不是|能不能|可不可以|什么|啥|哪里|在哪/
+
+  if (reRollback.test(t)) return { intent: 'rollback', confidence: 0.9 }
+  if (rePackage.test(t)) return { intent: 'package', confidence: 0.85 }
+  // 图标须在 run/modify 之前判定：避免「美化/优化图标」被 reModify 误判为代码修改、走重型代码 agent
+  if (ctx.hasPlugin && reIcon.test(t) && reIconWant.test(t) && !reIconAsk.test(t)) {
+    return { intent: 'icon', confidence: 0.85 }
+  }
+  if (reRun.test(t)) return { intent: 'run', confidence: 0.8 }
+  // 问句强信号优先于 modify/create：明显是在提问就只读问答，绝不擅自改代码或新建项目
+  if (reStrongAsk.test(t)) return { intent: 'ask', confidence: 0.72 }
+
+  if (!ctx.hasPlugin) {
+    if (reAsk.test(t) && !reModify.test(t)) return { intent: 'ask', confidence: 0.7 }
+    return { intent: 'create', confidence: 0.6 }
+  }
+  if (reAsk.test(t) && !reModify.test(t)) return { intent: 'ask', confidence: 0.75 }
+  if (reModify.test(t)) return { intent: 'modify', confidence: 0.7 }
+  // 模糊 → 只读问答兜底（决策：默认不动代码）
+  return { intent: 'ask', confidence: 0.3 }
+}
+
+function extractJsonObject(raw: string): string | null {
+  const text = (raw || '').trim()
+  if (text.startsWith('{') && text.endsWith('}')) return text
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced?.[1]) {
+    const body = fenced[1].trim()
+    if (body.startsWith('{') && body.endsWith('}')) return body
+  }
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start >= 0 && end > start) return text.slice(start, end + 1)
+  return null
+}
+
+function extractSvg(raw: string): string | null {
+  const m = (raw || '').match(/<svg[\s\S]*?<\/svg>/i)
+  return m ? m[0] : null
+}
+
+function parseArgs(args: unknown): Record<string, unknown> {
+  if (!args) return {}
+  if (typeof args === 'string') { try { return JSON.parse(args) } catch { return {} } }
+  if (typeof args === 'object') return args as Record<string, unknown>
+  return {}
+}
+
+/** 运行时自省 window.mulby，列出当前宿主真实可用的命名空间与方法名（最准确、永远与宿主一致） */
+function collectMulbyApiSurface(maxPerNs = 50): string {
+  try {
+    const m = (window as any)?.mulby
+    if (!m || typeof m !== 'object') return ''
+    const lines: string[] = []
+    for (const ns of Object.keys(m).sort()) {
+      const val = m[ns]
+      if (val && typeof val === 'object') {
+        const methods = Object.keys(val).filter((k) => typeof val[k] === 'function')
+        lines.push(methods.length ? `mulby.${ns}: ${methods.slice(0, maxPerNs).join(', ')}` : `mulby.${ns}`)
+      } else if (typeof val === 'function') {
+        lines.push(`mulby.${ns}()`)
+      }
+    }
+    return lines.join('\n')
+  } catch {
+    return ''
+  }
+}
+
+const ai = () => (window as any)?.mulby?.ai
+const fsApi = () => (window as any)?.mulby?.filesystem
+const clip = () => (window as any)?.mulby?.clipboard
+const settingsApi = () => (window as any)?.mulby?.settings
+const pluginApi = () => (window as any)?.mulby?.plugin
+const sharpApi = () => (window as any)?.mulby?.sharp
+
+export function VibePanel({
+  dev, addLog, pushToast, onPickDir, onAfterCreate, onSyncWorkbench,
+  knownPlugins = [], editTarget, onConsumeEditTarget
+}: Props) {
+  const [stage, setStage] = useState<Stage>(0)
+  // 已抵达的最远阶段：用于左侧步骤条可点击跳转（只能跳到已抵达的步骤），且跳转纯导航不重跑动作
+  const [maxStage, setMaxStage] = useState<Stage>(0)
+  const [vibeMode, setVibeMode] = useState<VibeMode>('create')
+  const [sentence, setSentence] = useState('')
+  const [targetDir, setTargetDir] = useState('')
+  const [editPath, setEditPath] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  // 生成深度：full=一次性完整实现（默认）；minimal=先最小可跑再扩展（适合复杂/不确定需求）
+  const [genDepth, setGenDepth] = useState<'full' | 'minimal'>('full')
+
+  const [modelOptions, setModelOptions] = useState<Array<{ id: string; label: string }>>([])
+  const [selectedModel, setSelectedModel] = useState('')
+  const [modelLoading, setModelLoading] = useState(false)
+
+  const [planning, setPlanning] = useState(false)
+  const [contract, setContract] = useState<VibeContract | null>(null)
+
+  const [generating, setGenerating] = useState(false)
+  const [createdPath, setCreatedPath] = useState('')
+  const [events, setEvents] = useState<TimelineEvent[]>([])
+  const [toolCalls, setToolCalls] = useState(0)
+  const [narration, setNarration] = useState('')
+  const [generated, setGenerated] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [expanding, setExpanding] = useState(false)
+
+  const [building, setBuilding] = useState(false)
+  const [built, setBuilt] = useState(false)
+  const [buildLog, setBuildLog] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [loadedId, setLoadedId] = useState<string | undefined>(undefined)
+  const [repairing, setRepairing] = useState(false)
+
+  const [iconBusy, setIconBusy] = useState(false)
+  const [iconDone, setIconDone] = useState(false)
+  const [iconDataUrl, setIconDataUrl] = useState<string | null>(null)
+  // 图标生成实时进度（治"重做图标看似卡死"）：流式累计绘制字符 + 阶段，配合定时器让耗时秒数持续跳动
+  const [iconProgress, setIconProgress] = useState<string | null>(null)
+  const iconStartRef = useRef(0)
+  const iconCharsRef = useRef(0)
+  const iconPhaseRef = useRef<'thinking' | 'drawing' | 'image'>('thinking')
+  const [packing, setPacking] = useState(false)
+  const [packed, setPacked] = useState(false)
+
+  const [devtoolsOn, setDevtoolsOn] = useState<boolean | null>(null)
+  const [devtoolsBusy, setDevtoolsBusy] = useState(false)
+  const [opened, setOpened] = useState(false)
+
+  // P0 改动安全网：本次会话的文件改动 + 回滚 + 核心验收确认
+  const [changes, setChanges] = useState<VibeChange[]>([])
+  const [rollingBack, setRollingBack] = useState(false)
+  const [coreVerified, setCoreVerified] = useState(false)
+
+  // 契约一致性（构建后自动静态校验）+ 一致性问题的 AI 修复
+  const [conformance, setConformance] = useState<ConformanceResult | null>(null)
+  const [confRepairing, setConfRepairing] = useState(false)
+  // 运行验证 smoke（用示例输入真实跑一次；有副作用，手动触发）
+  const [smoke, setSmoke] = useState<SmokeResult[]>([])
+  const [smoking, setSmoking] = useState(false)
+
+  // 右侧对话式继续修改：是否正在迭代（busy 指示）。历史不再单独存字符串，
+  // 改由「对话历史上下文工程」统一注入（见 convoRef / buildHistoryMessages）。
+  const [iterating, setIterating] = useState(false)
+
+  // 头脑风暴（S3）：开局让 AI 发散候选方向供小白选择
+  const [brainstorm, setBrainstorm] = useState<{ loading: boolean; options: BrainstormOption[]; seed: string } | null>(null)
+
+  // Plan 模式（契约确认后→生成前）：AI 制定开发计划(todo list)，再逐步执行、实时勾选
+  const [plan, setPlan] = useState<VibePlanTodo[]>([])
+  const [planPhase, setPlanPhase] = useState<VibePlanPhase>('idle')
+  // 本次计划是否已脚手架就绪：用于「继续执行」时跳过重复脚手架/基线重置（即便首步就被中止、尚无步骤完成）
+  const planPreparedRef = useRef(false)
+  // 计划执行互斥：防止「停止后立刻继续」时，上一轮尚未结算的执行循环与新一轮并发跑、互相覆盖状态
+  const planExecutingRef = useRef(false)
+  // 正在用 LLM 判断这条对话该触发什么动作（C 方案：意图路由）
+  const [routing, setRouting] = useState(false)
+
+  // 对话内提示卡（S4）：危险操作二次确认 / 构建失败一键修复等
+  const [pendingPrompt, setPendingPrompt] = useState<{ kind: 'confirm' | 'action'; title: string; desc: string; actionLabel: string; danger?: boolean; onAction: () => void } | null>(null)
+
+  // 版本管理（Git）：历史列表 + 可用性 + 回滚中标记；pendingCommit 记录下次构建成功后要提交的说明
+  const [versions, setVersions] = useState<VcsCommit[]>([])
+  const [vcsAvailable, setVcsAvailable] = useState(true)
+  const [restoringHash, setRestoringHash] = useState<string | null>(null)
+  const pendingCommitMsgRef = useRef<string>('')
+
+  const abortedRef = useRef(false)
+  const reqIdRef = useRef<string | null>(null)
+  // 发起新 AI 调用前重置中断态，避免上一轮的「已中止」标记误伤本轮
+  const resetAbort = () => { abortedRef.current = false; reqIdRef.current = null }
+  // 流式回调里捕获本次请求 id，供「停止」时精确 abort（也适用于无工具的纯文本/JSON 调用）
+  const captureReqId = (chunk: any) => { if (chunk?.__requestId) reqIdRef.current = chunk.__requestId }
+  // 图标专用流式回调：捕获 reqId + 实时累计绘制进度（reasoning=构思，text=正在写 SVG）
+  const onIconChunk = (chunk: any) => {
+    if (chunk?.__requestId) { reqIdRef.current = chunk.__requestId; return }
+    if (abortedRef.current) return
+    const ct = chunk?.chunkType
+    if (ct === 'reasoning') {
+      if (iconPhaseRef.current !== 'drawing') iconPhaseRef.current = 'thinking'
+    } else if (ct === 'text' || typeof chunk?.content === 'string') {
+      const piece = ct === 'text' && typeof chunk?.text === 'string' ? chunk.text : (typeof chunk?.content === 'string' ? chunk.content : '')
+      if (piece) { iconCharsRef.current += piece.length; iconPhaseRef.current = 'drawing' }
+    }
+  }
+  const deliverStartedRef = useRef(false)
+  const eventSeq = useRef(0)
+
+  useEffect(() => { setMaxStage((m) => (stage > m ? stage : m)) }, [stage])
+
+  // -------- Session 集成 --------
+  const { activeId, activeSession, loaded: sessionLoaded, sessions, createSession, updateSession, appendMessage, deselect, clearMessages, findByPath, switchSession } = useSession()
+  // 当前面板本地状态所「承载」的会话 id。仅当 activeId 切换到一个尚未承载的会话时才重新水合，
+  // 且 syncToSession 只在 liveSessionIdRef === activeId 时回写，杜绝把旧状态写进新会话造成数据污染。
+  const liveSessionIdRef = useRef<string | null>(null)
+
+  const stageToSessionState = (s: Stage, gen: boolean): VibeSessionState => {
+    if (gen) return 'generating'
+    if (s === 0) return 'initial'
+    if (s === 1) return 'contract'
+    if (s >= 3) return 'ready'
+    return 'contract'
+  }
+
+  // 切换/载入会话时把会话状态水合进面板（首次挂载或下拉切换都会触发）
+  useEffect(() => {
+    if (!sessionLoaded) return
+    if (!activeId || activeId === liveSessionIdRef.current) return
+    const s = sessions.find((x) => x.id === activeId)
+    if (!s) return
+    liveSessionIdRef.current = activeId
+    resetState()
+    setVibeMode(s.vibeMode || 'create')
+    setSentence(s.sentence || '')
+    setGenDepth(s.genDepth || 'full')
+    if (s.selectedModel) setSelectedModel(s.selectedModel)
+    setContract(s.contract)
+    // 恢复开发计划（Plan 模式）。瞬态阶段（planning/executing）在重载后无对应在跑任务，
+    // 降级为 review 让用户可「继续执行」；执行中的步骤回退为 pending 以便重跑。
+    const materialized = s.state === 'ready' || s.state === 'generating'
+    if (s.plan && s.plan.length) {
+      setPlan(s.plan.map((t) => (t.status === 'in_progress' ? { ...t, status: 'pending' } : t)))
+      const ph = s.planPhase
+      setPlanPhase(ph === 'planning' || ph === 'executing' ? 'review' : (ph || 'idle'))
+      // 项目是否已在磁盘脚手架/绑定（generating/ready 即已物化）→ 续跑时跳过重复脚手架与基线重置
+      planPreparedRef.current = materialized
+    }
+    if (s.pluginPath) {
+      if (s.vibeMode === 'edit') { setEditPath(s.pluginPath); setCreatedPath(s.pluginPath) }
+      else { setTargetDir(s.pluginPath.split('/').slice(0, -1).join('/') || ''); if (materialized) setCreatedPath(s.pluginPath) }
+    }
+    if (s.state === 'ready') {
+      setStage(3); setMaxStage(3); setGenerated(true); setBuilt(true); setLoaded(true)
+      setLoadedId(s.contract?.pluginId || s.contract?.name || undefined)
+      // 已就绪的会话只是「恢复展示」，不要触发交付页的自动重新构建（修复每次切到本 tab 都重建）
+      deliverStartedRef.current = true
+    } else if (s.state === 'generating') {
+      setStage(2); setMaxStage(2)
+    } else if (s.state === 'contract') {
+      setStage(1); setMaxStage(1)
+    } else {
+      setStage(0); setMaxStage(0)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionLoaded, activeId, sessions])
+
+  // 关键状态变化时同步到 session
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const syncToSession = useCallback(() => {
+    if (!activeId) return
+    // 面板状态尚未水合到当前活跃会话时不回写，避免把旧会话状态覆盖到新会话
+    if (liveSessionIdRef.current !== activeId) return
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    syncTimerRef.current = setTimeout(() => {
+      updateSession(activeId, {
+        state: stageToSessionState(stage, generating),
+        contract,
+        sentence,
+        vibeMode,
+        genDepth,
+        selectedModel,
+        plan,
+        planPhase,
+        pluginPath: createdPath || (vibeMode === 'edit' ? editPath : '') || ''
+      })
+    }, 800)
+  }, [activeId, stage, generating, contract, sentence, vibeMode, genDepth, selectedModel, plan, planPhase, createdPath, editPath, updateSession])
+
+  useEffect(() => { syncToSession() }, [syncToSession])
+
+  // 工作台「AI 改造」带入目标：优先恢复已有 session
+  useEffect(() => {
+    if (!editTarget) return
+    const existing = findByPath(editTarget.path)
+    if (existing) {
+      // 切到已有会话，由通用水合 effect 负责恢复其 stage/contract/createdPath 等状态
+      switchSession(existing.id)
+      addLog('info', `▶ [Vibe] 恢复已有会话：${editTarget.displayName || editTarget.id || editTarget.path}`)
+    } else {
+      resetState()
+      setVibeMode('edit')
+      setEditPath(editTarget.path)
+      const name = editTarget.displayName || editTarget.id || editTarget.path.split('/').pop() || 'plugin'
+      const sess = createSession({ pluginPath: editTarget.path, pluginName: name, vibeMode: 'edit', state: 'initial' })
+      liveSessionIdRef.current = sess.id
+      addLog('info', `▶ [Vibe] 进入改造模式：${editTarget.displayName || editTarget.id || editTarget.path}`)
+    }
+    onConsumeEditTarget?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editTarget?.token])
+
+  // 加载模型
+  useEffect(() => {
+    const a = ai()
+    if (!a?.allModels) return
+    let mounted = true
+    setModelLoading(true)
+    void (async () => {
+      const normalize = (models: any[]) => (Array.isArray(models) ? models : [])
+        .filter((m) => typeof m?.id === 'string' && m.id.trim())
+        .map((m) => ({ id: m.id as string, label: (m.label as string) || (m.id as string) }))
+      try {
+        let options = normalize(await a.allModels())
+        if (options.length === 0) {
+          options = normalize(await a.allModels({ endpointType: ['openai', 'openai-response', 'anthropic', 'gemini'] }))
+        }
+        if (!mounted) return
+        setModelOptions(options)
+        setSelectedModel((cur) => cur || (options[0]?.id ?? ''))
+      } catch (e) {
+        if (mounted) addLog('error', `✘ [Vibe] 拉取模型失败：${e instanceof Error ? e.message : '未知'}`)
+      } finally {
+        if (mounted) setModelLoading(false)
+      }
+    })()
+    return () => { mounted = false }
+  }, [addLog])
+
+  // ---------------- 时间线 ----------------
+  // 本回合（一次对话）累积的事件，用于把操作明细内联到对应的 assistant 消息
+  const turnEventsRef = useRef<TimelineEvent[]>([])
+  const pushEvent = (phase: EventPhase, kind: EventKind, text: string, detail?: string) => {
+    eventSeq.current += 1
+    const ev: TimelineEvent = { id: `e-${Date.now()}-${eventSeq.current}`, ts: Date.now(), phase, kind, text, detail }
+    setEvents((prev) => [...prev.slice(-199), ev])
+    turnEventsRef.current = [...turnEventsRef.current.slice(-39), ev]
+  }
+  // 汇总本回合事件为消息内联的操作卡明细
+  const collectTurnActions = (): VibeAction[] =>
+    turnEventsRef.current.map((e) => ({ kind: e.kind, text: e.text, detail: e.detail }))
+
+  // ---------------- 对话历史上下文工程 ----------------
+  // 关键修复：此前每次 AI 调用都只发 [system, user]，没有任何历史，
+  // 导致「先问答出方案 → 再让它按方案改」时 AI 完全看不到之前的方案。
+  // 这里用一个始终反映当前会话消息的 ref，按预算把最近对话注入到 AI 的 messages，
+  // 让「按上面的方案 / 刚才说的」这类指代能被正确理解。
+  const convoRef = useRef<VibeMessage[]>([])
+  useEffect(() => { convoRef.current = activeSession?.messages || [] }, [activeSession?.messages, activeId])
+
+  const HISTORY_MAX_MSGS = 24      // 最多带入的历史消息条数
+  const HISTORY_MAX_CHARS = 9000   // 历史总字符预算（控制 token）
+  const HISTORY_PER_MSG_CAP = 4000 // 单条历史消息最大字符（超出截断）
+  type ChatMsg = { role: 'user' | 'assistant'; content: string }
+
+  /**
+   * 构造注入给 AI 的对话历史（按时间顺序，最近优先保留，受条数/字符预算约束）。
+   * @param excludeContent 需要排除的「本轮刚追加的用户输入」原文，避免与最终 user 消息重复。
+   */
+  const buildHistoryMessages = (excludeContent?: string): ChatMsg[] => {
+    const all = convoRef.current || []
+    // 规避把「刚 appendMessage 的本轮用户输入」重复带入（handleChatSend 先写消息再调执行器）
+    const src: VibeMessage[] = []
+    let skippedDup = false
+    for (let i = all.length - 1; i >= 0; i--) {
+      const m = all[i]
+      if (!skippedDup && excludeContent != null && m.role === 'user' && m.content === excludeContent) { skippedDup = true; continue }
+      src.unshift(m)
+    }
+    const mapped: ChatMsg[] = src
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && !!m.content && !!m.content.trim())
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content.length > HISTORY_PER_MSG_CAP ? `${m.content.slice(0, HISTORY_PER_MSG_CAP)}\n…（内容较长，已截断）` : m.content
+      }))
+    // 从最近往前按预算保留，保持时间先后顺序
+    const kept: ChatMsg[] = []
+    let total = 0
+    for (let i = mapped.length - 1; i >= 0 && kept.length < HISTORY_MAX_MSGS; i--) {
+      const len = mapped[i].content.length
+      if (kept.length > 0 && total + len > HISTORY_MAX_CHARS) break
+      kept.unshift(mapped[i])
+      total += len
+    }
+    return kept
+  }
+
+  // ---------------- 上下文锚点（P1-2：防遗忘） ----------------
+  // 滑窗会淘汰最老的消息，导致多轮后 AI 忘掉「最初需求 / 已确认的方案」。
+  // 这里把会话的关键锚点（最初需求 + 当前契约 + 早期对话的滚动摘要）始终注入 system，
+  // system 不受历史字符预算淘汰，等价于业界 compaction 后的 rehydration / critical-context。
+  const buildSessionAnchor = (): string => {
+    const all = convoRef.current || []
+    const firstUser = all.find((m) => m.role === 'user' && !!m.content.trim())
+    const origReq = (firstUser?.content || sentence || '').trim().slice(0, 800)
+    const lines: string[] = []
+    if (origReq) lines.push(`最初需求：${origReq}`)
+    if (contract) lines.push(`当前插件设定（契约）：${contractSummary(contract)}（displayName=${contract.displayName}）`)
+    const summary = (activeSession?.contextSummary || '').trim()
+    if (summary) lines.push(`前情提要（更早对话的压缩摘要，已确认的方案/决策务必延续）：\n${summary.slice(0, 2000)}`)
+    if (!lines.length) return ''
+    return [
+      '———— 本次会话背景（务必全程遵循、不要遗忘；用户说「按上面的方案 / 刚才说的」即指此处与下方历史）————',
+      ...lines,
+      '————'
+    ].join('\n')
+  }
+  const withAnchorContext = (sys: string): string => {
+    const anchor = buildSessionAnchor()
+    return anchor ? `${sys}\n\n${anchor}` : sys
+  }
+
+  // ---------------- 滚动摘要（P1-3：长对话压缩） ----------------
+  // 当对话变长，把「超出最近窗口」的早期消息用便宜的一次 AI 调用压成结构化摘要，
+  // 持久化到 session.contextSummary，并由 buildSessionAnchor 注入。失败则优雅降级。
+  const summarizingRef = useRef(false)
+  const SUMMARY_KEEP_RECENT = 16 // 最近这么多条仍由历史窗口承载，更早的才进摘要
+  const maybeSummarizeHistory = async () => {
+    const sid = activeId
+    if (!sid || summarizingRef.current) return
+    if (planning || generating || expanding || repairing || iterating || iconBusy || confRepairing) return
+    const all = convoRef.current || []
+    if (all.length <= SUMMARY_KEEP_RECENT + 6) return // 不够长不值得压缩
+    const older = all.slice(0, all.length - SUMMARY_KEEP_RECENT).filter((m) => !!m.content && !!m.content.trim())
+    if (older.length < 4) return
+    const a = ai()
+    if (!a?.call) return
+    summarizingRef.current = true
+    try {
+      const text = older.map((m) => `${m.role === 'user' ? '用户' : 'AI'}：${m.content.slice(0, 1500)}`).join('\n')
+      const prev = (activeSession?.contextSummary || '').trim()
+      const obj = await aiJson(
+        '你是对话压缩器。把给定的早期对话压成结构化中文摘要，只输出 JSON：{ "summary": "..." }。摘要必须覆盖：目标/需求、关键决策与共识、已完成进展、涉及的文件或模块、未完成的下一步；务必逐字保留用户明确认可的方案要点。',
+        `${prev ? `已有前情提要（在此基础上合并更新，不要丢失旧要点）：\n${prev}\n\n` : ''}需要压缩的更早对话：\n${text}`
+      )
+      const summary = obj && typeof obj.summary === 'string' ? obj.summary.trim() : ''
+      if (summary && liveSessionIdRef.current === sid) updateSession(sid, { contextSummary: summary })
+    } catch { /* 压缩失败忽略：锚点（最初需求+契约）与历史窗口仍可用 */ } finally {
+      summarizingRef.current = false
+    }
+  }
+
+  // 对话消息记录：会话尚未创建时（新项目的首条需求 / 头脑风暴 / 方向选择都发生在 activeId 为 null 时）
+  // 先缓冲到 pendingMsgsRef，待 createSession 时通过 drainPendingMsgs 一并落入会话，
+  // 确保「每一步发送与回复」都进入对话历史，而不是等到构建成功才出现第一条。
+  const pendingMsgsRef = useRef<VibeMessage[]>([])
+  const recordMessage = (msg: VibeMessage) => {
+    if (activeId) appendMessage(activeId, msg)
+    else pendingMsgsRef.current.push(msg)
+  }
+  const drainPendingMsgs = (): VibeMessage[] => {
+    const arr = pendingMsgsRef.current
+    pendingMsgsRef.current = []
+    return arr
+  }
+  const mkMsg = (role: 'user' | 'assistant', content: string, extra?: Partial<VibeMessage>): VibeMessage =>
+    ({ id: `${role === 'user' ? 'm' : 'a'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role, content, timestamp: Date.now(), ...extra })
+
+  const currentPhaseRef = useRef<EventPhase>('minimal')
+  const onAgentChunk = (chunk: any) => {
+    if (chunk?.__requestId) { reqIdRef.current = chunk.__requestId; return }
+    if (abortedRef.current) return
+    const ct = chunk?.chunkType
+    if (ct === 'tool-call' && chunk.tool_call) {
+      const name = chunk.tool_call.name
+      const args = parseArgs(chunk.tool_call.args)
+      const p = typeof args.path === 'string' ? args.path : ''
+      setToolCalls((n) => n + 1)
+      if (name === 'write_file' && p) pushEvent(currentPhaseRef.current, 'write', `写入 ${p}`)
+      else if (name === 'edit_file' && p) pushEvent(currentPhaseRef.current, 'write', `编辑 ${p}`)
+      else if (name === 'read_file' && p) pushEvent(currentPhaseRef.current, 'read', `读取 ${p}`)
+      else if (name === 'list_dir') pushEvent(currentPhaseRef.current, 'read', `浏览目录${typeof args.path === 'string' && args.path && args.path !== '.' ? ` ${args.path}` : '结构'}`)
+      else if (name === 'grep') pushEvent(currentPhaseRef.current, 'read', `搜索代码${typeof args.query === 'string' ? `：${String(args.query).slice(0, 40)}` : ''}`)
+      else if (name === 'build_check') pushEvent(currentPhaseRef.current, 'build', '自检构建 npm run build…')
+      else if (name === 'check_conformance') pushEvent(currentPhaseRef.current, 'note', '校验契约一致性…')
+      else pushEvent(currentPhaseRef.current, 'note', `调用工具 ${name}`)
+    } else if (ct === 'tool-result' && chunk.tool_result) {
+      const name = chunk.tool_result.name
+      const result = chunk.tool_result.result as { path?: string; bytes?: number; success?: boolean; replaced?: number; matches?: unknown[]; found?: boolean; namespace?: string; namespaces?: unknown[] } | undefined
+      if (name === 'write_file' && result?.path) {
+        pushEvent(currentPhaseRef.current, 'write', `已写入 ${result.path}`, typeof result.bytes === 'number' ? `${result.bytes} 字节` : undefined)
+      } else if (name === 'edit_file' && result?.path) {
+        pushEvent(currentPhaseRef.current, 'write', `已编辑 ${result.path}`, typeof result.replaced === 'number' ? `${result.replaced} 处` : undefined)
+      } else if (name === 'build_check') {
+        pushEvent(currentPhaseRef.current, result?.success ? 'build' : 'error', result?.success ? '自检构建通过' : '自检构建失败')
+      } else if (name === 'grep' && Array.isArray(result?.matches)) {
+        pushEvent(currentPhaseRef.current, 'read', `搜索完成`, `命中 ${result.matches.length} 处`)
+      } else if (name === 'check_conformance') {
+        const r = chunk.tool_result.result as { ok?: boolean; issues?: Array<{ level?: string }> } | undefined
+        const errs = Array.isArray(r?.issues) ? r!.issues!.filter((i) => i?.level === 'error').length : 0
+        pushEvent(currentPhaseRef.current, r?.ok ? 'note' : 'error', r?.ok ? '契约一致性校验通过' : `契约校验：${errs} 处需修复`)
+      }
+    } else if (ct === 'text' || typeof chunk?.content === 'string') {
+      const piece = ct === 'text' && typeof chunk?.text === 'string'
+        ? chunk.text
+        : (typeof chunk?.content === 'string' ? chunk.content : '')
+      if (piece) setNarration((prev) => (prev + piece).slice(-4000))
+    }
+  }
+
+  // ---------------- 阶段 0 → 1：生成契约 ----------------
+  const planPrompt = (text: string) => [
+    '你是 Mulby 插件规划器。根据用户一句话需求，输出一个 JSON 契约（只输出 JSON，不要解释、不要 Markdown）。',
+    '字段（对齐 Mulby 官方 manifest schema）：',
+    '- name: kebab-case 英文插件名（小写字母/数字/中划线）',
+    '- displayName: 简短中文名',
+    '- description: 一句话描述',
+    '- type: 插件分类，取值之一：utility|productivity|developer|system|media|network|ai|entertainment|other',
+    '- author: 作者（可选，默认留空）',
+    '- platform: 平台限制数组，取值 darwin/win32/linux 的子集；全平台兼容则给空数组 []（不要臆造平台限制，除非需求明确依赖某系统能力）',
+    '- template: "react"（需要可视化界面）或 "basic"（纯命令/无界面，例如对输入文本即时计算并返回结果）',
+    '- features: 数组，每项 { "code": 英文下划线功能码, "explain": 中文说明, "mode": "ui"|"silent"|"detached", "triggers": [...] }。通常 1 个功能。',
+    '- permissions: 仅在确实需要时把对应项设为 true（不需要的不要写）。可用布尔权限：clipboard(剪贴板) notification(系统通知) filesystem(文件读写) ai(调用AI) runCommand(执行命令) webview(内嵌网页) microphone(麦克风) camera(摄像头) screen(屏幕录制) geolocation(定位) accessibility(辅助功能) inputMonitor(输入监听) contacts(通讯录) calendar(日历)。',
+    '- window: 仅 react/独立窗口插件需要，{ "width","height","minWidth","minHeight","type":"default|borderless|fullscreen","transparent":bool,"alwaysOnTop":bool,"resizable":bool }。给一个贴合内容的默认尺寸（如工具类 480x600，仪表盘类更大）。',
+    '- behavior: { "single":bool 单例(默认true), "defaultDetached":bool 默认独立窗口, "background":bool 允许后台常驻, "persistent":bool 重启恢复后台 }。后台常驻类（定时任务/监听）才设 background:true。',
+    '- tools: 可选 AI 工具数组 [{ "name", "description" }]，一般为空数组',
+    '- needIcon: boolean',
+    '',
+    '【触发方式 triggers——最关键】请根据需求语义为每个功能选择最贴切的触发类型，不要一律用 keyword。每个 trigger 是对象，按 type 取字段：',
+    '- keyword（关键词唤起）：{ "type":"keyword", "value":"词" }。适合“打开某工具/面板”。可给 1~3 个别名词。',
+    '- regex（按输入格式匹配）：{ "type":"regex", "match":"正则字符串", "label":"指令名", "minLength":1, "maxLength":50, "sample":"能匹配的示例输入" }。',
+    '    适合“对某种固定格式的输入直接处理”：金额数字→大写、URL、IP、手机号、时间戳、颜色值、纯 JSON 等。',
+    '    match 是不带两侧斜杠的 JS 正则；在 JSON 字符串里反斜杠要写成 \\\\（如 "^-?[0-9]+(\\\\.[0-9]{1,2})?$"）。务必同时给 sample，用于一键试用。',
+    '- over（任意文本）：{ "type":"over", "label":"指令名", "minLength":1, "maxLength":2000 }。适合“对任意选中/输入文本做处理”（翻译、字数统计、编码转换…）。',
+    '- files（拖入文件）：{ "type":"files", "label":"指令名", "exts":["png","pdf"], "fileType":"file" }。适合处理拖入的文件/文件夹。',
+    '- img（拖入图片）：{ "type":"img", "label":"指令名" }。适合处理拖入的图片。',
+    '- window（活跃窗口）：{ "type":"window", "app":"/Chrome/", "label":"指令名" }。少用。',
+    '选择原则：',
+    '· 输入是“有固定格式的数据”（金额/URL/IP/手机号/时间/颜色…）→ 用 regex 并给 sample；可再附 1 个 keyword 兜底方便用户用关键词搜到。',
+    '· 处理“任意文本”→ 用 over。· 处理“拖入文件/图片”→ files/img。· 只是“打开一个界面/工具”→ keyword。',
+    '示例：需求“把数字金额转人民币大写”应输出 triggers: [ {"type":"regex","match":"^-?[0-9]+(\\\\.[0-9]{1,2})?$","label":"金额转大写","minLength":1,"maxLength":40,"sample":"1234.56"}, {"type":"keyword","value":"大写金额"} ]。',
+    '',
+    `用户需求：${text}`
+  ].join('\n')
+
+  const editSummaryPrompt = (c: VibeContract, text: string) => [
+    '你是 Mulby 插件改造分析器。根据「现有插件契约」与「修改需求」，用一句话说明将要做的改动。只输出 JSON：{ "summary": "..." }。',
+    `现有契约：${contractSummary(c)}（displayName=${c.displayName}）`,
+    `修改需求：${text}`
+  ].join('\n')
+
+  const aiJson = async (system: string, user: string): Promise<any | null> => {
+    const a = ai()
+    if (!a?.call) return null
+    const res = await a.call({
+      ...(selectedModel ? { model: selectedModel } : {}),
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
+    }, captureReqId)
+    const content = typeof res?.content === 'string'
+      ? res.content
+      : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
+    const json = extractJsonObject(content)
+    if (!json) return null
+    try { return JSON.parse(json) } catch { return null }
+  }
+
+  const planCreate = async (overrideText?: string) => {
+    const desc = (overrideText ?? sentence).trim()
+    if (!desc) { pushToast('error', '请先用一句话描述你想要的插件'); return }
+    if (!targetDir.trim()) { pushToast('error', '请选择插件生成的目标目录'); return }
+    if (overrideText) setSentence(desc)
+    let sid = activeId
+    if (!sid) {
+      const name = desc.slice(0, 20) || 'new-plugin'
+      const sess = createSession({ pluginPath: targetDir, pluginName: name, vibeMode: 'create', state: 'initial', sentence: desc, genDepth, selectedModel, messages: drainPendingMsgs() })
+      liveSessionIdRef.current = sess.id
+      sid = sess.id
+    } else {
+      for (const m of drainPendingMsgs()) appendMessage(sid, m)
+    }
+    setPlanning(true)
+    resetAbort()
+    try {
+      addLog('info', '▶ [Vibe] AI 正在规划契约…')
+      let parsed: any = null
+      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planPrompt(desc)) } catch { /* fallback */ }
+      if (abortedRef.current) { addLog('info', '⏹ [Vibe] 已停止规划'); return }
+      const c = normalizeContract(parsed, desc)
+      setContract(c)
+      setStage(1)
+      if (sid) appendMessage(sid, mkMsg('assistant', `插件设定（契约）已就绪：${c.displayName}——${contractSummary(c)}。在右侧点「确认并生成」我就开始写代码；想改设定可在中间面板编辑。`))
+      addLog('success', `✔ [Vibe] 契约已生成：${contractSummary(c)}`)
+    } catch (e) {
+      const c = defaultContract(desc)
+      setContract(c)
+      setStage(1)
+      if (sid) appendMessage(sid, mkMsg('assistant', '规划没成功，我先用了一份默认设定，你可以在中间面板编辑后点「确认并生成」。'))
+      addLog('warn', `⚠ [Vibe] 规划失败，已用默认契约：${e instanceof Error ? e.message : ''}`)
+    } finally {
+      setPlanning(false)
+    }
+  }
+
+  const planEdit = async (overrideText?: string) => {
+    const desc = (overrideText ?? sentence).trim()
+    if (!editPath.trim()) { pushToast('error', '请选择要改造的插件'); return }
+    if (!desc) { pushToast('error', '请描述你想对这个插件做什么修改'); return }
+    if (overrideText) setSentence(desc)
+    setPlanning(true)
+    resetAbort()
+    try {
+      const dirName = editPath.split('/').filter(Boolean).pop() || 'plugin'
+      let c: VibeContract | null = null
+      try {
+        const raw = await fsApi()?.readFile?.(`${editPath}/manifest.json`, 'utf-8')
+        const content = typeof raw === 'string'
+          ? raw
+          : (raw ? new TextDecoder().decode(raw instanceof Uint8Array ? raw : new Uint8Array(raw)) : '')
+        if (content) c = manifestToContract(content, dirName)
+      } catch {
+        addLog('warn', '⚠ [Vibe] 未能读取 manifest.json，按目录名兜底')
+      }
+      if (!c) {
+        c = { ...defaultContract(dirName), isEdit: true, pluginId: dirName, needIcon: false }
+      }
+      c.targetPath = editPath
+      c.editSummary = desc
+      // 轻量预测改动说明
+      try {
+        addLog('info', '▶ [Vibe] AI 正在分析改动…')
+        const obj = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', editSummaryPrompt(c, desc))
+        if (obj && typeof obj.summary === 'string' && obj.summary.trim()) c.editSummary = obj.summary.trim()
+      } catch { /* keep sentence */ }
+      if (abortedRef.current) { addLog('info', '⏹ [Vibe] 已停止分析'); return }
+      let sid = activeId
+      if (!sid) {
+        const sess = createSession({ pluginPath: editPath, pluginName: c.displayName || dirName, vibeMode: 'edit', state: 'contract', contract: c, sentence: desc, genDepth, selectedModel, messages: drainPendingMsgs() })
+        liveSessionIdRef.current = sess.id
+        sid = sess.id
+      } else {
+        for (const m of drainPendingMsgs()) appendMessage(sid, m)
+      }
+      setContract(c)
+      setStage(1)
+      if (sid) appendMessage(sid, mkMsg('assistant', `已读取「${c.displayName}」的现状。改动设定：${c.editSummary || desc}。在右侧点「确认并生成」我就开始改。`))
+      addLog('success', `✔ [Vibe] 改造契约已读入：${c.displayName}（${c.pluginId}）`)
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '分析失败')
+    } finally {
+      setPlanning(false)
+    }
+  }
+
+  const doPlan = (text?: string) => (vibeMode === 'edit' ? planEdit(text) : planCreate(text))
+
+  // ---------------- AI agent ----------------
+  const createSystemPrompt = (c: VibeContract, root: string, phase: 'minimal' | 'full' | 'expand') => [
+    '你是资深 Mulby 插件工程师，正在为一个已脚手架、且 manifest.json 已写好的插件目录实现代码。',
+    `插件根目录：${root}`,
+    '重要：manifest.json 已由工具按用户确认的「契约」写好，请勿修改 manifest.json。',
+    '工作方式（必须用工具自主完成，无需向用户提问）：先 list_dir 看结构、read_file 读 package.json 与现有 src/*（可用 grep 快速定位代码）；新文件用 write_file 写完整内容，小改动用 edit_file 增量替换；调用任何 window.mulby.* 能力前先用 mulby_read_file 查阅对应的 API 文档确认签名与用法（参见技能指导）；关键改动写完后用 build_check 自检构建并据报错自行修复，直到通过；停止前必须调用 check_conformance 校验 manifest 与代码是否一致，按其 error 级问题修复直到 ok:true；最后用一两句话总结并停止。',
+    'Mulby 约定：后端 src/main.ts 导出 onLoad/onUnload/onEnable/onDisable/run；前端用全局 window.mulby.*（clipboard/notification/filesystem/http/ai/sharp 等），不要臆造不存在的 API；React 模板用现成 react/react-dom，入口 src/ui/main.tsx 挂载 App，UI 在 src/ui/App.tsx；保持 TypeScript 可编译；不要创建 node_modules/dist，不要改构建脚本与依赖清单。',
+    '输入获取：silent/无界面功能在 run(context) 中通过 context.input（字符串）拿到用户输入文本——当功能由 regex/over 触发时，context.input 就是被匹配到的那段文本；用 context.featureCode 区分功能。处理结果可写回剪贴板（window.mulby.clipboard）或用系统通知（window.mulby.notification）反馈；有界面功能则在 UI 里读取/展示。',
+    `契约：${contractSummary(c)}`,
+    `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`,
+    '请确保实现与上述触发方式一致：例如 regex 触发的功能要能正确解析并处理 context.input 中匹配到的文本。',
+    '你可能会看到与用户的历史对话（头脑风暴/问答/此前讨论）作为背景，用于理解用户真实意图；但本插件的权威规格以上面的契约为准。',
+    phase === 'minimal'
+      ? '本轮目标【最小可运行路径】：只实现一条能被触发、能跑起来的最小 happy path（首个功能即可），保证可构建、可打开，先不要追求完整功能或花哨 UI。同时写一个简洁 README.md。'
+      : phase === 'full'
+      ? '本轮目标【完整实现】：一次性实现契约中的全部功能，包含健壮的输入校验与错误处理、良好的 UI/UX 与边界情况处理，保证可构建、可打开。同时写一个清晰的 README.md。追求"开箱即用"，而非半成品。'
+      : '本轮目标【完善与扩展】：在已有版本上补全完整功能、健壮的错误处理与更好的 UI/UX，保持可编译。'
+  ].join('\n')
+
+  const editSystemPrompt = (c: VibeContract, root: string, phase: 'minimal' | 'full' | 'expand') => [
+    '你是资深 Mulby 插件工程师，正在**修改一个已存在且可正常构建**的插件。务必最小化改动，不要破坏现有功能。',
+    `插件根目录：${root}`,
+    'manifest.json 已按用户确认的契约写好，请勿修改它——尤其严禁改动插件形态：不要给静默/无界面插件新增 ui、window 或把功能 mode 改成 detached/ui（即不要把无界面插件改造成有界面插件），除非用户在本次需求里明确要求"加界面/做个窗口"。若用户确实要加界面，必须同时创建 src/ui 入口与 UI 代码，使产物与 manifest 一致，不能只在 manifest 写 ui 却没有界面文件。',
+    '工作方式：先 list_dir 看结构、grep/read_file 通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；尽量用 edit_file 做最小增量改动（仅大改才整文件 write_file）；用到 window.mulby.* 前先用 mulby_read_file 查阅 API 文档确认签名与用法；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码仍然一致（按 error 修复）。完成后用一两句话说明改动并停止。',
+    '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_read_file 查阅技能 API 文档核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist。',
+    '你可能会看到与用户的历史对话（问答/此前确认的方案/已做过的修改）作为背景；当用户说「按上面的方案 / 刚才说的」时，请依据对话历史执行；以契约与对话上下文共同理解需求。',
+    `契约：${contractSummary(c)}`,
+    phase === 'minimal'
+      ? `本轮目标【最小改动】：仅实现需求「${c.editSummary || sentence}」所需的最小改动。`
+      : phase === 'full'
+      ? `本轮目标【完整实现需求】：完整实现需求「${c.editSummary || sentence}」所需的全部改动，含必要的健壮性与边界处理，保持可编译。`
+      : '本轮目标【完善】：在上一步基础上进一步完善体验与健壮性，保持可编译。'
+  ].join('\n')
+
+  const userPrompt = (c: VibeContract, phase: 'minimal' | 'full' | 'expand') => {
+    if (c.isEdit) {
+      return phase === 'minimal'
+        ? `请按下面的需求修改此插件：\n${sentence}\n先读懂现状，做最小改动，完成后说明改动并停止。`
+        : phase === 'full'
+        ? `请按下面的需求完整修改此插件：\n${sentence}\n先读懂现状，一次性完整实现该需求（含必要健壮性），保持可编译，完成后说明改动并停止。`
+        : `请在现有版本上进一步完善与扩展：${sentence}\n保持可编译，完成后停止。`
+    }
+    return phase === 'minimal'
+      ? `请实现这个插件：${sentence}\n定位：${c.description}\n现在开始：先浏览脚手架，实现最小可运行路径，完成后停止。`
+      : phase === 'full'
+      ? `请实现这个插件：${sentence}\n定位：${c.description}\n请一次性实现完整、开箱即用的版本（含必要错误处理与良好体验），保持可编译，完成后停止。`
+      : `请在现有版本上完善与扩展：${sentence}\n补全功能与体验，保持可编译，完成后停止。`
+  }
+
+  const repairUserPrompt = (log: string) => [
+    '上一次构建失败了。请阅读相关文件定位并修复，用 write_file 写回修正后的完整文件，修复后停止。',
+    '常见原因：TypeScript 类型错误、引用了不存在的 window.mulby API、或新增了未安装的依赖。',
+    'esbuild 打包注意：原生依赖（如 sharp、better-sqlite3）或使用 createRequire 的包（如 svgo）无法被打包；优先改用 window.mulby 提供的能力（例如图像处理用 window.mulby.sharp）而不是新增 npm 依赖；打包后不存在 node_modules，不要依赖它。',
+    '构建错误日志（截断）：',
+    '```',
+    (log || '').slice(-4000),
+    '```'
+  ].join('\n')
+
+  // 运行时自省的 Mulby API 清单（挂载时取一次；window.mulby 是当前宿主真实对象，最准确）
+  const apiSurfaceRef = useRef<string>('')
+  useEffect(() => { apiSurfaceRef.current = collectMulbyApiSurface() }, [])
+
+  // 接入宿主维护的 develop-mulby-plugin 技能：把「插件开发知识」交还给单一真相源（技能），
+  // 而工具仍由本 harness 的 VIBE_TOOLS 提供（enableInternalTools:false + mcp:off，技能不会引入额外工具）。
+  // 探测不到（未安装/旧宿主）则优雅回退到 skills:off，行为不变。挂载时探测一次。
+  const devSkillIdRef = useRef<string>('')
+  useEffect(() => {
+    let mounted = true
+    void (async () => {
+      try {
+        const skills = ai()?.skills
+        const list: any[] = (await (skills?.listEnabled?.() ?? skills?.list?.())) || []
+        const hit = (Array.isArray(list) ? list : []).find((s) => {
+          const id = String(s?.id || '').toLowerCase()
+          const name = String(s?.name || '').toLowerCase()
+          return id.includes('develop-mulby-plugin') || name.includes('develop-mulby-plugin') || name.includes('mulby plugin')
+        })
+        if (mounted && hit?.id) devSkillIdRef.current = String(hit.id)
+      } catch { /* 优雅降级 */ }
+    })()
+    return () => { mounted = false }
+  }, [])
+
+  /** 生成阶段的技能选择：探测到宿主技能则手动挂载，否则关闭 */
+  const skillSelection = (): { mode: 'off' } | { mode: 'manual'; skillIds: string[] } =>
+    devSkillIdRef.current ? { mode: 'manual', skillIds: [devSkillIdRef.current] } : { mode: 'off' }
+
+  // 把「当前宿主真实可用的 Mulby API 清单」追加到 system prompt，杜绝臆造不存在的 API
+  const withApiSurface = (sys: string): string => {
+    const surface = apiSurfaceRef.current
+    if (!surface) return sys
+    return sys + '\n\n' + [
+      '———— 当前 Mulby 宿主真实可用的 API（运行时自省，权威）：仅可使用下列命名空间下的能力，不要臆造其它 API。需要具体签名/用法时用 mulby_read_file 查阅技能提供的 API 文档 ————',
+      surface.slice(0, 6000),
+      '————'
+    ].join('\n')
+  }
+
+  // 用代码知识图谱（CodeGraph）为 system prompt 注入「与需求相关的现有代码上下文」，
+  // 让 AI 不必反复 read_file/list_dir 探索，从而减少工具调用与 token。库不可用则原样返回。
+  const injectCgContext = async (root: string, query: string, phase: EventPhase, baseSystem: string): Promise<string> => {
+    if (!root || !query.trim()) return baseSystem
+    try {
+      const res = await dev.hostCall<{ available?: boolean; markdown?: string; nodeCount?: number; fileCount?: number; reason?: string }>(
+        'cg_context', { root, query }
+      )
+      if (res?.available && res.markdown && res.markdown.trim()) {
+        pushEvent(phase, 'note', '已注入代码知识图谱上下文', `${res.nodeCount ?? 0} 符号 / ${res.fileCount ?? 0} 文件`)
+        addLog('success', `✔ [Vibe] CodeGraph 注入相关代码上下文（${res.nodeCount ?? 0} 符号 / ${res.fileCount ?? 0} 文件），减少重复浏览`)
+        return baseSystem + '\n\n' + [
+          '———— 代码知识图谱上下文（CodeGraph 预建索引，可信赖：请直接据此理解现有代码，避免再用 read_file 重复浏览相同内容）————',
+          res.markdown.trim(),
+          '———— 预建上下文结束；如确需更多细节，仍可用 read_file/list_dir 兜底 ————'
+        ].join('\n')
+      }
+      if (res && res.available === false && res.reason) {
+        pushEvent(phase, 'note', 'CodeGraph 不可用，回退常规浏览', res.reason.slice(0, 80))
+      }
+    } catch {
+      /* 优雅降级：忽略，走常规 read_file 流程 */
+    }
+    return baseSystem
+  }
+
+  const runAgent = async (system: string, user: string, root: string, phase: EventPhase, history: ChatMsg[] = []) => {
+    const a = ai()
+    if (!a?.call) throw new Error('当前环境未启用 AI API，无法生成代码')
+    if (!root) throw new Error('插件根目录为空，无法开始')
+    currentPhaseRef.current = phase
+    await dev.hostCall('vibe_begin', { root })
+    abortedRef.current = false
+    reqIdRef.current = null
+    const req = a.call(
+      {
+        ...(selectedModel ? { model: selectedModel } : {}),
+        messages: [{ role: 'system', content: withAnchorContext(system) }, ...history, { role: 'user', content: user }],
+        tools: VIBE_TOOLS,
+        maxToolSteps: 200,
+        capabilities: ['fs.read'],
+        // 跨轮上下文由本插件自管（锚点 + 滚动摘要 + 历史窗口），关掉宿主按消息条数的截断（默认仅留 8 条，会砍掉我们精心拼的历史）
+        params: { contextWindow: 0 },
+        mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
+      },
+      onAgentChunk
+    )
+    return await req
+  }
+
+  // ---------------- 阶段 1 → 2：脚手架 + 写契约 manifest（"直接生成"与"按计划生成"共用） ----------------
+  // 脚手架(create)/绑定目标(edit) + 写 manifest.json + 建/绑定会话；返回插件根目录与会话 id，失败返回 null。
+  // resume=true：项目已就绪（计划续跑/失败重试），不重复脚手架、不重置快照基线、不覆盖 manifest，
+  //   避免 ①`mulby create` 遇到已存在目录直接报错导致「继续执行」失败 ②清掉已完成步骤的快照/manifest 改动。
+  const prepareProject = async (resume = false): Promise<{ root: string; sid: string | null } | null> => {
+    if (!contract) return null
+    let root = ''
+    let sid = activeId
+    if (contract.isEdit) {
+      root = contract.targetPath || editPath
+      if (!root) { pushToast('error', '缺少目标插件目录'); return null }
+      setCreatedPath(root)
+      if (!resume) pushEvent('scaffold', 'note', `改造目标：${root}`)
+    } else if (resume && createdPath) {
+      // 续跑：脚手架已存在，直接复用，不再 createPlugin（否则目录已存在会失败）
+      root = createdPath
+      if (activeId) updateSession(activeId, { state: 'generating' })
+      sid = activeId
+      pushEvent('scaffold', 'note', '复用已有脚手架（继续执行计划）')
+    } else {
+      pushEvent('scaffold', 'note', `脚手架 ${contract.name}（${contract.template}）`)
+      addLog('info', `▶ [Vibe] 脚手架：${contract.name} → ${targetDir}`)
+      const created = await dev.createPlugin(targetDir, contract.name, contract.template)
+      if (created.log) addLog(created.success ? 'success' : 'error', created.log)
+      if (!created.success) {
+        // 目录已存在（重新生成等场景）→ 视为复用已有脚手架而非失败；其它失败才中止
+        const dirExists = /已存在|exists/i.test(`${created.error || ''} ${created.log || ''}`)
+        if (!dirExists) { pushEvent('scaffold', 'error', created.error || '脚手架失败'); pushToast('error', created.error || '脚手架失败'); return null }
+        root = createdPath || `${targetDir}/${contract.name}`
+        pushEvent('scaffold', 'note', '复用已有脚手架')
+      } else {
+        root = created.path || `${targetDir}/${contract.name}`
+      }
+      setCreatedPath(root)
+      // 真实插件目录已知，修正会话的 pluginPath（planCreate 阶段只能先记父目录占位）
+      if (!activeId) {
+        const sess = createSession({ pluginPath: root, pluginName: contract.displayName || contract.name, vibeMode: 'create', state: 'generating', contract, sentence, genDepth, selectedModel, messages: drainPendingMsgs() })
+        liveSessionIdRef.current = sess.id
+        sid = sess.id
+      } else {
+        updateSession(activeId, { pluginPath: root, pluginName: contract.displayName || contract.name, contract, state: 'generating' })
+      }
+      onAfterCreate()
+    }
+    // 锁定会话根目录。fresh:true（首次）清历史快照并打基线；fresh:false（续跑）保留历史、仅加一个还原点
+    await dev.hostCall('vibe_begin', { root, fresh: !resume })
+    // 由契约确定性写出 manifest.json（叠加既有，保留 window/pluginSetting 默认）。
+    // 续跑时跳过：避免覆盖前面步骤里 AI 已对 manifest 的合理改动
+    if (!resume) {
+      let baseManifest: any = undefined
+      try {
+        const r = await dev.hostCall<{ content?: string }>('read_file', { path: 'manifest.json' })
+        if (r?.content) baseManifest = JSON.parse(r.content)
+      } catch { /* 无既有 manifest 则按契约新写 */ }
+      const mfText = manifestJson(contract, baseManifest)
+      await dev.hostCall('write_file', { path: 'manifest.json', content: mfText })
+      pushEvent('manifest', 'write', '写入 manifest.json（来自契约）', `${contract.features.length} 个功能`)
+    }
+    return { root, sid }
+  }
+
+  // 直接生成（不分步）：脚手架 → 一次性完整实现 → 交付。作为"计划模式"失败时的兜底路径。
+  const doGenerate = async () => {
+    if (!contract) return
+    setBrainstorm(null)
+    recordMessage(mkMsg('user', contract.isEdit ? '确认设定，开始改造' : '确认设定，开始生成', { intent: 'create' }))
+    setGenerating(true)
+    setEvents([])
+    setToolCalls(0)
+    setNarration('')
+    turnEventsRef.current = [] // 收集本轮生成的操作明细，供对话内联
+    setExpanded(false)
+    setStage(2)
+    try {
+      const prep = await prepareProject()
+      if (!prep) return
+      const { root, sid } = prep
+      // 首轮生成：根据用户所选生成深度——full=一次性完整实现（默认）；minimal=先最小可跑
+      const firstPhase: 'minimal' | 'full' = genDepth === 'minimal' ? 'minimal' : 'full'
+      const phaseName = firstPhase === 'minimal' ? '最小可运行版本' : '完整版本'
+      pushEvent(firstPhase, 'ai', contract.isEdit
+        ? (firstPhase === 'minimal' ? 'AI 读现状并做最小改动…' : 'AI 读现状并完整实现需求…')
+        : (firstPhase === 'minimal' ? 'AI 实现最小可运行路径…' : 'AI 实现完整版本…'))
+      addLog('info', `▶ [Vibe] AI 生成${phaseName}…`)
+      let sys = contract.isEdit ? editSystemPrompt(contract, root, firstPhase) : createSystemPrompt(contract, root, firstPhase)
+      // 改造模式：已有代码，先用知识图谱注入相关上下文，省去 AI 反复 read_file
+      if (contract.isEdit) sys = await injectCgContext(root, contract.editSummary || sentence, firstPhase, sys)
+      sys = withApiSurface(sys)
+      const final = await runAgent(sys, userPrompt(contract, firstPhase), root, firstPhase, buildHistoryMessages())
+      if (abortedRef.current) { pushEvent(firstPhase, 'note', '已中止'); return }
+      const summary = typeof final?.content === 'string' ? final.content : ''
+      if (summary) setNarration(summary)
+      // 把生成总结作为一条 AI 回复落入对话历史（不再等到构建成功才有第一条回复）
+      if (sid && summary) appendMessage(sid, mkMsg('assistant', summary, { actions: collectTurnActions() }))
+      setGenerated(true)
+      pushEvent(firstPhase, 'note', `${phaseName}完成`)
+      addLog('success', `✔ [Vibe] ${phaseName}完成`)
+      pendingCommitMsgRef.current = contract.isEdit
+        ? `改造：${(contract.editSummary || sentence).slice(0, 120)}`
+        : `${firstPhase === 'minimal' ? '生成最小版本' : '生成'}：${sentence.slice(0, 120)}`
+      deliverStartedRef.current = false
+      setStage(3)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '生成失败'
+      const isAbort = abortedRef.current || msg.toLowerCase().includes('abort')
+      if (!isAbort) { pushEvent('minimal', 'error', msg); pushToast('error', msg); addLog('error', `✘ [Vibe] 生成失败：${msg}`) }
+    } finally {
+      setGenerating(false)
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // ---------------- Plan 模式：契约确认后→生成前，先制定开发计划(todo list)，再逐步执行、实时勾选 ----------------
+  const planListPrompt = (c: VibeContract) => [
+    '你是资深 Mulby 插件架构师。把"实现这个插件"拆解成一份清晰、可执行的开发计划（todo list）。',
+    // 平台背景：让计划基于"Mulby 是什么 / 插件长什么样 / 有哪些真实能力"来排，而不是泛泛而谈
+    '关于 Mulby（制定计划前必须了解）：Mulby 是桌面启动器 / 插件平台，用户通过关键词、正则匹配选中文本、拖入文件或图片、窗口等方式唤起插件。一个插件由三部分组成：① manifest.json（清单：id/name 与功能 features、触发方式——已由工具按契约写好，计划里不要再包含它）；② src/main.ts（后端：导出 onLoad/onUnload/onEnable/onDisable/run；无界面/静默功能在 run(context) 里用 context.input 拿到输入文本、用 context.featureCode 区分功能）；③ src/ui/（前端，仅"有界面"功能需要：React 入口 src/ui/main.tsx 挂载 src/ui/App.tsx）。前端通过全局 window.mulby.*（剪贴板/通知/文件/AI/图像处理等）调用宿主能力，不要臆造不存在的 API。',
+    '只输出 JSON：{ "todos": [ { "title": "简短步骤名(≤20字)", "detail": "这一步具体做什么(一句话)" } ] }，不要解释、不要 Markdown 代码块。',
+    '要求：3–6 步，按依赖与实现顺序排列；每步是一个独立、可验证的开发动作（如"实现核心处理逻辑""搭建主界面 UI""接入剪贴板/通知能力""完善错误处理与边界""自检构建并修复问题"）；计划要落到下方列出的功能/触发方式与 Mulby 真实能力（见末尾 API 清单）上，不要排出平台做不到的步骤。',
+    '不要把"创建脚手架/写 manifest.json"列进去（已自动完成）；最后一步通常是"自检构建并修复问题"。',
+    c.isEdit ? `这是对现有插件的改造，需求：${c.editSummary || sentence}` : `插件需求：${sentence}`,
+    `契约：${contractSummary(c)}`,
+    `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`
+  ].join('\n')
+
+  const normalizePlan = (parsed: any): VibePlanTodo[] => {
+    const arr = Array.isArray(parsed?.todos) ? parsed.todos : Array.isArray(parsed) ? parsed : []
+    const todos: VibePlanTodo[] = []
+    for (const it of arr) {
+      const title = String(it?.title ?? it?.name ?? '').trim()
+      if (!title) continue
+      const detail = String(it?.detail ?? it?.description ?? '').trim()
+      todos.push({ id: `t${todos.length + 1}`, title: title.slice(0, 40), detail: detail ? detail.slice(0, 200) : undefined, status: 'pending' })
+      if (todos.length >= 8) break
+    }
+    return todos
+  }
+
+  // 契约确认后 → 制定开发计划（不立即生成）。成功则进入 review 等用户「开始执行」；失败回退直接生成。
+  const generatePlan = async () => {
+    if (!contract || aiActive) return
+    setBrainstorm(null)
+    recordMessage(mkMsg('user', '确认设定，先制定开发计划', { intent: 'create' }))
+    planPreparedRef.current = false
+    setPlan([])
+    setPlanPhase('planning')
+    setPlanning(true)
+    resetAbort()
+    try {
+      addLog('info', '▶ [Vibe] AI 正在制定开发计划…')
+      // 制定计划也要"看得见"真实能力与现有代码：注入 Mulby API 清单（withApiSurface）；
+      // 改造模式再注入 CodeGraph 现有结构，让计划基于真实代码而非盲拆（与生成/执行阶段对齐）。
+      let planUser = withApiSurface(planListPrompt(contract))
+      if (contract.isEdit) {
+        const editRoot = contract.targetPath || editPath
+        if (editRoot) planUser = await injectCgContext(editRoot, contract.editSummary || sentence, 'full', planUser)
+      }
+      if (abortedRef.current) { setPlanPhase('idle'); addLog('info', '⏹ [Vibe] 已停止制定计划'); return }
+      let parsed: any = null
+      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planUser) } catch { /* fallback below */ }
+      if (abortedRef.current) { setPlanPhase('idle'); addLog('info', '⏹ [Vibe] 已停止制定计划'); return }
+      const todos = normalizePlan(parsed)
+      if (!todos.length) {
+        setPlanPhase('idle')
+        recordMessage(mkMsg('assistant', '没能拆出分步计划，我直接开始完整实现。'))
+        setPlanning(false)
+        await doGenerate()
+        return
+      }
+      setPlan(todos)
+      setPlanPhase('review')
+      recordMessage(mkMsg('assistant', `我把开发拆成了 ${todos.length} 步：\n${todos.map((t, i) => `${i + 1}. ${t.title}`).join('\n')}\n\n点「开始执行」我就按计划一步步实现，每完成一步都会勾选；也可以「重新规划」。`))
+      addLog('success', `✔ [Vibe] 开发计划已就绪：${todos.length} 步`)
+    } catch (e) {
+      setPlanPhase('idle')
+      recordMessage(mkMsg('assistant', '制定计划时出错，我直接开始完整实现。'))
+      setPlanning(false)
+      await doGenerate()
+      return
+    } finally {
+      setPlanning(false)
+    }
+  }
+
+  // 单步执行的 system/user prompt：复用整体规约（full），但强制"本轮只做当前这一步"
+  const planStepSystem = (c: VibeContract, root: string, todos: VibePlanTodo[], idx: number): string => {
+    const base = c.isEdit ? editSystemPrompt(c, root, 'full') : createSystemPrompt(c, root, 'full')
+    return base + '\n\n' + [
+      '———— 分步执行模式（本轮只做一步）————',
+      '整个插件已制定下面的开发计划。请忽略上文"一次性完整实现"的说法：本轮只完成「当前步骤」，不要提前实现后续步骤；同时不要破坏前面已完成步骤的成果（先 read_file 看现有代码再改）。',
+      '开发计划：',
+      todos.map((t, i) => `${i + 1}. ${i < idx ? '✅ 已完成' : i === idx ? '▶ 进行中' : '⬜ 待办'} ${t.title}${t.detail ? `（${t.detail}）` : ''}`).join('\n'),
+      `当前步骤（第 ${idx + 1}/${todos.length} 步）：${todos[idx].title}${todos[idx].detail ? ` — ${todos[idx].detail}` : ''}`,
+      '只实现这一步，完成后用一句话说明本步改动并停止（不要继续做后面的步骤）。'
+    ].join('\n')
+  }
+
+  const planStepUser = (todo: VibePlanTodo, idx: number, total: number): string =>
+    `请完成开发计划的第 ${idx + 1}/${total} 步：${todo.title}${todo.detail ? `\n（${todo.detail}）` : ''}\n先读懂当前代码现状，只实现这一步所需的改动，可用 build_check 自检，完成后用一句话说明本步改动并停止。`
+
+  // 按计划逐步执行：脚手架 → 逐个 todo（实时勾选）→ 全部完成后交付构建。已完成的 todo 跳过（支持中断/失败后续跑）。
+  const executePlan = async () => {
+    // planExecutingRef：即便「停止」已把 generating 复位（aiActive=false），上一轮循环可能仍在收尾——此时拒绝新一轮，杜绝并发
+    if (!contract || aiActive || planExecutingRef.current) return
+    if (!plan.length) { await generatePlan(); return }
+    // 续跑判定：项目已脚手架（本次会话已准备过，或重载后存在已完成/失败步骤）→ prepareProject 跳过重复脚手架与基线重置
+    const resume = planPreparedRef.current || plan.some((t) => t.status === 'done' || t.status === 'failed')
+    planExecutingRef.current = true
+    setBrainstorm(null)
+    recordMessage(mkMsg('user', resume ? '继续执行计划' : '开始执行计划', { intent: 'create' }))
+    setPlanPhase('executing')
+    setGenerating(true)
+    setEvents([])
+    setToolCalls(0)
+    setNarration('')
+    turnEventsRef.current = []
+    setExpanded(false)
+    setStage(2)
+    resetAbort()
+    try {
+      const prep = await prepareProject(resume)
+      if (!prep) { setPlanPhase('review'); return }
+      planPreparedRef.current = true
+      const { root, sid } = prep
+      const todos = plan
+      for (let i = 0; i < todos.length; i++) {
+        if (todos[i].status === 'done') continue
+        if (abortedRef.current) break
+        setPlan((prev) => prev.map((t, j) => (j === i ? { ...t, status: 'in_progress' } : t)))
+        setNarration('')
+        turnEventsRef.current = []
+        pushEvent('full', 'ai', `第 ${i + 1}/${todos.length} 步：${todos[i].title}`, todos[i].detail)
+        addLog('info', `▶ [Vibe] 计划第 ${i + 1}/${todos.length} 步：${todos[i].title}`)
+        let sys = planStepSystem(contract, root, todos, i)
+        if (contract.isEdit) sys = await injectCgContext(root, `${todos[i].title} ${todos[i].detail || ''}`, 'full', sys)
+        sys = withApiSurface(sys)
+        let stepSummary = ''
+        try {
+          const final = await runAgent(sys, planStepUser(todos[i], i, todos.length), root, 'full', buildHistoryMessages())
+          stepSummary = typeof final?.content === 'string' ? final.content : ''
+        } catch (e) {
+          if (abortedRef.current) break
+          const msg = e instanceof Error ? e.message : '步骤失败'
+          setPlan((prev) => prev.map((t, j) => (j === i ? { ...t, status: 'failed' } : t)))
+          pushEvent('full', 'error', `第 ${i + 1} 步失败：${msg}`)
+          addLog('error', `✘ [Vibe] 计划第 ${i + 1} 步失败：${msg}`)
+          if (sid) appendMessage(sid, mkMsg('assistant', `第 ${i + 1} 步「${todos[i].title}」执行失败：${msg}。点「继续执行」可重试这一步，或在对话里告诉我怎么调整。`))
+          setPlanPhase('review')
+          return
+        }
+        if (abortedRef.current) break
+        setPlan((prev) => prev.map((t, j) => (j === i ? { ...t, status: 'done' } : t)))
+        pushEvent('full', 'note', `第 ${i + 1} 步完成`)
+        if (sid) appendMessage(sid, mkMsg('assistant', `✅ 第 ${i + 1}/${todos.length} 步完成：${todos[i].title}${stepSummary ? `\n\n${stepSummary}` : ''}`, { actions: collectTurnActions() }))
+      }
+      if (abortedRef.current) {
+        setPlan((prev) => prev.map((t) => (t.status === 'in_progress' ? { ...t, status: 'pending' } : t)))
+        setPlanPhase('review')
+        pushEvent('full', 'note', '已停止执行计划')
+        addLog('warn', '⏹ [Vibe] 已停止执行计划（点「继续执行」可接着跑）')
+        return
+      }
+      // 全部完成 → 交付构建（沿用 stage 3 的自动构建载入）
+      setPlanPhase('done')
+      setGenerated(true)
+      setNarration('')
+      addLog('success', `✔ [Vibe] 开发计划全部完成（${todos.length} 步）`)
+      pendingCommitMsgRef.current = contract.isEdit
+        ? `改造：${(contract.editSummary || sentence).slice(0, 120)}`
+        : `生成：${sentence.slice(0, 120)}`
+      deliverStartedRef.current = false
+      setStage(3)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '执行失败'
+      const isAbort = abortedRef.current || msg.toLowerCase().includes('abort')
+      if (!isAbort) { pushEvent('full', 'error', msg); pushToast('error', msg); addLog('error', `✘ [Vibe] 执行计划失败：${msg}`); setPlanPhase('review') }
+    } finally {
+      setGenerating(false)
+      planExecutingRef.current = false
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // 统一「停止 AI 生成」：标记中断 + 精确 abort 在途请求 + 复位所有 AI 忙碌态 + 释放宿主会话锁。
+  // 覆盖所有 AI 流程（规划/头脑风暴/生成/迭代/问答/修复/一致性修复/图标），右侧对话与左侧面板共用。
+  const stopAgent = () => {
+    const running = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || routing || !!brainstorm?.loading
+    if (!running) return
+    abortedRef.current = true
+    if (reqIdRef.current) { try { ai()?.abort?.(reqIdRef.current) } catch { /* 宿主未实现 abort 时忽略 */ } }
+    setGenerating(false); setExpanding(false); setRepairing(false)
+    setIterating(false); setPlanning(false); setConfRepairing(false); setIconBusy(false); setRouting(false)
+    setBrainstorm((b) => (b && b.loading ? null : b))
+    setNarration('')
+    void dev.hostCall('vibe_end').catch(() => {})
+    pushEvent(currentPhaseRef.current, 'note', '用户已停止生成')
+    addLog('warn', '⏹ [Vibe] 已停止本次 AI 生成')
+    pushToast('info', '已停止生成')
+  }
+
+  // ---------------- 阶段 3：构建 · 载入 · 图标 · 调试 ----------------
+  // 读取已生成的 icon.png 为 dataURL，供交付页展示
+  const loadIconPreview = async () => {
+    if (!createdPath) { setIconDataUrl(null); return }
+    const fs = fsApi()
+    try {
+      if (fs?.exists && !(await fs.exists(`${createdPath}/icon.png`))) { setIconDataUrl(null); return }
+      const b64 = await fs?.readFile?.(`${createdPath}/icon.png`, 'base64')
+      if (typeof b64 === 'string' && b64) {
+        setIconDataUrl(`data:image/png;base64,${b64.replace(/^data:image\/\w+;base64,/, '')}`)
+      }
+    } catch { /* 读取失败则不展示，忽略 */ }
+  }
+
+  // 依据插件的主题/功能/触发方式（以及用户可选的风格补充）构造图标设计提示词
+  const buildIconPrompt = (c: VibeContract, styleHint?: string): string => {
+    const feats = c.features
+      .map((f) => `- ${(f.explain || f.code || '').trim()}`)
+      .filter((l) => l !== '- ')
+      .slice(0, 6)
+      .join('\n')
+    const trig = primaryTrigger(c)
+    const hint = (styleHint || '').trim()
+    return [
+      '为一款 Mulby 桌面效率插件设计一枚应用图标（icon）。请先理解它的主题与功能，再让图形「一眼能联想到它做什么」。',
+      `插件名称：${c.displayName}`,
+      `一句话用途：${c.description}`,
+      c.type ? `所属分类：${c.type}` : '',
+      feats ? `主要功能：\n${feats}` : '',
+      trig ? `典型使用方式：${trig}` : '',
+      hint ? `用户的原话（据此理解期望的风格/主题/配色，但忽略其中「重新生成 / 换一个 / 重做」等指令性词语）：${hint}` : '',
+      '设计要求：512x512 的 viewBox；居中单一主图形（可含简洁辅助元素）；扁平、现代、极简且有质感；配色鲜明且和谐，贴合功能氛围（可用渐变）；圆角方形背景；不要任何文字、字母或数字；在 32px 小尺寸下依然清晰可辨。'
+    ].filter(Boolean).join('\n')
+  }
+
+  // 让 AI 产出一段可解析的 SVG（失败再严格重试一次），拿不到返回 null
+  const requestIconSvg = async (a: any, c: VibeContract, styleHint?: string): Promise<string | null> => {
+    if (!a?.call) return null
+    const base = buildIconPrompt(c, styleHint)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await a.call({
+          ...(selectedModel ? { model: selectedModel } : {}),
+          messages: [
+            { role: 'system', content: '你是资深图标设计师，只输出一段完整 SVG 源码（必须以 <svg 开头、以 </svg> 结尾），不要解释、不要 Markdown 代码块、不要任何额外文字。' },
+            { role: 'user', content: attempt === 0 ? base : `${base}\n\n上次没有给出可用的 SVG。请严格只返回 SVG 源码本身。` }
+          ],
+          skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
+        }, onIconChunk)
+        if (abortedRef.current) return null
+        const content = typeof res?.content === 'string' ? res.content : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
+        const svg = extractSvg(content)
+        if (svg) return svg
+      } catch { if (abortedRef.current) return null /* 否则重试 */ }
+    }
+    return null
+  }
+
+  // 回退：用图像生成模型出一张栅格图，写入 icon.png
+  const generateIconViaImageModel = async (a: any, fs: any, c: VibeContract, styleHint?: string): Promise<boolean> => {
+    if (!(a?.images?.generate && a?.allModels && fs?.writeFile)) return false
+    try {
+      const models = await a.allModels({ endpointType: 'image-generation' })
+      if (!Array.isArray(models) || !models.length) return false
+      const hint = (styleHint || '').trim()
+      const prompt = `App icon for "${c.displayName}". Purpose: ${c.description}.${hint ? ` Style preference: ${hint}.` : ''} Flat modern minimal vector, single centered glyph that clearly reflects the function, vibrant harmonious gradient, rounded square background, no text, crisp at small sizes.`
+      const r = await a.images.generate({ model: models[0].id, prompt, size: '1024x1024', count: 1 })
+      const b64: string | undefined = r?.images?.[0]
+      if (!b64) return false
+      await fs.writeFile(`${createdPath}/icon.png`, b64.replace(/^data:image\/\w+;base64,/, ''), 'base64')
+      pushEvent('icon', 'write', '已生成 icon.png（图像模型）')
+      return true
+    } catch { return false }
+  }
+
+  /**
+   * 生成/重新生成插件图标。
+   * - force=false（自动路径）：尊重 needIcon，已存在 icon.png 则跳过，避免每次构建都重画。
+   * - force=true（交付页按钮 / 对话「重做图标」）：忽略已存在的图标，按主题+功能（+风格补充）重画并覆盖。
+   * - announce=true：把开始/结果回流到右侧对话，让用户在对话里看到这一步。
+   */
+  const generateIcon = async (opts: { force?: boolean; styleHint?: string; announce?: boolean } = {}) => {
+    const { force = false, styleHint, announce = false } = opts
+    if (!createdPath) { if (announce) pushToast('info', '还没有插件项目，无法生成图标'); return }
+    if (!contract) { if (announce) pushToast('info', '插件设定还没就绪，无法生成图标'); return }
+    const fs = fsApi()
+    if (!force) {
+      if (!contract.needIcon) return
+      // 自动路径：已存在则跳过（避免每次构建/交付都重新调 AI）
+      try {
+        if (fs?.exists && await fs.exists(`${createdPath}/icon.png`)) {
+          setIconDone(true); void loadIconPreview()
+          pushEvent('icon', 'note', '已存在 icon.png，跳过重复生成')
+          return
+        }
+      } catch { /* 探测失败则照常尝试生成 */ }
+    }
+    const a = ai()
+    let produced = false
+    if (announce) turnEventsRef.current = []
+    // 分步计时：定位「图标生成卡在哪一步」（SVG 生成 / SVG→PNG 渲染 / 图像模型回退 / 插件重载）
+    const t0 = Date.now()
+    const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+    let svgMs = 0, renderMs = 0, imgMs = 0, reloadMs = 0
+    // 实时进度（A 方案）：定时刷新"已 Xs"，即便模型长时间思考也不像卡死；不改提示词/模型，保证图标质量
+    const renderProgress = () => {
+      const el = Math.round((Date.now() - iconStartRef.current) / 1000)
+      const chars = iconCharsRef.current
+      setIconProgress(
+        iconPhaseRef.current === 'image' ? `正在用图像模型绘制图标… ${el}s`
+          : iconPhaseRef.current === 'drawing' ? `正在绘制图标… ${el}s（已生成 ${chars} 字）`
+            : `AI 正在构思图标… ${el}s`
+      )
+    }
+    let progressTimer: ReturnType<typeof setInterval> | undefined
+    try {
+      setIconBusy(true)
+      resetAbort()
+      iconStartRef.current = Date.now(); iconCharsRef.current = 0; iconPhaseRef.current = 'thinking'
+      renderProgress()
+      progressTimer = setInterval(renderProgress, 500)
+      pushEvent('icon', 'ai', force ? '按主题与功能重新设计图标…' : '生成图标 SVG…', (styleHint || '').slice(0, 40) || undefined)
+      const tSvg = Date.now()
+      const svg = await requestIconSvg(a, contract, styleHint)
+      svgMs = Date.now() - tSvg
+      addLog('info', `⏱ [Vibe] 图标 SVG 生成 ${secs(svgMs)}${svg ? '' : '（未拿到可用 SVG）'}`)
+      if (abortedRef.current) { pushEvent('icon', 'note', '已停止图标生成'); return }
+      const sharp = sharpApi()
+      if (svg && typeof sharp === 'function') {
+        try {
+          try { await fs?.writeFile?.(`${createdPath}/assets/icon.svg`, svg) } catch { /* 可选 */ }
+          const bytes = new TextEncoder().encode(svg)
+          const tRender = Date.now()
+          await sharp(bytes).resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toFile(`${createdPath}/icon.png`)
+          renderMs = Date.now() - tRender
+          produced = true
+          pushEvent('icon', 'write', '已渲染 icon.png（SVG → 512 PNG）', secs(renderMs))
+        } catch {
+          pushEvent('icon', 'note', 'SVG 渲染失败，改用图像模型…')
+        }
+      }
+      if (!produced && !abortedRef.current) {
+        iconPhaseRef.current = 'image'; renderProgress()
+        const tImg = Date.now()
+        produced = await generateIconViaImageModel(a, fs, contract, styleHint)
+        imgMs = Date.now() - tImg
+        addLog('info', `⏱ [Vibe] 图像模型回退 ${secs(imgMs)}${produced ? '' : '（未产出）'}`)
+      }
+      if (abortedRef.current) { pushEvent('icon', 'note', '已停止图标生成'); return }
+
+      if (produced) {
+        setIconDone(true)
+        void loadIconPreview()
+        const tReload = Date.now()
+        try { await dev.ensureLoaded(createdPath) } catch { /* 重载失败不影响图标已写入 */ }
+        reloadMs = Date.now() - tReload
+        await onSyncWorkbench?.()
+        const totalMs = Date.now() - t0
+        const breakdown = `SVG ${secs(svgMs)}${renderMs ? ` · 渲染 ${secs(renderMs)}` : ''}${imgMs ? ` · 图像回退 ${secs(imgMs)}` : ''}${reloadMs ? ` · 重载 ${secs(reloadMs)}` : ''}`
+        addLog('success', `✔ [Vibe] 图标完成，总耗时 ${secs(totalMs)}（${breakdown}）`)
+        pushEvent('icon', 'note', `图标耗时 ${secs(totalMs)}`, breakdown)
+        if (announce && activeId) {
+          appendMessage(activeId, mkMsg('assistant', `图标已重新生成 ✓（耗时 ${secs(totalMs)}：${breakdown}），并已应用到插件。不满意可以再说一句，比如「换成蓝色科技风」「再简洁一点」。`, { actions: collectTurnActions() }))
+        }
+        if (announce) pushToast('success', `图标已更新（${secs(totalMs)}）`)
+      } else {
+        pushEvent('icon', 'note', '未能生成图标（当前环境无 SVG/图像能力）')
+        if (announce && activeId) {
+          appendMessage(activeId, mkMsg('assistant', '这次没能生成图标 😕。可能是当前环境暂时不支持图标生成能力，或模型没返回有效图形。你可以稍后再说一次「重做图标」，或手动放一张 512×512 的 `icon.png` 到插件目录。'))
+        }
+        if (announce) pushToast('error', '图标没能生成，可稍后重试')
+      }
+    } catch (e) {
+      pushEvent('icon', 'error', `图标生成失败：${e instanceof Error ? e.message : ''}`)
+      if (announce && activeId) appendMessage(activeId, mkMsg('assistant', `图标生成失败了：${e instanceof Error ? e.message : '未知错误'}。要不要再试一次？`))
+    } finally {
+      if (progressTimer) clearInterval(progressTimer)
+      setIconProgress(null)
+      setIconBusy(false)
+    }
+  }
+
+  // 自动路径（构建后）：尊重 needIcon、已存在则跳过
+  const tryGenerateIcon = () => generateIcon({})
+
+  // 构建后静态校验契约一致性（只读，自动跑）。返回结果同时存入状态供交付页展示。
+  const runConformance = async (): Promise<ConformanceResult | null> => {
+    if (!createdPath) return null
+    try {
+      const r = await dev.hostCall<ConformanceResult>('check_conformance', { root: createdPath })
+      const result: ConformanceResult = {
+        ok: !!r?.ok, ran: r?.ran !== false,
+        issues: Array.isArray(r?.issues) ? r!.issues : [], summary: r?.summary
+      }
+      setConformance(result)
+      const errs = result.issues.filter((i) => i.level === 'error')
+      if (errs.length) {
+        pushEvent('build', 'error', `契约校验未通过：${errs.length} 处需修复`, errs[0]?.message)
+        addLog('warn', `⚠ [Vibe] 契约一致性：${errs.length} 处需修复 — ${errs.map((e) => e.message).join('；').slice(0, 200)}`)
+      } else {
+        pushEvent('build', 'note', '契约一致性校验通过', result.summary)
+      }
+      return result
+    } catch { return null }
+  }
+
+  const runBuildAndLoad = async () => {
+    if (!createdPath) return
+    setBuilding(true)
+    setBuildLog('')
+    setSmoke([])          // 代码已变，旧的运行验证结果失效
+    setConformance(null)  // 重新校验
+    setPendingPrompt(null) // 清除上一次的构建失败提示
+    turnEventsRef.current = [] // 收集本次构建的操作明细供对话内联
+    try {
+      pushEvent('build', 'build', '构建 npm run build…')
+      addLog('info', `▶ [Vibe] 构建：${createdPath}`)
+      const r = await dev.buildPlugin(createdPath)
+      setBuildLog(r.log || '')
+      if (r.log) addLog(r.success ? 'success' : 'error', r.log)
+      if (!r.success) {
+        setBuilt(false)
+        pushEvent('build', 'error', r.error || '构建失败')
+        pushToast('error', r.error || '构建失败')
+        // 小白引导：用人话说明 + 一键让 AI 修复
+        const tail = (r.log || r.error || '').slice(-280)
+        if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: `构建没通过 😕。报错大致是：\n${tail}\n\n要我自动定位并修复吗？`, timestamp: Date.now() })
+        setPendingPrompt({ kind: 'action', title: '构建未通过', desc: '我可以读取报错自动修复，直到构建通过。', actionLabel: '让 AI 修复', onAction: () => { setPendingPrompt(null); void runRepair() } })
+        return
+      }
+      setBuilt(true)
+      pushEvent('build', 'build', '构建成功')
+      const res = await dev.ensureLoaded(createdPath)
+      setLoaded(res.success)
+      setLoadedId(res.id)
+      pushEvent('load', 'load', res.success ? `已载入 Mulby：${res.id || ''}` : `自动载入失败：${res.error || ''}`)
+      // 构建结果回流右侧对话，让用户在对话流里就能看到反馈
+      if (activeId) {
+        const trig = contract ? primaryTrigger(contract) : ''
+        const msg = res.success
+          ? `构建成功 ✓，已载入 Mulby${res.id ? `（${res.id}）` : ''}。${trig ? `在主输入框输入「${trig}」即可打开，或点上方「打开/试用」。` : '可点上方「打开/试用」。'}`
+          : `构建成功 ✓，但自动载入没成功：${res.error || '未知原因'}。可点上方「打开」重试，或继续告诉我要怎么调整。`
+        appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: msg, timestamp: Date.now(), actions: collectTurnActions() })
+      }
+      await onSyncWorkbench?.()
+      void runConformance()
+      void autoCommit()
+      void detectDevtools()
+      void tryGenerateIcon()
+    } catch (e) {
+      pushEvent('build', 'error', e instanceof Error ? e.message : '构建失败')
+      pushToast('error', e instanceof Error ? e.message : '构建失败')
+    } finally {
+      setBuilding(false)
+    }
+  }
+
+  useEffect(() => {
+    if (stage === 3 && createdPath && !deliverStartedRef.current && !building) {
+      deliverStartedRef.current = true
+      void runBuildAndLoad()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, createdPath])
+
+  // 读取本次会话改动（用于交付页 diff 展示与回滚）
+  const loadChanges = async () => {
+    if (!createdPath) { setChanges([]); return }
+    try {
+      const r = await dev.hostCall<{ changes?: VibeChange[] }>('vibe_changes', { root: createdPath })
+      setChanges(Array.isArray(r?.changes) ? r!.changes : [])
+    } catch { /* 忽略：改动卡片只是辅助 */ }
+  }
+
+  // 进入交付页或生成/扩展/修复后刷新改动列表与版本历史 + 图标预览
+  useEffect(() => {
+    if (stage === 3 && createdPath) { void loadChanges(); void loadVersions(); void loadIconPreview() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, createdPath, generated, expanded, built])
+
+  // 读取版本历史
+  const loadVersions = async () => {
+    if (!createdPath) { setVersions([]); return }
+    try {
+      const r = await dev.hostCall<{ available?: boolean; commits?: VcsCommit[] }>('vcs_log', { root: createdPath, limit: 50 })
+      setVcsAvailable(r?.available !== false)
+      setVersions(Array.isArray(r?.commits) ? r!.commits : [])
+    } catch { /* 忽略：版本面板只是辅助 */ }
+  }
+
+  // 构建成功后自动提交一个版本（消息由各阶段事先写入 pendingCommitMsgRef）
+  const autoCommit = async () => {
+    const msg = pendingCommitMsgRef.current
+    if (!msg || !createdPath) return
+    pendingCommitMsgRef.current = ''
+    try {
+      const r = await dev.hostCall<{ ok?: boolean; available?: boolean; hash?: string; version?: string; nochange?: boolean }>(
+        'vcs_commit', { root: createdPath, message: msg }
+      )
+      if (r?.available === false) { setVcsAvailable(false); return }
+      if (r?.ok && !r.nochange) {
+        pushEvent('build', 'note', '已记录版本', `${r.hash || ''}${r.version ? ' · v' + r.version : ''}`)
+        addLog('success', `✔ [Vibe] 版本已提交：${msg}（${r.hash || ''}）`)
+      }
+      await loadVersions()
+    } catch { /* 忽略 */ }
+  }
+
+  // 读取某版本的改动 patch（供历史面板展开查看）
+  const loadVersionDiff = async (hash: string): Promise<string> => {
+    if (!createdPath) return ''
+    try {
+      const r = await dev.hostCall<{ available?: boolean; patch?: string }>('vcs_diff', { root: createdPath, hash })
+      if (r?.available === false) return '（git 不可用）'
+      return r?.patch || '（该版本无可显示的改动）'
+    } catch { return '读取失败' }
+  }
+
+  // 回滚到某个历史版本：还原文件 → 重新构建载入 → 记录一条「回滚」版本
+  const doRestoreVersion = async (hash: string) => {
+    // 与 undoToBeforeAI 一致：AI 生成/构建进行中禁止回滚，避免与在途写入/构建撕扯
+    if (!createdPath || restoringHash || aiActive || busy) return
+    setRestoringHash(hash)
+    try {
+      const r = await dev.hostCall<{ ok?: boolean; available?: boolean; reason?: string }>('vcs_restore', { root: createdPath, hash })
+      if (r?.available === false) { pushToast('error', 'git 不可用，无法回滚'); return }
+      if (!r?.ok) { pushToast('error', r?.reason || '回滚失败'); return }
+      pushEvent('repair', 'note', `已回滚到版本 ${hash.slice(0, 7)}`)
+      addLog('info', `↩ [Vibe] 回滚到版本 ${hash.slice(0, 7)}，正在重新构建载入`)
+      pushToast('success', `已回滚到 ${hash.slice(0, 7)}，正在重新构建`)
+      pendingCommitMsgRef.current = `回滚到版本 ${hash.slice(0, 7)}`
+      await runBuildAndLoad()
+      await loadChanges()
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '回滚失败')
+    } finally {
+      setRestoringHash(null)
+    }
+  }
+
+  // 一键撤销到「本次 AI 改动之前」：取最近一个影子快照还原点（"AI 改动前"/"新会话基线"）并回滚重建。
+  // 影子库回滚前会自动快照当前态，故本操作可逆——丢弃的改动仍能在版本列表里找回。
+  const undoToBeforeAI = async () => {
+    if (!createdPath || aiActive || busy || restoringHash) return
+    try {
+      const log = await dev.hostCall<{ available?: boolean; commits?: VcsCommit[] }>('vcs_log', { root: createdPath, limit: 50 })
+      if (log?.available === false) { pushToast('error', 'git 不可用，无法撤销'); return }
+      const target = (log?.commits || []).find((c) => /AI 改动前|新会话基线/.test(c.message || ''))
+      if (!target) { pushToast('info', '暂无「AI 改动前」还原点可撤销'); return }
+      setRestoringHash(target.hash)
+      const r = await dev.hostCall<{ ok?: boolean; available?: boolean; reason?: string; removed?: number }>('vcs_restore', { root: createdPath, hash: target.hash })
+      if (!r?.ok) { pushToast('error', r?.reason || '撤销失败'); return }
+      const removedTip = r.removed ? `，清理 ${r.removed} 个新增文件` : ''
+      pushEvent('repair', 'note', `已撤销到「${target.message}」(${target.short})`)
+      addLog('info', `↩ [Vibe] 撤销到 ${target.short}「${target.message}」，正在重新构建载入`)
+      recordMessage(mkMsg('assistant', `已撤销到「${target.message}」(${target.short})${removedTip}。本次 AI 改动已丢弃；如需找回，可在交付页版本列表恢复「自动保存：回滚前的当前状态」。`))
+      pushToast('success', '已撤销到 AI 改动前，正在重新构建')
+      pendingCommitMsgRef.current = '撤销到 AI 改动前'
+      await runBuildAndLoad()
+      await loadVersions()
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '撤销失败')
+    } finally {
+      setRestoringHash(null)
+    }
+  }
+
+  // 一键回滚本次会话的全部改动，并重新构建载入使运行态与磁盘一致
+  const doRollback = async () => {
+    if (!createdPath || rollingBack) return
+    setRollingBack(true)
+    try {
+      const r = await dev.hostCall<{ ok?: boolean; restored?: number; removed?: number; errors?: string[] }>('vibe_rollback', { root: createdPath })
+      const restored = r?.restored || 0
+      const removed = r?.removed || 0
+      pushEvent('repair', 'note', '已回滚本次改动', `还原 ${restored} · 删除 ${removed}`)
+      addLog('info', `↩ [Vibe] 回滚改动：还原 ${restored} 个文件、删除 ${removed} 个新增文件`)
+      pushToast(r?.ok ? 'success' : 'error', r?.ok ? `已回滚（还原 ${restored}，删除 ${removed}）` : `回滚部分失败：${(r?.errors || []).join('；').slice(0, 120)}`)
+      await loadChanges()
+      await runBuildAndLoad()
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '回滚失败')
+    } finally {
+      setRollingBack(false)
+    }
+  }
+
+  // 右侧对话式继续修改：用户输入新反馈（如运行时 bug），AI 在现有代码上做最小迭代
+  const followupSystemPrompt = (c: VibeContract, root: string) => [
+    '你是资深 Mulby 插件工程师，正在根据用户的后续反馈，对一个**已存在且可正常构建**的插件做迭代修改。务必最小化改动，不要破坏现有功能。',
+    `插件根目录：${root}`,
+    '【重要·上下文】上面的 messages 里包含你与用户的完整历史对话（含此前的问答、你给出的方案、以及已经做过的修改）。当用户说「按上面的方案改 / 按你说的做 / 刚才提到的」等指代时，必须回到对话历史里找到对应内容并据此执行，不要忽略或另起炉灶。',
+    '工作方式：先 grep/list_dir/read_file 定位并通读相关文件（manifest.json、src/main.ts、涉及的 src/ui/*）；优先用 edit_file 做最小增量改动；用到 window.mulby.* 前先用 mulby_read_file 查阅 API 文档确认；改完用 build_check 自检并据报错修复；停止前调用 check_conformance 确认 manifest 与代码一致（按 error 修复）。完成后用一两句说明改动并停止。',
+    '约束：保持 id/name 不变；保持构建脚本与依赖清单不变；前端只用已存在的 window.mulby.* 能力（用 mulby_read_file 查阅技能文档核实，不要臆造）；保持 TypeScript 可编译；不要动 node_modules/dist；manifest.json 一般无需改动。',
+    'esbuild 打包注意：不要新增无法被打包的原生依赖；图像处理用 window.mulby.sharp 等宿主能力。',
+    `契约：${contractSummary(c)}`,
+    `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`
+  ].join('\n')
+
+  const followupUserPrompt = (instruction: string) => [
+    `用户的新反馈 / 修改需求：\n${instruction}`,
+    '请结合上面的历史对话理解意图（尤其是此前确认的方案/讨论），先读懂当前代码与问题所在，做必要修改；完成后用一两句说明改动并停止。'
+  ].join('\n')
+
+  const runFollowup = async (instruction: string) => {
+    const text = instruction.trim()
+    if (!contract || !createdPath || !text || iterating) return
+    setIterating(true)
+    setExpanding(true) // 复用：让阶段2的「停止」按钮可用
+    setStage(2)
+    turnEventsRef.current = []
+    setNarration('') // 清空上一轮，供右侧对话流式展示本轮回复
+    try {
+      pushEvent('repair', 'ai', '按你的反馈继续修改…', text.slice(0, 60))
+      addLog('info', `▶ [Vibe] 继续修改：${text}`)
+      let sys = followupSystemPrompt(contract, createdPath)
+      sys = await injectCgContext(createdPath, text, 'repair', sys)
+      sys = withApiSurface(sys)
+      // 注入历史对话上下文：排除本轮刚追加的用户输入，避免与最终 user 消息重复
+      const final = await runAgent(sys, followupUserPrompt(text), createdPath, 'repair', buildHistoryMessages(text))
+      if (abortedRef.current) { pushEvent('repair', 'note', '已中止'); return }
+      const summary = typeof final?.content === 'string' ? final.content : ''
+      if (summary) setNarration(summary)
+      // 持久化 AI 回复到会话对话历史（含本回合操作明细；用户消息由 handleChatSend 写入）
+      if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: summary || '已按你的反馈完成修改。', timestamp: Date.now(), actions: collectTurnActions() })
+      pendingCommitMsgRef.current = `迭代：${text.slice(0, 120)}`
+      deliverStartedRef.current = false
+      setStage(3)
+      addLog('success', '✔ [Vibe] 已按反馈修改，准备重新构建载入')
+    } catch (e) {
+      if (!abortedRef.current) { pushEvent('repair', 'error', e instanceof Error ? e.message : '修改失败'); pushToast('error', e instanceof Error ? e.message : '修改失败') }
+    } finally {
+      setIterating(false)
+      setExpanding(false)
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // ---------------- 只读问答（S1）：回答关于插件的问题，绝不改代码/构建 ----------------
+  const askSystemPrompt = (c: VibeContract | null, root: string) => [
+    '你是 Mulby 插件开发助手，正在回答用户关于一个插件项目的问题。',
+    root ? `插件根目录：${root}` : '当前还没有具体的插件项目。',
+    '你可以使用 list_dir / read_file / grep 这三个只读工具查看代码来回答问题。',
+    '上面的 messages 包含你与用户的历史对话，请把它当作上下文：用户可能在追问、或让你「出个方案 / 给个思路」，请连贯作答；若你给出的是「修改方案」，请尽量结构化、可执行，方便用户随后说「按这个方案改」时直接落地。',
+    '【铁律】这是「只读问答」：严禁修改、写入、删除任何文件，严禁构建或运行插件。只查看并回答（可以给出详细方案/步骤，但不要实际改动）。',
+    '请用简洁中文回答。若你判断用户其实是想让你改代码，请提示他用「帮我改…」「修复…」这类说法来触发修改，而不要直接动手。',
+    c ? `当前插件契约：${contractSummary(c)}` : ''
+  ].filter(Boolean).join('\n')
+
+  const runAsk = async (question: string) => {
+    const a = ai()
+    if (!a?.call) { pushToast('error', '当前环境未启用 AI API，无法回答'); return }
+    const root = createdPath || (vibeMode === 'edit' ? editPath : '')
+    setIterating(true) // 复用底部「停止」与 busy 指示
+    turnEventsRef.current = []
+    try {
+      pushEvent('debug', 'ai', '只读问答…', question.slice(0, 60))
+      addLog('info', `💬 [Vibe] 回答提问：${question.slice(0, 50)}`)
+      if (root) { try { await dev.hostCall('vibe_begin', { root }) } catch { /* 无 root 也可纯文本回答 */ } }
+      abortedRef.current = false
+      reqIdRef.current = null
+      setNarration('')
+      currentPhaseRef.current = 'debug'
+      const sys = withAnchorContext(withApiSurface(askSystemPrompt(contract, root)))
+      const final = await a.call(
+        {
+          ...(selectedModel ? { model: selectedModel } : {}),
+          messages: [{ role: 'system', content: sys }, ...buildHistoryMessages(question), { role: 'user', content: question }],
+          tools: VIBE_READ_TOOLS,
+          maxToolSteps: 60,
+          capabilities: ['fs.read'],
+          // 跨轮上下文自管，关掉宿主默认的 8 条消息截断（否则问答看不到完整方案）
+          params: { contextWindow: 0 },
+          mcp: { mode: 'off' }, skills: skillSelection(), toolingPolicy: { enableInternalTools: false }
+        },
+        onAgentChunk
+      )
+      if (abortedRef.current) { pushEvent('debug', 'note', '已中止'); return }
+      const answer = typeof final?.content === 'string'
+        ? final.content
+        : (Array.isArray(final?.content) ? final.content.map((x: any) => x?.text ?? '').join('\n') : '')
+      const text = (answer || '').trim() || '（未能给出回答，请换种问法再试）'
+      if (activeId) appendMessage(activeId, { id: `a-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(), actions: collectTurnActions() })
+      pushEvent('debug', 'note', '已回答')
+    } catch (e) {
+      if (!abortedRef.current) pushToast('error', e instanceof Error ? e.message : '回答失败')
+    } finally {
+      setIterating(false)
+      if (root) void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  const runRepair = async () => {
+    if (!contract || !createdPath) return
+    setRepairing(true)
+    try {
+      pushEvent('repair', 'ai', 'AI 读取报错并修复…')
+      addLog('info', '▶ [Vibe] AI 修复构建错误…')
+      let sys = contract.isEdit ? editSystemPrompt(contract, createdPath, 'minimal') : createSystemPrompt(contract, createdPath, 'minimal')
+      // 修复阶段：注入知识图谱上下文，帮助 AI 更快定位报错相关代码
+      sys = await injectCgContext(createdPath, contract.editSummary || sentence, 'repair', sys)
+      sys = withApiSurface(sys)
+      await runAgent(sys, repairUserPrompt(buildLog), createdPath, 'repair', buildHistoryMessages())
+      if (abortedRef.current) return
+      pendingCommitMsgRef.current = '修复构建错误'
+      await runBuildAndLoad()
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '修复失败')
+    } finally {
+      setRepairing(false)
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // 让 AI 修复「契约一致性校验」报出的 error 级问题（优先改代码去满足 manifest），完成后重新构建载入
+  const conformancePrompt = (issues: ConformanceIssue[]) => [
+    '刚生成/修改的插件未通过「契约一致性校验」。请逐条修复下列问题，使 manifest.json 与真实文件/代码保持一致：',
+    ...issues.filter((i) => i.level === 'error').map((i, idx) => `${idx + 1}. [${i.code}] ${i.message}${i.hint ? `（建议：${i.hint}）` : ''}`),
+    '原则：manifest 是用户确认的契约，能不改就不改——优先让代码去满足 manifest（补齐缺失的 ui 入口与界面源码、未实现的功能分支、未注册的工具等）。',
+    '修复后用 build_check 自检，再用 check_conformance 确认 ok:true，然后用一句话说明并停止。'
+  ].join('\n')
+
+  const repairConformance = async () => {
+    const errs = (conformance?.issues || []).filter((i) => i.level === 'error')
+    if (!contract || !createdPath || confRepairing || !errs.length) return
+    setConfRepairing(true)
+    try {
+      pushEvent('repair', 'ai', 'AI 修复契约一致性问题…', `${errs.length} 处`)
+      addLog('info', `▶ [Vibe] AI 修复契约一致性问题（${errs.length} 处）`)
+      let sys = contract.isEdit ? editSystemPrompt(contract, createdPath, 'minimal') : createSystemPrompt(contract, createdPath, 'minimal')
+      sys = withApiSurface(sys)
+      await runAgent(sys, conformancePrompt(conformance!.issues), createdPath, 'repair', buildHistoryMessages())
+      if (abortedRef.current) return
+      pendingCommitMsgRef.current = '修复契约一致性'
+      await runBuildAndLoad()
+    } catch (e) {
+      if (!abortedRef.current) pushToast('error', e instanceof Error ? e.message : '修复失败')
+    } finally {
+      setConfRepairing(false)
+      void dev.hostCall('vibe_end').catch(() => {})
+    }
+  }
+
+  // 为某功能挑选一个可用于「运行验证」的示例输入
+  const pickSmokeInput = (f: VibeContract['features'][number]): { input: string; skip?: string } => {
+    const ts = f.triggers || []
+    const sampled = ts.find((t) => (t.type === 'regex' || t.type === 'over') && t.sample?.trim())
+    if (sampled?.sample) return { input: sampled.sample.trim() }
+    if (f.mode === 'ui' || f.mode === 'detached') return { input: '' } // 打开窗口即视为通过
+    const kw = ts.find((t) => t.type === 'keyword' && t.value?.trim())
+    if (kw) return { input: '' }
+    if (ts.some((t) => t.type === 'regex' || t.type === 'over')) {
+      return { input: '', skip: '该功能需特定格式输入，契约未提供 sample，跳过自动验证' }
+    }
+    return { input: '' }
+  }
+
+  // 运行验证（smoke）：用示例输入真实调用 plugin.run 跑一遍每个功能，验证「真的能执行」而不只是「能编译」。
+  // 有副作用（可能写剪贴板/弹通知/开窗口），所以由用户手动触发。
+  const runFeatureSmoke = async () => {
+    if (!contract || smoking) return
+    const p = pluginApi()
+    const pid = loadedId || contract.pluginId || contract.name
+    if (!p?.run || !pid) { pushToast('info', '当前环境无法自动运行验证，请用触发词手动打开'); return }
+    setSmoking(true)
+    try {
+      const results: SmokeResult[] = []
+      for (const f of contract.features) {
+        const label = f.explain || f.code
+        const { input, skip } = pickSmokeInput(f)
+        if (skip) { results.push({ code: f.code, label, input, status: 'skipped', note: skip }); continue }
+        pushEvent('debug', 'load', `运行验证 ${f.code}${input ? `（输入：${input.slice(0, 24)}）` : ''}…`)
+        try {
+          const r = await p.run(pid, f.code, input)
+          results.push({ code: f.code, label, input, status: r?.success ? 'pass' : 'fail', hasUI: r?.hasUI, error: r?.error })
+          pushEvent('debug', r?.success ? 'note' : 'error', r?.success ? `运行通过 ${f.code}` : `运行失败 ${f.code}`, r?.error)
+        } catch (e) {
+          results.push({ code: f.code, label, input, status: 'fail', error: e instanceof Error ? e.message : '运行异常' })
+          pushEvent('debug', 'error', `运行异常 ${f.code}`, e instanceof Error ? e.message : undefined)
+        }
+      }
+      setSmoke(results)
+      const passed = results.filter((r) => r.status === 'pass').length
+      const failed = results.filter((r) => r.status === 'fail').length
+      setCoreVerified(passed > 0 && failed === 0)
+      if (failed) { pushToast('error', `运行验证：${passed} 通过 / ${failed} 失败`); addLog('warn', `⚠ [Vibe] 运行验证：${failed} 个功能执行失败`) }
+      else { pushToast('success', `运行验证：${passed} 个功能均已执行`); addLog('success', `✔ [Vibe] 运行验证：${passed} 个功能均已执行`) }
+    } finally {
+      setSmoking(false)
+    }
+  }
+
+  const doPack = async () => {
+    if (!createdPath) return
+    setPacking(true)
+    try {
+      // 发布前：自增版本号并记录版本（git 不可用则静默跳过）
+      try {
+        const v = await dev.hostCall<{ ok?: boolean; available?: boolean; version?: string }>(
+          'vcs_commit', { root: createdPath, bump: 'patch', tag: true, message: '打包发布' }
+        )
+        if (v?.available === false) setVcsAvailable(false)
+        else if (v?.ok && v.version) { addLog('info', `▶ [Vibe] 版本升级为 v${v.version}`); pushEvent('pack', 'note', `版本升级 v${v.version}`); await loadVersions() }
+      } catch { /* git 不可用则跳过升版 */ }
+      pushEvent('pack', 'note', '打包 .inplugin…')
+      const r = await dev.packPlugin(createdPath)
+      if (r.log) addLog(r.success ? 'success' : 'error', r.log)
+      if (r.success) { setPacked(true); pushEvent('pack', 'note', `已打包${r.outFile ? `：${r.outFile}` : ''}`); pushToast('success', '已打包') }
+      else { pushEvent('pack', 'error', r.error || '打包失败'); pushToast('error', r.error || '打包失败') }
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '打包失败')
+    } finally {
+      setPacking(false)
+    }
+  }
+
+  // 调试回路
+  const detectDevtools = async () => {
+    const s = settingsApi()
+    if (!s?.get) { setDevtoolsOn(null); return }
+    try {
+      const cfg = await s.get()
+      const dev2 = (cfg?.developer || cfg?.settings?.developer) as any
+      setDevtoolsOn(!!(dev2?.enabled && dev2?.showDevTools))
+    } catch { setDevtoolsOn(null) }
+  }
+
+  const enableDevtools = async () => {
+    const s = settingsApi()
+    if (!s?.get || !s?.update) { pushToast('info', '请在 Mulby 设置→开发者中开启「自动打开 DevTools」'); return }
+    setDevtoolsBusy(true)
+    try {
+      const cfg = await s.get()
+      const cur = (cfg?.developer || {}) as any
+      await s.update({ developer: { ...cur, enabled: true, showDevTools: true } })
+      await detectDevtools()
+      pushEvent('debug', 'note', '已开启 DevTools 自动打开')
+      pushToast('success', 'DevTools 已开启，重新打开插件即可看到控制台')
+    } catch (e) {
+      pushToast('info', `无法自动开启，请在 Mulby 设置→开发者手动开启：${e instanceof Error ? e.message : ''}`)
+    } finally {
+      setDevtoolsBusy(false)
+    }
+  }
+
+  const openPlugin = async () => {
+    const p = pluginApi()
+    const pid = loadedId || contract?.pluginId || contract?.name
+    const code = contract ? primaryFeatureCode(contract) : 'main'
+    if (!p?.run || !pid) { pushToast('info', '请在 Mulby 主输入框用触发词打开'); return }
+    try {
+      pushEvent('debug', 'note', `打开插件 ${pid} · ${code}`)
+      const r = await p.run(pid, code, '')
+      if (r?.success) { setOpened(true); pushToast('success', '已打开插件窗口') }
+      else pushToast('error', r?.error || '打开失败，可用触发词手动打开')
+    } catch (e) {
+      pushToast('error', e instanceof Error ? e.message : '打开失败')
+    }
+  }
+
+  const tryIt = async () => {
+    const kw = contract ? primaryTrigger(contract) : ''
+    try { await clip()?.writeText?.(kw) } catch { /* ignore */ }
+    pushToast('info', `触发词「${kw}」已复制，可在 Mulby 主输入框粘贴打开`)
+  }
+
+  function resetState() {
+    setStage(0); setMaxStage(0); setContract(null); setEvents([]); setToolCalls(0); setNarration('')
+    setGenerated(false); setExpanded(false); setExpanding(false)
+    setCreatedPath(''); setBuilt(false); setBuildLog(''); setLoaded(false); setLoadedId(undefined)
+    setIconDone(false); setIconDataUrl(null); setPacked(false); setDevtoolsOn(null); setOpened(false)
+    setGenerating(false); setBuilding(false); setRepairing(false)
+    setChanges([]); setRollingBack(false); setCoreVerified(false)
+    setConformance(null); setConfRepairing(false); setSmoke([]); setSmoking(false)
+    setIterating(false)
+    setVersions([]); setRestoringHash(null); setVcsAvailable(true)
+    setBrainstorm(null)
+    setPlan([]); setPlanPhase('idle'); planPreparedRef.current = false
+    setPendingPrompt(null)
+    pendingCommitMsgRef.current = ''
+    deliverStartedRef.current = false
+  }
+  const resetAll = () => { resetState(); setVibeMode('create'); setEditPath(''); setSentence('') }
+  // 新建项目：清空面板 + 脱离当前会话（下次规划会创建全新会话，不污染当前项目）
+  const startNewProject = () => { resetAll(); liveSessionIdRef.current = null; deselect() }
+
+  // 同一项目下新建一段对话线程：继承当前项目（路径/契约/状态/模型），仅清空对话历史。
+  // 因 pluginPath 不变，水合不会改变 stage/createdPath，不会触发重新构建，体验为「对话清空、项目照旧」。
+  const newConversation = () => {
+    if (generating || building || planning || iterating || repairing || confRepairing) { pushToast('info', '请等当前任务完成，再新建会话'); return }
+    const base = activeSession
+    if (!base) { startNewProject(); return }
+    liveSessionIdRef.current = null // 让水合 effect 接管新会话状态恢复
+    createSession({
+      pluginPath: base.pluginPath,
+      pluginName: base.pluginName,
+      vibeMode: base.vibeMode,
+      state: base.state,
+      contract: base.contract ? JSON.parse(JSON.stringify(base.contract)) : null,
+      sentence: base.sentence,
+      genDepth: base.genDepth,
+      selectedModel: base.selectedModel
+    }, { allowDuplicatePath: true })
+    pushToast('info', '已在当前项目下新建一段对话')
+  }
+
+  const busy = planning || generating || expanding || building || repairing || iconBusy || confRepairing || smoking
+  // 正在进行、可被「停止」中断的 AI 生成类任务（不含纯本地的 building / smoking）
+  const aiActive = planning || generating || expanding || repairing || iterating || iconBusy || confRepairing || !!brainstorm?.loading
+  // P1-3：对话变长且 AI 空闲时，后台把更早消息压成滚动摘要（fire-and-forget，失败不影响主流程）
+  useEffect(() => {
+    if (aiActive) return
+    void maybeSummarizeHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSession?.messages?.length, aiActive])
+  const chatReady = !!createdPath && generated
+  // 设定卡：契约已生成、等待用户确认开始生成代码（对话内联确认入口）
+  // 契约确认卡仅在「尚未进入计划流程」时出现；一旦开始制定/执行计划，改由计划卡接管
+  const contractPending = (stage === 1 && contract && !generating && !generated && planPhase === 'idle')
+    ? { name: contract.displayName || contract.name, summary: contractSummary(contract) }
+    : null
+  // 插件状态（S4）：对话栏顶部常驻的"它在运行/一键试用"状态条
+  const pluginStatus = (createdPath && (generated || built))
+    ? { name: contract?.displayName || contract?.name || createdPath.split('/').pop() || '插件', loaded, trigger: contract ? primaryTrigger(contract) : '', icon: iconDataUrl }
+    : null
+
+  // 把输入作为「需求」推进（未就绪时）：有目标→规划；否则填入描述并提示
+  const seedAsRequirement = (t: string) => {
+    const hasTarget = vibeMode === 'edit' ? !!editPath.trim() : !!targetDir.trim()
+    if (hasTarget) { void doPlan(t) }
+    else { setSentence(t); pushToast('info', vibeMode === 'edit' ? '请先在左侧选择要改造的插件' : '请先选择插件生成的目标目录') }
+  }
+
+  // ---------------- 头脑风暴（S3） ----------------
+  const brainstormPrompt = (seed: string) => [
+    '你是 Mulby 插件创意助手。根据用户的初步想法，发散出 3-4 个具体、可落地、彼此差异明显的 Mulby 桌面插件方向。',
+    '只输出 JSON：{ "options": [ { "title": "简短中文方向名", "pitch": "一句话说明能做什么/卖点", "trigger": "触发方式（如：关键词唤起 / 处理选中文本 / 拖入图片 / 正则匹配金额）" } ] }。',
+    '要求：贴近桌面效率/开发工具场景、对新手友好、避免雷同、可被一个小插件实现。',
+    `用户的初步想法：${seed}`
+  ].join('\n')
+
+  const normalizeBrainstorm = (obj: any): BrainstormOption[] => {
+    const arr = Array.isArray(obj?.options) ? obj.options : []
+    return arr.slice(0, 4).map((o: any) => ({
+      title: String(o?.title || '').slice(0, 40),
+      pitch: String(o?.pitch || '').slice(0, 120),
+      trigger: o?.trigger ? String(o.trigger).slice(0, 40) : undefined
+    })).filter((o: BrainstormOption) => o.title)
+  }
+
+  const runBrainstorm = async (seed: string) => {
+    const a = ai()
+    if (!a?.call) { seedAsRequirement(seed); return } // 无 AI 时直接进规划
+    recordMessage(mkMsg('assistant', '我帮你想了几个方向，挑一个开始，或继续用自己的话描述：'))
+    setBrainstorm({ loading: true, options: [], seed })
+    resetAbort()
+    try {
+      const obj = await aiJson('你是 Mulby 插件创意助手，只输出可解析的 JSON 对象。', brainstormPrompt(seed))
+      if (abortedRef.current) { setBrainstorm(null); addLog('info', '⏹ [Vibe] 已停止发散'); return }
+      const options = normalizeBrainstorm(obj)
+      if (!options.length) { setBrainstorm(null); seedAsRequirement(seed); return }
+      setBrainstorm({ loading: false, options, seed })
+    } catch {
+      if (abortedRef.current) { setBrainstorm(null); return }
+      setBrainstorm(null); seedAsRequirement(seed)
+    }
+  }
+
+  // 采用一段「种子描述」推进到契约生成（有目标→规划；无目标→提示先选目录/插件）
+  const planFromSeed = (seed: string) => {
+    setBrainstorm(null)
+    setSentence(seed)
+    const hasTarget = vibeMode === 'edit' ? !!editPath.trim() : !!targetDir.trim()
+    if (hasTarget) { void doPlan(seed) }
+    else { setStage(0); pushToast('info', vibeMode === 'edit' ? '请先在左侧选择要改造的插件，再描述一次' : '请先选择目标目录，再在对话里描述一次') }
+  }
+
+  const pickIdea = (opt: BrainstormOption) => {
+    const seed = opt.pitch ? `${opt.title}。${opt.pitch}` : opt.title
+    recordMessage(mkMsg('user', `选择方向：${opt.title}`, { intent: 'create' }))
+    planFromSeed(seed)
+  }
+
+  // 跳过头脑风暴：直接用用户原始描述生成契约
+  const useBrainstormSeed = () => {
+    if (!brainstorm) return
+    recordMessage(mkMsg('user', '直接用我刚才的描述生成', { intent: 'create' }))
+    planFromSeed(brainstorm.seed)
+  }
+
+  // 断点续传：接上当前会话中「未完成的任务」而不是新建项目/重新规划。
+  // 计划待执行(review)→继续执行；契约已就绪但还没制定计划(idle+contract)→制定计划。返回是否已处理。
+  const resumeInFlight = (): boolean => {
+    // 计划待执行（含「重新生成」后 generated 仍为 true 的 review 态）→ 继续执行
+    if (planPhase === 'review') { void executePlan(); return true }
+    // 契约已就绪但还没制定计划（尚未交付）→ 制定计划
+    if (!generated && planPhase === 'idle' && !!contract) { void generatePlan(); return true }
+    return false
+  }
+
+  // ---------------- 意图路由（C 方案）：让 LLM 看「消息 + 历史 + 当前状态」决定该触发哪个动作 ----------------
+  // 取代写死的正则分流；正则（classifyIntent / reContinue）降级为 AI 不可用/失败/超时时的兜底安全网。
+  const buildRouterState = (): string => {
+    const parts: string[] = []
+    if (createdPath) parts.push(`已有插件「${contract?.displayName || contract?.name || '项目'}」（${generated ? '已生成、可运行' : '生成中'}）`)
+    else parts.push('当前还没有插件项目')
+    if (planPhase === 'planning') parts.push('正在制定开发计划')
+    else if (planPhase === 'executing') parts.push('正在按计划执行')
+    else if (planPhase === 'review') parts.push('有一份开发计划待执行/可续跑（resume = 继续执行该计划）')
+    else if (!generated && !!contract) parts.push('插件设定(契约)已就绪、尚未制定计划（resume = 开始制定计划）')
+    parts.push(vibeMode === 'edit' ? '处于「改造现有插件」模式' : '处于「新建插件」模式')
+    return parts.join('；')
+  }
+
+  const ROUTE_ACTIONS = new Set<RouteAction>(['ask', 'create', 'modify', 'resume', 'run', 'package', 'rollback', 'icon'])
+
+  const routerSystemPrompt = (): string => [
+    '你是 Mulby「对话式插件开发助手」的意图路由器。读懂用户最新消息（结合上面的历史对话与下面的当前状态），判断接下来应触发哪一个动作。',
+    '只输出 JSON：{"action":"ask|create|modify|resume|run|package|rollback|icon"}，不要解释、不要 Markdown。',
+    '',
+    '动作含义与选择规则：',
+    '- ask：提问 / 咨询 / 要思路或方案 / 查看现状 / 排查「为什么…」。这是默认动作——只要意图不明、或更像在提问/讨论，一律选 ask（只读，绝不改代码）。带疑问语气（「…吗？」「为什么」「能不能」「怎么」）即使提到功能词也选 ask。',
+    '- modify：明确要求改动「现有插件」的功能/样式/代码（祈使句，如「帮我加…」「把…改成…」「修复…」「优化某处」）。',
+    '- create：明确想从零做一个「全新插件」，且当前没有正在进行的插件任务。',
+    '- resume：想继续 / 接着完成「当前未完成的任务」（如「继续」「接着做」「继续执行」「接着写」）。仅当下面【状态】标明有进行中的计划或待制定计划时才可选。',
+    '- run：想运行 / 打开 / 试用当前插件。',
+    '- package：想打包 / 导出 / 发布插件。',
+    '- rollback：想撤销 / 回滚 / 还原改动。',
+    '- icon：想重做 / 更换 / 美化插件图标。',
+    '',
+    '红线：宁可选 ask，也不要在不确定时选 modify/create——默认不动代码。',
+    `【当前状态】${buildRouterState()}`
+  ].join('\n')
+
+  // 调一次轻量 LLM 做路由（无工具、无技能、关历史截断），只输出动作；失败/无效返回 null（交给规则兜底）。
+  const routeIntent = async (text: string): Promise<RouteAction | null> => {
+    const a = ai()
+    if (!a?.call) return null
+    try {
+      const res = await a.call({
+        ...(selectedModel ? { model: selectedModel } : {}),
+        messages: [{ role: 'system', content: routerSystemPrompt() }, ...buildHistoryMessages(text).slice(-6), { role: 'user', content: text }],
+        params: { contextWindow: 0 },
+        skills: { mode: 'off' }, mcp: { mode: 'off' }, toolingPolicy: { enableInternalTools: false }
+      }, captureReqId)
+      const content = typeof res?.content === 'string'
+        ? res.content
+        : Array.isArray(res?.content) ? res.content.map((x: any) => x?.text ?? '').join('\n') : ''
+      const json = extractJsonObject(content)
+      if (!json) return null
+      const action = String(JSON.parse(json)?.action || '').trim() as RouteAction
+      return ROUTE_ACTIONS.has(action) ? action : null
+    } catch { return null }
+  }
+
+  // 路由带超时：给较慢的推理模型充足时间（100s）再回退到正则兜底；期间可随时点「停止」取消（见 stopAgent）。
+  const routeIntentWithTimeout = async (text: string): Promise<RouteAction | null> =>
+    Promise.race([
+      routeIntent(text),
+      new Promise<RouteAction | null>((resolve) => setTimeout(() => resolve(null), 100000))
+    ])
+
+  // 规则兜底（AI 不可用/失败/超时）：保留原有正则作为安全网（含断点续传的「继续」识别）
+  const fallbackAction = (text: string): RouteAction => {
+    const reContinue = /^\s*(继续|接着|接上|往下|下一步|go ?on|continue|keep ?going|resume)/i
+    const canResume = planPhase === 'review' || (!generated && planPhase === 'idle' && !!contract)
+    if (canResume && reContinue.test(text)) return 'resume'
+    return classifyIntent(text, { hasPlugin: !!createdPath }).intent
+  }
+
+  // 把「动作」分发到既有工作流（LLM 路由与规则兜底都汇聚到这里）。默认不动代码，破坏性操作二次确认。
+  const dispatchAction = (action: RouteAction, t: string) => {
+    switch (action) {
+      case 'resume':
+        if (!resumeInFlight()) void runAsk(t) // 无可续任务 → 退化为只读问答
+        return
+      case 'ask':
+        void runAsk(t); return
+      case 'run':
+        if (chatReady) void openPlugin(); else void runAsk(t); return
+      case 'package':
+        if (chatReady) void doPack(); else void runAsk(t); return
+      case 'rollback':
+        if (chatReady && changes.length) {
+          setPendingPrompt({ kind: 'confirm', title: '撤销本次会话的全部改动？', desc: '将还原改动并重新构建载入，操作不可逆。', actionLabel: '确认撤销', danger: true, onAction: () => { setPendingPrompt(null); void doRollback() } })
+        } else void runAsk(t)
+        return
+      case 'icon':
+        // 重新生成图标：依据插件主题/功能（+用户原话里的风格补充），强制覆盖现有图标
+        if (createdPath && contract) void generateIcon({ force: true, styleHint: t, announce: true })
+        else void runAsk(t)
+        return
+      case 'modify':
+        if (chatReady) { void runFollowup(t); return }
+        // 任务进行中（契约/计划阶段、尚未交付）→ 接上当前阶段，避免重新规划丢失进度
+        if (resumeInFlight()) return
+        seedAsRequirement(t); return
+      case 'create':
+      default:
+        if (chatReady) { void runFollowup(t); return }
+        // 已有进行中的任务 → 接上，绝不新建项目（修复「忘记当前在做什么、又开了个新项目」）
+        if (resumeInFlight()) return
+        if (vibeMode === 'create') {
+          if (!targetDir.trim()) { pushToast('info', '请先在左侧选择插件生成的目标目录，再描述一次即可'); return }
+          void runBrainstorm(t); return
+        }
+        seedAsRequirement(t)
+        return
+    }
+  }
+
+  // 全局对话入口：先即时显示用户消息，再由 LLM 路由（失败/超时回退规则）决定动作。默认不动代码。
+  const handleChatSend = async (text: string) => {
+    const t = text.trim()
+    if (!t || busy || aiActive || routing) return
+    // 立即落消息：意图标签先用规则给个即时值（真正动作由 LLM 决定，避免等待路由才显示用户气泡）
+    const provisional = fallbackAction(t)
+    recordMessage(mkMsg('user', t, { intent: provisional === 'resume' ? 'create' : provisional }))
+    let action: RouteAction = provisional
+    if (ai()?.call) {
+      resetAbort()
+      setRouting(true)
+      try {
+        const routed = await routeIntentWithTimeout(t)
+        if (abortedRef.current) return // 用户在「理解中」点了停止 → 取消本次分发
+        if (routed) action = routed
+      } finally { setRouting(false) }
+    }
+    dispatchAction(action, t)
+  }
+
+  return (
+    <div className="flex h-full">
+      {/* 左：阶段导航 + 模型 */}
+      <aside className="w-56 shrink-0 border-r border-slate-200 dark:border-slate-800 overflow-auto bg-white/40 dark:bg-slate-900/30 p-3 flex flex-col">
+        <div className="flex items-center gap-2 px-1.5 mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">
+          <Sparkles size={15} className="text-emerald-500" /> {vibeMode === 'edit' ? '一句话改插件' : '一句话造插件'}
+        </div>
+        <div className="px-1.5 mb-1.5 text-[10px] text-slate-400 dark:text-slate-500">进度（对话驱动，无需手动切换）</div>
+        {/* 只读进度指示：阶段由对话推进，不再点击跳转 */}
+        <ol className="space-y-1">
+          {STAGES.map((s) => {
+            const active = s.id === stage
+            const done = s.id < stage
+            const Icon = s.icon
+            return (
+              <li key={s.id}>
+                <div
+                  title={done ? '已完成' : active ? '当前阶段' : '未开始'}
+                  className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg ${active ? 'bg-emerald-500/10 border border-emerald-500/30' : 'border border-transparent'} ${active || done ? '' : 'opacity-60'}`}
+                >
+                  <span className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${done ? 'bg-emerald-500 text-white' : active ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}>
+                    {done ? <Check size={13} /> : <Icon size={13} />}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{s.id + 1}. {s.title}</span>
+                    <span className="block text-[10px] text-slate-400 dark:text-slate-500 mono truncate">{s.sub}</span>
+                  </span>
+                </div>
+              </li>
+            )
+          })}
+        </ol>
+        <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800">
+          <div className="text-[10px] text-slate-400 dark:text-slate-500 mb-1.5">生成模型</div>
+          <select className="input-base text-xs w-full" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={modelLoading || modelOptions.length === 0} title={selectedModel || '宿主默认模型'}>
+            {modelLoading && <option value="">加载模型中…</option>}
+            {!modelLoading && modelOptions.length === 0 && <option value="">宿主默认模型</option>}
+            {modelOptions.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </div>
+        {stage > 0 && (
+          <button className="btn-ghost mt-auto text-xs justify-center" onClick={resetAll} disabled={busy}>
+            <RefreshCw size={13} /> 重新开始
+          </button>
+        )}
+      </aside>
+
+      {/* 右：阶段内容 */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex-1 overflow-auto px-6 py-5">
+          {stage === 0 && (
+            <DescribeStage
+              vibeMode={vibeMode} setVibeMode={setVibeMode}
+              targetDir={targetDir} setTargetDir={setTargetDir}
+              editPath={editPath} setEditPath={setEditPath}
+              knownPlugins={knownPlugins}
+              showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced}
+              genDepth={genDepth} setGenDepth={setGenDepth}
+              onPickDir={onPickDir} disabled={busy}
+            />
+          )}
+          {stage === 1 && contract && (
+            <ContractStage contract={contract} setContract={setContract} editable={!generating} />
+          )}
+          {stage === 2 && (
+            <GenerateStage contract={contract} events={events} toolCalls={toolCalls} narration={narration} createdPath={createdPath} busy={generating || expanding} />
+          )}
+          {stage === 3 && contract && (
+            <DeliverStage
+              contract={contract} createdPath={createdPath}
+              building={building} built={built} buildLog={buildLog}
+              loaded={loaded} loadedId={loadedId}
+              repairing={repairing} expanding={expanding}
+              iconBusy={iconBusy} iconDone={iconDone} iconDataUrl={iconDataUrl}
+              devtoolsOn={devtoolsOn} devtoolsBusy={devtoolsBusy} opened={opened}
+              events={events}
+              changes={changes} rollingBack={rollingBack} onRollback={doRollback}
+              coreVerified={coreVerified} onToggleCoreVerified={() => setCoreVerified((v) => !v)}
+              conformance={conformance} confRepairing={confRepairing} onRepairConformance={repairConformance}
+              smoke={smoke} smoking={smoking} onRunSmoke={runFeatureSmoke}
+              versions={versions} vcsAvailable={vcsAvailable} restoringHash={restoringHash}
+              onRefreshVersions={loadVersions} onVersionDiff={loadVersionDiff} onRestoreVersion={doRestoreVersion}
+              onRebuild={runBuildAndLoad} onRepair={runRepair}
+              onRegenIcon={() => void generateIcon({ force: true, announce: true })}
+              onOpenDir={() => dev.openPluginDir(createdPath)}
+              onEnableDevtools={enableDevtools}
+            />
+          )}
+        </div>
+
+        {/* 底部操作条 */}
+        <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 dark:border-slate-800 shrink-0">
+          <button className="btn-ghost" onClick={() => setStage((s) => Math.max(0, s - 1) as Stage)} disabled={stage === 0 || busy}>
+            <ChevronLeft size={15} /> 上一步
+          </button>
+
+          {stage === 0 && (
+            planning ? (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-500 dark:text-slate-400">
+                <Loader2 size={14} className="animate-spin" /> {vibeMode === 'edit' ? '分析中…' : '规划中…'}
+              </span>
+            ) : (maxStage > 0 && contract) ? (
+              <button className="btn-primary" onClick={() => setStage(1)}>下一步 <ChevronRight size={15} /></button>
+            ) : (
+              <span className="text-[12px] text-slate-400 dark:text-slate-500">在右侧对话框描述需求即可开始 →</span>
+            )
+          )}
+
+          {stage === 1 && (
+            generated ? (
+              <div className="flex gap-2">
+                <button className="btn-ghost" onClick={generatePlan} disabled={generating} title="按当前契约重新制定开发计划并生成（会覆盖现有实现）">
+                  <Play size={15} /> 重新生成
+                </button>
+                <button className="btn-primary" onClick={() => setStage((maxStage >= 3 ? 3 : 2) as Stage)}>下一步 <ChevronRight size={15} /></button>
+              </div>
+            ) : (
+              <span className="text-[12px] text-slate-400 dark:text-slate-500">在右侧对话点「确认并生成」开始 →</span>
+            )
+          )}
+
+          {stage === 2 && (
+            (generating || expanding) ? (
+              <button className="btn-danger" onClick={stopAgent}><StopCircle size={15} /> 停止</button>
+            ) : generated ? (
+              // 纯导航：不重置 deliverStartedRef，避免来回切换重复触发构建
+              <button className="btn-primary" onClick={() => setStage(3)}>
+                <Rocket size={15} /> 去构建与交付 <ChevronRight size={15} />
+              </button>
+            ) : (
+              <button className="btn-primary" onClick={generatePlan} disabled={!contract}><Play size={15} /> 重新生成</button>
+            )
+          )}
+
+          {stage === 3 && (
+            <span className={`badge ${loaded ? 'badge-green' : built ? 'badge-amber' : 'badge-slate'}`}>
+              {loaded ? <><Check size={12} /> 已载入 Mulby</> : built ? '已构建' : building ? '构建中…' : '待构建'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* 右：会话列表 + 全局对话主线 */}
+      <aside className="w-80 shrink-0 border-l border-slate-200 dark:border-slate-800 flex flex-col bg-white/40 dark:bg-slate-900/30">
+        <div className="p-2 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-1.5">
+          <div className="flex-1 min-w-0"><SessionSwitcher onNewSession={startNewProject} onNewConversation={newConversation} /></div>
+          <button onClick={startNewProject} disabled={busy} className="btn-primary h-7 px-2 text-[11px] shrink-0" title="新建一个全新的插件项目">
+            <Plus size={13} /> 新建项目
+          </button>
+        </div>
+        <div className="flex-1 min-h-0">
+          <ChatPanel
+            onSend={handleChatSend}
+            disabled={busy && !iterating}
+            busy={iterating || generating || iconBusy}
+            routing={routing}
+            aiActive={aiActive}
+            onStop={stopAgent}
+            streamingText={(iterating || generating) ? narration : ''}
+            brainstorm={brainstorm}
+            onPickIdea={pickIdea}
+            onMoreIdeas={() => { if (brainstorm) void runBrainstorm(brainstorm.seed) }}
+            onUseSeed={useBrainstormSeed}
+            onDismissBrainstorm={() => setBrainstorm(null)}
+            examples={vibeMode === 'edit' ? EDIT_EXAMPLES : EXAMPLES}
+            contractPending={contractPending}
+            onConfirmGenerate={generatePlan}
+            plan={plan}
+            planPhase={planPhase}
+            onStartPlan={executePlan}
+            onReplan={generatePlan}
+            pendingPrompt={pendingPrompt}
+            onPromptDismiss={() => setPendingPrompt(null)}
+            status={pluginStatus}
+            statusBusy={building || packing}
+            iconBusy={iconBusy}
+            iconProgress={iconProgress}
+            packed={packed}
+            onOpenPlugin={openPlugin}
+            onTryIt={tryIt}
+            onPack={doPack}
+            onRegenIcon={() => void generateIcon({ force: true, announce: true })}
+            onUndoToBefore={undoToBeforeAI}
+            undoing={!!restoringHash}
+            onClearMessages={() => { if (activeId) clearMessages(activeId) }}
+            onNewConversation={newConversation}
+          />
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+// ============ 子组件 ============
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">{label}</label>
+      {children}
+      {hint && <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{hint}</p>}
+    </div>
+  )
+}
+
+function ModeBtn({ active, disabled, onClick, icon, label }: { active: boolean; disabled?: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all disabled:opacity-50 ${active ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+      {icon}{label}
+    </button>
+  )
+}
+
+function DescribeStage({
+  vibeMode, setVibeMode, targetDir, setTargetDir,
+  editPath, setEditPath, knownPlugins, showAdvanced, setShowAdvanced, genDepth, setGenDepth, onPickDir, disabled
+}: {
+  vibeMode: VibeMode; setVibeMode: (m: VibeMode) => void
+  targetDir: string; setTargetDir: (s: string) => void
+  editPath: string; setEditPath: (s: string) => void
+  knownPlugins: KnownPlugin[]
+  showAdvanced: boolean; setShowAdvanced: (v: boolean) => void
+  genDepth: 'full' | 'minimal'; setGenDepth: (m: 'full' | 'minimal') => void
+  onPickDir: () => Promise<string | null>
+  disabled?: boolean
+}) {
+  const isEdit = vibeMode === 'edit'
+  return (
+    <div className="w-full space-y-5">
+      <div className="inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/70">
+        <ModeBtn active={!isEdit} disabled={disabled} onClick={() => setVibeMode('create')} icon={<Lightbulb size={14} />} label="新建插件" />
+        <ModeBtn active={isEdit} disabled={disabled} onClick={() => setVibeMode('edit')} icon={<Pencil size={14} />} label="改造已有插件" />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center">
+          {isEdit ? <Pencil size={20} className="text-emerald-500" /> : <Lightbulb size={20} className="text-emerald-500" />}
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{isEdit ? '选一个插件，在右侧对话说要改什么' : '设好目标，在右侧对话描述你的插件'}</h2>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">{isEdit ? 'AI 会读懂现有代码，按需改写、构建并重新载入' : '先确认结构化「契约」，再由 AI 实现、构建、载入'}</p>
+        </div>
+      </div>
+
+      {isEdit && (
+        <Field label="目标插件" hint="从已载入插件中选择，或直接选目录">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Boxes size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <select className="input-base pl-8 w-full" value={knownPlugins.some((k) => k.path === editPath) ? editPath : ''} onChange={(e) => setEditPath(e.target.value)} disabled={disabled || knownPlugins.length === 0}>
+                <option value="">{knownPlugins.length === 0 ? '（暂无已知插件，请选目录）' : '— 选择已载入插件 —'}</option>
+                {knownPlugins.map((k) => <option key={k.path} value={k.path}>{k.displayName}（{k.id}）</option>)}
+              </select>
+            </div>
+            <button className="btn-secondary shrink-0" disabled={disabled} onClick={async () => { const d = await onPickDir(); if (d) setEditPath(d) }}>
+              <FolderSearch size={15} /> 选目录
+            </button>
+          </div>
+          {editPath && <p className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500 mono truncate">{editPath}</p>}
+        </Field>
+      )}
+
+      {!isEdit && (
+        <Field label="目标目录" hint="将在此目录下创建插件子目录">
+          <div className="flex gap-2">
+            <input className="input-base mono flex-1" placeholder="/Users/you/plugins" value={targetDir} onChange={(e) => setTargetDir(e.target.value)} disabled={disabled} />
+            <button className="btn-secondary shrink-0" disabled={disabled} onClick={async () => { const d = await onPickDir(); if (d) setTargetDir(d) }}>
+              <FolderSearch size={15} /> 选择
+            </button>
+          </div>
+        </Field>
+      )}
+
+      <Field label="生成方式" hint={genDepth === 'full' ? '一次性生成尽量完整、开箱即用的版本（推荐）' : '先生成能跑通的最小骨架，之后在右侧对话里说「继续完善」即可逐步补全（适合复杂/不确定需求）'}>
+        <div className="inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/70">
+          <ModeBtn active={genDepth === 'full'} disabled={disabled} onClick={() => setGenDepth('full')} icon={<Rocket size={14} />} label="完整实现" />
+          <ModeBtn active={genDepth === 'minimal'} disabled={disabled} onClick={() => setGenDepth('minimal')} icon={<Lightbulb size={14} />} label="最小可跑" />
+        </div>
+      </Field>
+
+      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-[12px] text-slate-600 dark:text-slate-300 flex items-start gap-2 leading-relaxed">
+        <Sparkles size={15} className="text-emerald-500 shrink-0 mt-0.5" />
+        <span>
+          {isEdit
+            ? '选好上面的插件后，在右侧对话框直接说要改什么（例如「界面改成暗色，并加一个复制按钮」），我会读懂代码再改写。'
+            : '设好目标目录与生成方式后，在右侧对话框用一句话描述你想要的插件，我会先帮你想几个方向，挑一个就开始生成。'}
+        </span>
+      </div>
+
+      <button className="text-xs text-slate-400 dark:text-slate-500 flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-300" onClick={() => setShowAdvanced(!showAdvanced)}>
+        <Settings2 size={13} /> 关于流程
+      </button>
+      {showAdvanced && (
+        <div className="text-[12px] text-slate-500 dark:text-slate-400 rounded-lg border border-slate-200 dark:border-slate-700 p-3 leading-relaxed">
+          下一步会生成一份可编辑的「契约」（功能/触发词/模式/权限），确认后由本工具确定性写出 manifest.json，再让 AI 实现代码并立即构建载入。生成方式为「完整实现」时一次性产出可用版本；「最小可跑」则先产出最小骨架，之后在右侧对话里继续描述需求即可逐步完善（构建若没通过可一键「AI 修复」，也能「打开调试」）。
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ContractStage({ contract, setContract, editable }: { contract: VibeContract; setContract: (c: VibeContract) => void; editable: boolean }) {
+  return (
+    <div className="w-full space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center">
+          <FileEdit size={20} className="text-emerald-500" />
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{contract.isEdit ? '确认改造契约' : '确认插件契约'}</h2>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">manifest.json 将由这份契约确定性生成；AI 只负责实现代码</p>
+        </div>
+      </div>
+
+      {contract.isEdit && contract.editSummary && (
+        <div className="rounded-lg bg-amber-500/5 border border-amber-500/30 p-3 text-[12px] text-amber-700 dark:text-amber-300">
+          <span className="font-medium">本次改动：</span>{contract.editSummary}
+        </div>
+      )}
+
+      <ContractEditor contract={contract} onChange={setContract} editable={editable} />
+    </div>
+  )
+}
+
+const KIND_ICON: Record<EventKind, React.ReactNode> = {
+  read: <FileSearch size={13} className="text-sky-500" />,
+  write: <FileEdit size={13} className="text-emerald-500" />,
+  build: <Hammer size={13} className="text-amber-500" />,
+  load: <Rocket size={13} className="text-indigo-500" />,
+  error: <AlertTriangle size={13} className="text-rose-500" />,
+  note: <Check size={13} className="text-slate-400" />,
+  ai: <Sparkles size={13} className="text-emerald-500" />
+}
+
+function Timeline({ events, compact }: { events: TimelineEvent[]; compact?: boolean }) {
+  const list = compact ? events.slice(-8) : events
+  return (
+    <ul className={`space-y-1.5 ${compact ? 'max-h-40' : 'max-h-[420px]'} overflow-auto`}>
+      {list.map((e) => (
+        <li key={e.id} className="flex items-start gap-2 text-[12px]">
+          <span className="mt-0.5 shrink-0">{KIND_ICON[e.kind]}</span>
+          <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">{PHASE_LABEL[e.phase]}</span>
+          <span className={`min-w-0 ${e.kind === 'error' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-600 dark:text-slate-300'}`}>
+            <span className="break-words">{e.text}</span>
+            {e.detail && <span className="text-slate-400 dark:text-slate-500"> · {e.detail}</span>}
+          </span>
+        </li>
+      ))}
+      {list.length === 0 && <li className="text-[12px] text-slate-400 dark:text-slate-500">等待开始…</li>}
+    </ul>
+  )
+}
+
+function GenerateStage({ contract, events, toolCalls, narration, createdPath, busy }: { contract: VibeContract | null; events: TimelineEvent[]; toolCalls: number; narration: string; createdPath: string; busy: boolean }) {
+  return (
+    <div className="w-full space-y-5">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center">
+          {busy ? <Loader2 size={20} className="text-emerald-500 animate-spin" /> : <Wand2 size={20} className="text-emerald-500" />}
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{busy ? 'AI 正在生成…' : '生成完成'}</h2>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">{contract ? contractSummary(contract) : ''}</p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-2">
+        <div className="flex items-center justify-between text-[12px] text-slate-500 dark:text-slate-400">
+          <span className="flex items-center gap-1.5"><Terminal size={13} /> 活动时间线（{events.length} 事件 · {toolCalls} 次工具调用）</span>
+          {createdPath && <span className="mono truncate max-w-[55%]">{createdPath}</span>}
+        </div>
+        <Timeline events={events} />
+        {narration && <p className="text-[11px] text-slate-400 dark:text-slate-500 border-t border-slate-200/70 dark:border-slate-800/70 pt-2 whitespace-pre-wrap line-clamp-5">{narration}</p>}
+      </div>
+    </div>
+  )
+}
+
+function DeliverStage({
+  contract, createdPath, building, built, buildLog, loaded, loadedId,
+  repairing, expanding, iconBusy, iconDone, iconDataUrl,
+  devtoolsOn, devtoolsBusy, opened, events,
+  changes, rollingBack, onRollback, coreVerified, onToggleCoreVerified,
+  conformance, confRepairing, onRepairConformance, smoke, smoking, onRunSmoke,
+  versions, vcsAvailable, restoringHash, onRefreshVersions, onVersionDiff, onRestoreVersion,
+  onRebuild, onRepair, onRegenIcon, onOpenDir, onEnableDevtools
+}: {
+  contract: VibeContract; createdPath: string
+  building: boolean; built: boolean; buildLog: string
+  loaded: boolean; loadedId?: string
+  repairing: boolean; expanding: boolean
+  iconBusy: boolean; iconDone: boolean; iconDataUrl: string | null
+  devtoolsOn: boolean | null; devtoolsBusy: boolean; opened: boolean
+  events: TimelineEvent[]
+  changes: VibeChange[]; rollingBack: boolean; onRollback: () => void
+  coreVerified: boolean; onToggleCoreVerified: () => void
+  conformance: ConformanceResult | null; confRepairing: boolean; onRepairConformance: () => void
+  smoke: SmokeResult[]; smoking: boolean; onRunSmoke: () => void
+  versions: VcsCommit[]; vcsAvailable: boolean; restoringHash: string | null
+  onRefreshVersions: () => void; onVersionDiff: (hash: string) => Promise<string>; onRestoreVersion: (hash: string) => void
+  onRebuild: () => void; onRepair: () => void
+  onRegenIcon: () => void
+  onOpenDir: () => void; onEnableDevtools: () => void
+}) {
+  const buildFailed = !building && !built && !!buildLog
+  const isEdit = !!contract.isEdit
+  const trigger = primaryTrigger(contract)
+  const confErrors = (conformance?.issues || []).filter((i) => i.level === 'error')
+  return (
+    <div className="w-full space-y-5">
+      <div className="flex items-center gap-3">
+        <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500/15 to-teal-500/10 border border-emerald-500/20 flex items-center justify-center overflow-hidden shrink-0">
+          {building ? <Loader2 size={24} className="text-emerald-500 animate-spin" />
+            : iconDataUrl ? <img src={iconDataUrl} alt="插件图标" className="w-full h-full object-contain" />
+            : <Rocket size={24} className="text-emerald-500" />}
+          {iconBusy && (
+            <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center">
+              <Loader2 size={18} className="text-white animate-spin" />
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
+            {building ? '构建并载入中…'
+              : buildFailed ? '构建失败'
+              : loaded && confErrors.length ? '已载入，但契约校验未通过'
+              : loaded ? (isEdit ? '改造已生效 🎉' : '插件已就绪 🎉')
+              : '构建与交付'}
+          </h2>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500 mono truncate">{createdPath}</p>
+        </div>
+        {createdPath && !building && (
+          <button
+            onClick={onRegenIcon}
+            disabled={iconBusy}
+            className="btn-ghost h-8 px-2.5 text-[11px] shrink-0"
+            title="让 AI 根据插件的主题与功能重新设计图标（覆盖当前图标）"
+          >
+            {iconBusy ? <Loader2 size={13} className="animate-spin" /> : <ImageIcon size={13} />}
+            {iconDataUrl ? '重做图标' : '生成图标'}
+          </button>
+        )}
+      </div>
+
+      {/* 验收清单：构建/载入是「能编译能装载」，契约一致 + 运行验证才是「真的能跑」 */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-2.5">
+        <div className="text-[12px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><ListChecks size={14} /> 验收清单</div>
+        <StatusRow ok={built} busy={building} label="构建通过（npm run build）" />
+        <StatusRow ok={loaded} busy={building} label={`载入 Mulby${loadedId ? `（${loadedId}）` : ''}`} />
+        <StatusRow
+          ok={!!conformance?.ok} busy={building || confRepairing}
+          label={`契约一致性${conformance ? (conformance.ok ? `（${conformance.summary || '通过'}）` : `（${confErrors.length} 处需修复）`) : ''}`}
+        />
+        {contract.needIcon && <StatusRow ok={iconDone} busy={iconBusy} label="图标 icon.png（SVG → 512）" optional />}
+        <StatusRow ok={opened} label={`触发验证：用「${trigger}」打开并确认 UI`} manual />
+        <StatusRow
+          ok={coreVerified} busy={smoking}
+          label={`运行验证：${smoke.length ? smokeSummary(smoke) : '用示例输入真实跑一遍主流程'}`}
+          manual onClick={onToggleCoreVerified}
+        />
+      </div>
+
+      {/* 契约一致性问题：error 级会阻断「就绪」，可一键让 AI 修复 */}
+      {conformance && conformance.issues.length > 0 && (
+        <ConformanceCard conformance={conformance} confRepairing={confRepairing} onRepair={onRepairConformance} disabled={building || expanding || repairing || rollingBack} />
+      )}
+
+      {/* 本次改动（安全网）：diff 预览 + 一键回滚 */}
+      <ChangesCard changes={changes} rollingBack={rollingBack} onRollback={onRollback} defaultOpen={isEdit} disabled={building || expanding || repairing} />
+
+      {/* 版本历史：每次生成/迭代/打包自动记录，可查看 diff 与一键回滚 */}
+      <VersionHistoryCard versions={versions} vcsAvailable={vcsAvailable} restoringHash={restoringHash} disabled={building || expanding || repairing} onRefresh={onRefreshVersions} onDiff={onVersionDiff} onRestore={onRestoreVersion} />
+
+      {/* 成功 */}
+      {loaded && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-3">
+          <div className="text-sm text-slate-700 dark:text-slate-200">
+            在 Mulby 主输入框输入 <span className="mono badge badge-green">{trigger}</span> 即可打开{isEdit ? '改造后的' : '你的'}插件。
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-secondary" onClick={onRunSmoke} disabled={smoking} title="用契约里的示例输入真实调用每个功能一次，验证「能执行」而不只是「能编译」">
+              {smoking ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />} 运行验证
+            </button>
+            <button className="btn-secondary" onClick={onOpenDir}><FolderOpen size={15} /> 打开目录</button>
+            <button className="btn-ghost" onClick={onRebuild} disabled={building}><Hammer size={15} /> 重新构建</button>
+          </div>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">「打开 / 试用 / 打包」已收进右侧对话栏顶部的状态条，可随时操作；想继续完善，直接在对话里说「帮我改…」即可。</p>
+          {smoke.length > 0 && <SmokeList smoke={smoke} />}
+        </div>
+      )}
+
+      {/* 实时调试回路 */}
+      {(built || loaded) && (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-2.5">
+          <div className="text-[12px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><Bug size={14} /> 实时调试</div>
+          {devtoolsOn === true ? (
+            <p className="text-[12px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5"><Check size={13} /> DevTools 已开启，打开插件窗口会自动弹出控制台（含后端日志回灌）。</p>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[12px] text-slate-500 dark:text-slate-400">{devtoolsOn === false ? '当前未开启「打开插件窗口自动开 DevTools」。' : '无法读取 DevTools 设置，可手动在 Mulby 设置→开发者开启。'}</p>
+              <button className="btn-secondary shrink-0" onClick={onEnableDevtools} disabled={devtoolsBusy}>{devtoolsBusy ? <Loader2 size={14} className="animate-spin" /> : <Bug size={14} />} 开启 DevTools</button>
+            </div>
+          )}
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">改完代码点「重新构建」即热载入；点「打开插件」复现问题，在 DevTools 控制台看运行错误。</p>
+        </div>
+      )}
+
+      {/* 失败：AI 修复 */}
+      {buildFailed && (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm text-rose-600 dark:text-rose-400"><AlertTriangle size={15} /> 构建未通过，可让 AI 读取报错并自动修复。</div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-primary" onClick={onRepair} disabled={repairing}>{repairing ? <Loader2 size={15} className="animate-spin" /> : <Wrench size={15} />} {repairing ? 'AI 修复中…' : 'AI 修复并重试'}</button>
+            <button className="btn-secondary" onClick={onRebuild} disabled={building}><Hammer size={15} /> 仅重试构建</button>
+            <button className="btn-ghost" onClick={onOpenDir}><FolderOpen size={15} /> 打开目录</button>
+          </div>
+          {buildLog && <pre className="text-[11px] mono text-rose-600/90 dark:text-rose-300/80 bg-black/5 dark:bg-black/30 rounded-lg p-2.5 max-h-40 overflow-auto whitespace-pre-wrap">{buildLog.slice(-2000)}</pre>}
+        </div>
+      )}
+
+      {built && !loaded && !building && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-[12px] text-amber-700 dark:text-amber-300 flex items-center gap-2">
+          <ShieldCheck size={14} /> 已构建但未自动载入，可点「重新构建」或在工作台手动刷新。
+          <button className="btn-ghost ml-auto" onClick={onOpenDir}><FolderOpen size={14} /> 打开目录</button>
+        </div>
+      )}
+
+      {/* 最近活动 */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-2">
+        <div className="text-[12px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><Terminal size={13} /> 最近活动</div>
+        <Timeline events={events} compact />
+      </div>
+    </div>
+  )
+}
+
+function StatusRow({ ok, busy, label, optional, manual, onClick }: { ok: boolean; busy?: boolean; label: string; optional?: boolean; manual?: boolean; onClick?: () => void }) {
+  const clickable = typeof onClick === 'function'
+  const content = (
+    <>
+      <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${ok ? 'bg-emerald-500 text-white' : busy ? 'bg-amber-500/20 text-amber-500' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
+        {ok ? <Check size={12} /> : busy ? <Loader2 size={12} className="animate-spin" /> : optional ? <ImageIcon size={11} /> : manual ? <ListChecks size={11} /> : <FileText size={11} />}
+      </span>
+      <span className="text-slate-600 dark:text-slate-300">{label}</span>
+      {optional && !ok && !busy && <span className="text-[11px] text-slate-400 dark:text-slate-500">（best-effort）</span>}
+      {manual && !ok && <span className="text-[11px] text-slate-400 dark:text-slate-500">{clickable ? '（点击确认）' : '（手动确认）'}</span>}
+    </>
+  )
+  if (clickable) {
+    return (
+      <button type="button" onClick={onClick} className="w-full flex items-center gap-2.5 text-[13px] text-left hover:opacity-80 transition-opacity">
+        {content}
+      </button>
+    )
+  }
+  return <div className="flex items-center gap-2.5 text-[13px]">{content}</div>
+}
+
+function smokeSummary(smoke: SmokeResult[]): string {
+  const pass = smoke.filter((s) => s.status === 'pass').length
+  const fail = smoke.filter((s) => s.status === 'fail').length
+  const skip = smoke.filter((s) => s.status === 'skipped').length
+  return [pass ? `${pass} 通过` : '', fail ? `${fail} 失败` : '', skip ? `${skip} 跳过` : ''].filter(Boolean).join(' / ') || '无可验证功能'
+}
+
+const CONF_META: Record<ConformanceIssue['level'], { label: string; cls: string; icon: React.ReactNode }> = {
+  error: { label: '需修复', cls: 'text-rose-600 dark:text-rose-400', icon: <AlertTriangle size={12} className="text-rose-500" /> },
+  warn: { label: '提示', cls: 'text-amber-600 dark:text-amber-400', icon: <AlertTriangle size={12} className="text-amber-500" /> },
+  info: { label: '说明', cls: 'text-slate-500 dark:text-slate-400', icon: <Check size={12} className="text-slate-400" /> }
+}
+
+/** 契约一致性问题卡片：列出 error/warn/info，error 可一键让 AI 修复 */
+function ConformanceCard({ conformance, confRepairing, onRepair, disabled }: {
+  conformance: ConformanceResult; confRepairing: boolean; onRepair: () => void; disabled?: boolean
+}) {
+  const errors = conformance.issues.filter((i) => i.level === 'error')
+  const others = conformance.issues.filter((i) => i.level !== 'error')
+  const hasError = errors.length > 0
+  return (
+    <div className={`rounded-xl border p-4 space-y-3 ${hasError ? 'border-rose-500/30 bg-rose-500/5' : 'border-amber-500/25 bg-amber-500/5'}`}>
+      <div className="flex items-center gap-2 text-sm">
+        <ShieldCheck size={15} className={hasError ? 'text-rose-500' : 'text-amber-500'} />
+        <span className={hasError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-300'}>
+          {hasError ? `契约与代码有 ${errors.length} 处不一致，插件可能无法正确装载/运行` : '契约一致性提示'}
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {[...errors, ...others].map((i, idx) => {
+          const meta = CONF_META[i.level]
+          return (
+            <li key={idx} className="flex items-start gap-2 text-[12px]">
+              <span className="mt-0.5 shrink-0">{meta.icon}</span>
+              <span className="min-w-0">
+                <span className={meta.cls}>{meta.label}</span>
+                <span className="text-slate-600 dark:text-slate-300"> · {i.message}</span>
+                {i.hint && <span className="block text-[11px] text-slate-400 dark:text-slate-500">建议：{i.hint}</span>}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+      {hasError && (
+        <button className="btn-primary" onClick={onRepair} disabled={disabled || confRepairing}>
+          {confRepairing ? <Loader2 size={15} className="animate-spin" /> : <Wrench size={15} />} {confRepairing ? 'AI 修复中…' : 'AI 修复一致性问题'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+const SMOKE_META: Record<SmokeResult['status'], { label: string; cls: string; icon: React.ReactNode }> = {
+  pass: { label: '通过', cls: 'text-emerald-600 dark:text-emerald-400', icon: <Check size={12} className="text-emerald-500" /> },
+  fail: { label: '失败', cls: 'text-rose-600 dark:text-rose-400', icon: <AlertTriangle size={12} className="text-rose-500" /> },
+  skipped: { label: '跳过', cls: 'text-slate-500 dark:text-slate-400', icon: <ChevronRight size={12} className="text-slate-400" /> }
+}
+
+/** 运行验证结果列表：逐功能显示「用示例输入真实跑一次」的结果 */
+function SmokeList({ smoke }: { smoke: SmokeResult[] }) {
+  return (
+    <ul className="space-y-1 pt-1 border-t border-emerald-500/20">
+      {smoke.map((s) => {
+        const meta = SMOKE_META[s.status]
+        return (
+          <li key={s.code} className="flex items-start gap-2 text-[12px]">
+            <span className="mt-0.5 shrink-0">{meta.icon}</span>
+            <span className="min-w-0">
+              <span className={meta.cls}>{meta.label}</span>
+              <span className="text-slate-600 dark:text-slate-300"> · {s.label}</span>
+              <span className="text-slate-400 dark:text-slate-500 mono"> {s.code}</span>
+              {s.status === 'fail' && s.error && <span className="block text-[11px] text-rose-500/90">{s.error}</span>}
+              {s.status === 'skipped' && s.note && <span className="block text-[11px] text-slate-400 dark:text-slate-500">{s.note}</span>}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+const CHANGE_META: Record<VibeChange['status'], { label: string; cls: string }> = {
+  added: { label: '新增', cls: 'text-emerald-600 dark:text-emerald-400' },
+  modified: { label: '修改', cls: 'text-amber-600 dark:text-amber-400' },
+  deleted: { label: '删除', cls: 'text-rose-600 dark:text-rose-400' }
+}
+
+/** 极简行级 diff：逐行比较 before/after，标注新增(+)/删除(-) */
+function DiffView({ before, after }: { before: string | null; after: string | null }) {
+  const a = (before ?? '').split('\n')
+  const b = (after ?? '').split('\n')
+  const max = Math.max(a.length, b.length)
+  const rows: Array<{ sign: ' ' | '+' | '-'; text: string }> = []
+  for (let i = 0; i < max && rows.length < 400; i++) {
+    const la = a[i]
+    const lb = b[i]
+    if (la === lb) { if (la !== undefined) rows.push({ sign: ' ', text: la }) }
+    else {
+      if (la !== undefined) rows.push({ sign: '-', text: la })
+      if (lb !== undefined) rows.push({ sign: '+', text: lb })
+    }
+  }
+  return (
+    <pre className="text-[11px] mono bg-black/5 dark:bg-black/30 rounded-lg p-2.5 max-h-72 overflow-auto leading-relaxed">
+      {rows.map((r, i) => (
+        <div key={i} className={
+          r.sign === '+' ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/5'
+            : r.sign === '-' ? 'text-rose-600 dark:text-rose-400 bg-rose-500/5'
+            : 'text-slate-500 dark:text-slate-400'
+        }>{r.sign} {r.text}</div>
+      ))}
+    </pre>
+  )
+}
+
+function relTime(iso: string): string {
+  const t = Date.parse(iso)
+  if (!isFinite(t)) return ''
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (s < 60) return '刚刚'
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  return `${Math.floor(s / 86400)} 天前`
+}
+
+function VersionHistoryCard({ versions, vcsAvailable, restoringHash, disabled, onRefresh, onDiff, onRestore }: {
+  versions: VcsCommit[]; vcsAvailable: boolean; restoringHash: string | null; disabled?: boolean
+  onRefresh: () => void; onDiff: (hash: string) => Promise<string>; onRestore: (hash: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [expandedHash, setExpandedHash] = useState<string | null>(null)
+  const [diffText, setDiffText] = useState('')
+  const [diffLoading, setDiffLoading] = useState(false)
+  const [confirmHash, setConfirmHash] = useState<string | null>(null)
+
+  const toggleDiff = async (hash: string) => {
+    if (expandedHash === hash) { setExpandedHash(null); return }
+    setExpandedHash(hash); setDiffText(''); setDiffLoading(true)
+    try { setDiffText(await onDiff(hash)) } finally { setDiffLoading(false) }
+  }
+
+  if (!vcsAvailable) {
+    return (
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 text-[12px] text-slate-400 dark:text-slate-500 flex items-center gap-2">
+        <History size={14} /> 版本历史不可用：系统未安装 git（安装后每次生成/迭代会自动记录版本，可回滚）。
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+      <button className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/40" onClick={() => { setOpen((v) => !v); if (!open) onRefresh() }}>
+        <span className="text-[12px] font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+          <History size={14} className="text-indigo-500" /> 版本历史（{versions.length}）
+        </span>
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-2">
+          {versions.length === 0 ? (
+            <div className="text-[12px] text-slate-400 dark:text-slate-500 py-2">暂无版本记录。生成/迭代/打包成功后会自动记录。</div>
+          ) : versions.map((v, i) => (
+            <div key={v.hash} className="rounded-lg border border-slate-200/70 dark:border-slate-800/70">
+              <div className="flex items-center gap-2 px-3 py-2">
+                <GitCommit size={13} className="shrink-0 text-slate-400" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] text-slate-700 dark:text-slate-200">{v.message}</span>
+                  <span className="block text-[10px] text-slate-400 dark:text-slate-500 mono">
+                    {v.short} · {relTime(v.dateISO)}{i === 0 ? ' · 当前' : ''}
+                    {v.tags.map((t) => <span key={t} className="ml-1 inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400"><Tag size={9} />{t}</span>)}
+                  </span>
+                </span>
+                <button className="btn-ghost !px-2 !py-1 text-[11px]" disabled={!!restoringHash} onClick={() => toggleDiff(v.hash)}>
+                  {expandedHash === v.hash ? '收起' : '改动'}
+                </button>
+                {i !== 0 && (
+                  confirmHash === v.hash ? (
+                    <span className="flex items-center gap-1">
+                      <button className="btn-danger !px-2 !py-1 text-[11px]" disabled={!!restoringHash || disabled} onClick={() => { setConfirmHash(null); onRestore(v.hash) }}>
+                        {restoringHash === v.hash ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />} 确认
+                      </button>
+                      <button className="btn-ghost !px-2 !py-1 text-[11px]" onClick={() => setConfirmHash(null)}>取消</button>
+                    </span>
+                  ) : (
+                    <button className="btn-ghost !px-2 !py-1 text-[11px] text-indigo-600 dark:text-indigo-400" disabled={!!restoringHash || disabled} onClick={() => setConfirmHash(v.hash)}>
+                      <RotateCcw size={12} /> 回滚
+                    </button>
+                  )
+                )}
+              </div>
+              {expandedHash === v.hash && (
+                <div className="px-3 pb-3 border-t border-slate-200/70 dark:border-slate-800/70">
+                  {diffLoading ? (
+                    <div className="py-3 text-[12px] text-slate-400 flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" /> 读取改动…</div>
+                  ) : (
+                    <pre className="text-[11px] mono bg-black/5 dark:bg-black/30 rounded-lg p-2.5 max-h-72 overflow-auto whitespace-pre-wrap mt-2">{diffText}</pre>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ChangesCard({ changes, rollingBack, onRollback, defaultOpen, disabled }: {
+  changes: VibeChange[]; rollingBack: boolean; onRollback: () => void; defaultOpen?: boolean; disabled?: boolean
+}) {
+  const [open, setOpen] = useState(!!defaultOpen)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const cur = changes.find((c) => c.path === selected) || changes[0] || null
+  if (!changes.length) return null
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+      <button className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/40" onClick={() => setOpen((v) => !v)}>
+        <span className="text-[12px] font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+          <FileEdit size={14} className="text-emerald-500" /> 本次改动（{changes.length} 个文件）
+        </span>
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3">
+          <div className="flex flex-wrap gap-1.5">
+            {changes.map((c) => {
+              const meta = CHANGE_META[c.status]
+              const active = (cur?.path === c.path)
+              return (
+                <button key={c.path} onClick={() => setSelected(c.path)}
+                  className={`text-[11px] mono px-2 py-1 rounded-md border transition-colors ${active ? 'border-emerald-400/60 bg-emerald-500/10' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'}`}>
+                  <span className={meta.cls}>{meta.label}</span> {c.path}
+                </button>
+              )
+            })}
+          </div>
+          {cur && (
+            <div className="space-y-1.5">
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 mono flex items-center gap-2">
+                <span className={CHANGE_META[cur.status].cls}>{CHANGE_META[cur.status].label}</span>
+                <span className="truncate">{cur.path}</span>
+                {cur.truncated && <span className="text-amber-500">（内容较大，已截断预览）</span>}
+              </div>
+              <DiffView before={cur.before} after={cur.after} />
+            </div>
+          )}
+          <div className="flex items-center gap-2 pt-1">
+            {!confirming ? (
+              <button className="btn-ghost text-rose-600 dark:text-rose-400" onClick={() => setConfirming(true)} disabled={disabled || rollingBack}>
+                <RefreshCw size={14} /> 回滚本次全部改动
+              </button>
+            ) : (
+              <>
+                <span className="text-[12px] text-rose-600 dark:text-rose-400">确认回滚？新增文件将被删除、修改文件还原原状</span>
+                <button className="btn-danger" onClick={() => { setConfirming(false); onRollback() }} disabled={disabled || rollingBack}>
+                  {rollingBack ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 确认回滚
+                </button>
+                <button className="btn-ghost" onClick={() => setConfirming(false)} disabled={rollingBack}>取消</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
