@@ -1109,12 +1109,14 @@ export function VibePanel({
   // ---------------- Plan 模式：契约确认后→生成前，先制定开发计划(todo list)，再逐步执行、实时勾选 ----------------
   const planListPrompt = (c: VibeContract) => [
     '你是资深 Mulby 插件架构师。把"实现这个插件"拆解成一份清晰、可执行的开发计划（todo list）。',
+    // 平台背景：让计划基于"Mulby 是什么 / 插件长什么样 / 有哪些真实能力"来排，而不是泛泛而谈
+    '关于 Mulby（制定计划前必须了解）：Mulby 是桌面启动器 / 插件平台，用户通过关键词、正则匹配选中文本、拖入文件或图片、窗口等方式唤起插件。一个插件由三部分组成：① manifest.json（清单：id/name 与功能 features、触发方式——已由工具按契约写好，计划里不要再包含它）；② src/main.ts（后端：导出 onLoad/onUnload/onEnable/onDisable/run；无界面/静默功能在 run(context) 里用 context.input 拿到输入文本、用 context.featureCode 区分功能）；③ src/ui/（前端，仅"有界面"功能需要：React 入口 src/ui/main.tsx 挂载 src/ui/App.tsx）。前端通过全局 window.mulby.*（剪贴板/通知/文件/AI/图像处理等）调用宿主能力，不要臆造不存在的 API。',
     '只输出 JSON：{ "todos": [ { "title": "简短步骤名(≤20字)", "detail": "这一步具体做什么(一句话)" } ] }，不要解释、不要 Markdown 代码块。',
-    '要求：3–6 步，按依赖与实现顺序排列；每步是一个独立、可验证的开发动作（如"实现核心处理逻辑""搭建主界面 UI""接入剪贴板/通知能力""完善错误处理与边界""自检构建并修复问题"）。',
+    '要求：3–6 步，按依赖与实现顺序排列；每步是一个独立、可验证的开发动作（如"实现核心处理逻辑""搭建主界面 UI""接入剪贴板/通知能力""完善错误处理与边界""自检构建并修复问题"）；计划要落到下方列出的功能/触发方式与 Mulby 真实能力（见末尾 API 清单）上，不要排出平台做不到的步骤。',
     '不要把"创建脚手架/写 manifest.json"列进去（已自动完成）；最后一步通常是"自检构建并修复问题"。',
     c.isEdit ? `这是对现有插件的改造，需求：${c.editSummary || sentence}` : `插件需求：${sentence}`,
     `契约：${contractSummary(c)}`,
-    `功能与触发：${c.features.map((f) => `${f.code}(${f.mode})`).join('；')}`
+    `功能与触发：${c.features.map((f) => `${f.code}(${f.mode}) ← ${f.triggers.map(triggerLabel).join('、') || '无触发'}`).join('；')}`
   ].join('\n')
 
   const normalizePlan = (parsed: any): VibePlanTodo[] => {
@@ -1142,8 +1144,16 @@ export function VibePanel({
     resetAbort()
     try {
       addLog('info', '▶ [Vibe] AI 正在制定开发计划…')
+      // 制定计划也要"看得见"真实能力与现有代码：注入 Mulby API 清单（withApiSurface）；
+      // 改造模式再注入 CodeGraph 现有结构，让计划基于真实代码而非盲拆（与生成/执行阶段对齐）。
+      let planUser = withApiSurface(planListPrompt(contract))
+      if (contract.isEdit) {
+        const editRoot = contract.targetPath || editPath
+        if (editRoot) planUser = await injectCgContext(editRoot, contract.editSummary || sentence, 'full', planUser)
+      }
+      if (abortedRef.current) { setPlanPhase('idle'); addLog('info', '⏹ [Vibe] 已停止制定计划'); return }
       let parsed: any = null
-      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planListPrompt(contract)) } catch { /* fallback below */ }
+      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planUser) } catch { /* fallback below */ }
       if (abortedRef.current) { setPlanPhase('idle'); addLog('info', '⏹ [Vibe] 已停止制定计划'); return }
       const todos = normalizePlan(parsed)
       if (!todos.length) {
