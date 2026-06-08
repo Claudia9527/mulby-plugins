@@ -730,7 +730,7 @@ export function VibePanel({
     '· 输入是“有固定格式的数据”（金额/URL/IP/手机号/时间/颜色…）→ 用 regex 并给 sample；可再附 1 个 keyword 兜底方便用户用关键词搜到。',
     '· 处理“任意文本”→ 用 over。· 处理“拖入文件/图片”→ files/img。· 只是“打开一个界面/工具”→ keyword。',
     '示例：需求“把数字金额转人民币大写”应输出 triggers: [ {"type":"regex","match":"^-?[0-9]+(\\\\.[0-9]{1,2})?$","label":"金额转大写","minLength":1,"maxLength":40,"sample":"1234.56"}, {"type":"keyword","value":"大写金额"} ]。',
-    '能力与权限：本提示词末尾附有「当前 Mulby 宿主真实可用的 API 清单」。只为确实会用到的能力开启对应 permissions（用到剪贴板才开 clipboard、用到通知才开 notification…），并确保所选 template/features/triggers 都能由这些真实能力落地，不要臆造平台做不到的功能。',
+    '能力与权限：只为确实会用到的能力开启对应 permissions（用到剪贴板才开 clipboard、用到通知才开 notification…），并确保所选 template/features/triggers 都能由 Mulby 常见桌面能力（剪贴板/通知/文件/AI/图像/窗口/网络等）落地，不要臆造平台做不到的功能。',
     '',
     `用户需求：${text}`
   ].join('\n')
@@ -776,7 +776,7 @@ export function VibePanel({
     try {
       addLog('info', '▶ [Vibe] AI 正在规划契约…')
       let parsed: any = null
-      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', withApiSurface(planPrompt(desc))) } catch { /* fallback */ }
+      try { parsed = await aiJson('你是严格的 JSON 生成器，只输出可解析的 JSON 对象。', planPrompt(desc)) } catch { /* fallback */ }
       if (abortedRef.current) { addLog('info', '⏹ [Vibe] 已停止规划'); return }
       const c = normalizeContract(parsed, desc)
       setContract(c)
@@ -1114,7 +1114,7 @@ export function VibePanel({
     // 平台背景：让计划基于"Mulby 是什么 / 插件长什么样 / 有哪些真实能力"来排，而不是泛泛而谈
     '关于 Mulby（制定计划前必须了解）：Mulby 是桌面启动器 / 插件平台，用户通过关键词、正则匹配选中文本、拖入文件或图片、窗口等方式唤起插件。一个插件由三部分组成：① manifest.json（清单：id/name 与功能 features、触发方式——已由工具按契约写好，计划里不要再包含它）；② src/main.ts（后端：导出 onLoad/onUnload/onEnable/onDisable/run；无界面/静默功能在 run(context) 里用 context.input 拿到输入文本、用 context.featureCode 区分功能）；③ src/ui/（前端，仅"有界面"功能需要：React 入口 src/ui/main.tsx 挂载 src/ui/App.tsx）。前端通过全局 window.mulby.*（剪贴板/通知/文件/AI/图像处理等）调用宿主能力，不要臆造不存在的 API。',
     '只输出 JSON：{ "todos": [ { "title": "简短步骤名(≤20字)", "detail": "这一步具体做什么(一句话)" } ] }，不要解释、不要 Markdown 代码块。',
-    '要求：3–6 步，按依赖与实现顺序排列；每步是一个独立、可验证的开发动作（如"实现核心处理逻辑""搭建主界面 UI""接入剪贴板/通知能力""完善错误处理与边界""自检构建并修复问题"）；计划要落到下方列出的功能/触发方式与 Mulby 真实能力（见末尾 API 清单）上，不要排出平台做不到的步骤。',
+    '要求：3–6 步，按依赖与实现顺序排列；每步是一个独立、可验证的开发动作（如"实现核心处理逻辑""搭建主界面 UI""接入剪贴板/通知能力""完善错误处理与边界""自检构建并修复问题"）；计划要落到下方列出的功能/触发方式与 Mulby 真实能力（见上文 Mulby 平台说明）上，不要排出平台做不到的步骤。',
     '不要把"创建脚手架/写 manifest.json"列进去（已自动完成）；最后一步通常是"自检构建并修复问题"。',
     '步骤拆解原则：① 顺序≈ 后端核心(src/main.ts 的 run/onLoad 主逻辑) → 前端界面(仅 template=react 才有 src/ui) → 能力接入(剪贴板/通知/文件/AI…) → 边界与错误处理 → 自检构建；② 纯命令/无界面插件(basic) 不要排"搭建 UI"这类步骤；③ 每步只描述"做什么(可验证的产出)"，不写具体代码或文件全路径；④ detail 一句话点明该步落到哪个功能/触发/能力上。',
     '示例(仅供参考结构，按真实需求与上面契约调整步数和内容)：',
@@ -1150,9 +1150,9 @@ export function VibePanel({
     resetAbort()
     try {
       addLog('info', '▶ [Vibe] AI 正在制定开发计划…')
-      // 制定计划也要"看得见"真实能力与现有代码：注入 Mulby API 清单（withApiSurface）；
-      // 改造模式再注入 CodeGraph 现有结构，让计划基于真实代码而非盲拆（与生成/执行阶段对齐）。
-      let planUser = withApiSurface(planListPrompt(contract))
+      // planListPrompt 自带 Mulby 平台说明与能力提示，已足够；不再注入完整 API 清单（会撑大这次 JSON 抽取、易让模型跑偏）。
+      // 改造模式仍注入 CodeGraph 现有结构，让计划基于真实代码而非盲拆。完整 API 清单在执行阶段(executePlan)注入。
+      let planUser = planListPrompt(contract)
       if (contract.isEdit) {
         const editRoot = contract.targetPath || editPath
         if (editRoot) planUser = await injectCgContext(editRoot, contract.editSummary || sentence, 'full', planUser)
@@ -1163,6 +1163,7 @@ export function VibePanel({
       if (abortedRef.current) { setPlanPhase('idle'); addLog('info', '⏹ [Vibe] 已停止制定计划'); return }
       const todos = normalizePlan(parsed)
       if (!todos.length) {
+        addLog('warn', '⚠ [Vibe] 计划未解析出步骤，转为直接完整实现')
         setPlanPhase('idle')
         recordMessage(mkMsg('assistant', '没能拆出分步计划，我直接开始完整实现。'))
         setPlanning(false)
