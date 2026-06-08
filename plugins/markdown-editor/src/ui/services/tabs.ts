@@ -65,3 +65,80 @@ export function nextActiveTabId(
   const neighbor = tabs[index + 1] ?? tabs[index - 1]
   return neighbor ? neighbor.id : null
 }
+
+/**
+ * Reorder tabs by moving `fromId` next to `toId`. `before` chooses the left
+ * (true) or right (false) side of the target — the drop indicator side. Returns
+ * a new array, or the original when ids are equal / missing (no-op).
+ */
+export function moveTab(tabs: EditorTab[], fromId: string, toId: string, before: boolean): EditorTab[] {
+  if (fromId === toId) {
+    return tabs
+  }
+  const from = tabs.find((tab) => tab.id === fromId)
+  if (!from) {
+    return tabs
+  }
+  const without = tabs.filter((tab) => tab.id !== fromId)
+  const targetIndex = without.findIndex((tab) => tab.id === toId)
+  if (targetIndex < 0) {
+    return tabs
+  }
+  const insertAt = before ? targetIndex : targetIndex + 1
+  return [...without.slice(0, insertAt), from, ...without.slice(insertAt)]
+}
+
+/**
+ * Partition `ids` into tabs safe to close now (clean) and tabs kept open because
+ * they have unsaved edits (dirty). Used by close-others / close-all so a batch
+ * close never silently discards unsaved work.
+ */
+export function splitClosableTabs(
+  tabs: EditorTab[],
+  ids: string[]
+): { closable: string[]; dirty: string[] } {
+  const wanted = new Set(ids)
+  const closable: string[] = []
+  const dirty: string[] = []
+  for (const tab of tabs) {
+    if (!wanted.has(tab.id)) {
+      continue
+    }
+    if (isTabDirty(tab)) {
+      dirty.push(tab.id)
+    } else {
+      closable.push(tab.id)
+    }
+  }
+  return { closable, dirty }
+}
+
+/**
+ * Remove `closeIds` from `tabs` and pick the next active tab. The active tab
+ * stays active when it survives; otherwise `preferActiveId` wins when it
+ * survives, else the nearest neighbor after (then before) the old active
+ * position. Returns `nextActiveId: null` when nothing remains (the caller then
+ * opens a fresh blank tab).
+ */
+export function applyCloseTabs(
+  tabs: EditorTab[],
+  closeIds: string[],
+  activeId: string,
+  preferActiveId?: string
+): { remaining: EditorTab[]; nextActiveId: string | null } {
+  const closeSet = new Set(closeIds)
+  const remaining = tabs.filter((tab) => !closeSet.has(tab.id))
+  if (remaining.length === 0) {
+    return { remaining, nextActiveId: null }
+  }
+  if (!closeSet.has(activeId)) {
+    return { remaining, nextActiveId: activeId }
+  }
+  if (preferActiveId && remaining.some((tab) => tab.id === preferActiveId)) {
+    return { remaining, nextActiveId: preferActiveId }
+  }
+  const oldIndex = tabs.findIndex((tab) => tab.id === activeId)
+  const after = tabs.slice(oldIndex + 1).find((tab) => !closeSet.has(tab.id))
+  const before = [...tabs.slice(0, Math.max(0, oldIndex))].reverse().find((tab) => !closeSet.has(tab.id))
+  return { remaining, nextActiveId: (after ?? before ?? remaining[0]).id }
+}

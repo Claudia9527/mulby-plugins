@@ -593,6 +593,32 @@ button {
   background: var(--accent);
 }
 
+/* The tab being dragged is dimmed while a reorder is in flight. */
+.tab-item.dragging {
+  opacity: 0.4;
+}
+
+/* Drop indicator: a vertical accent bar on the side where the tab will land. */
+.tab-item.drop-before::after,
+.tab-item.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.tab-item.drop-before::after {
+  left: -1px;
+}
+
+.tab-item.drop-after::after {
+  right: -1px;
+}
+
 .tab-title {
   white-space: nowrap;
   overflow: hidden;

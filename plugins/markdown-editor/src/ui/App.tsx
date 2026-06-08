@@ -37,7 +37,17 @@ import { useMulby } from './hooks/useMulby'
 import { useDraftStorage } from './hooks/useDraftStorage'
 import { useFileExplorer } from './hooks/useFileExplorer'
 import { useTabs } from './hooks/useTabs'
-import { createBlankTab, deriveTabTitle, findTabByPath, makeTabId, nextActiveTabId, type EditorTab } from './services/tabs'
+import {
+  applyCloseTabs,
+  createBlankTab,
+  deriveTabTitle,
+  findTabByPath,
+  makeTabId,
+  moveTab,
+  nextActiveTabId,
+  splitClosableTabs,
+  type EditorTab
+} from './services/tabs'
 import { normalizeSession, serializeSession, type PersistedSession } from './services/session'
 import { getFsBridge, isFsBridgeAvailable } from './services/fsBridge'
 import { FileExplorer } from './components/FileExplorer'
@@ -354,6 +364,8 @@ export default function App() {
   // (for link/image/table actions) is stashed in a ref so the dispatcher can read
   // its url / range / cell coordinates.
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  // Right-click menu for a specific tab (close / close others / close all / …).
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
   const menuTargetRef = useRef<EditorNodeContext | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<LiveMarkdownEditorHandle | null>(null)
@@ -606,6 +618,85 @@ export default function App() {
     },
     [activeTabIdRef, performCloseTab, tabsRef]
   )
+
+  // Drag-to-reorder: move a tab next to a target (before/after its midpoint).
+  // Order-only — active tab + snapshots stay valid, so nothing else changes.
+  const reorderTabs = useCallback(
+    (fromId: string, toId: string, before: boolean) => {
+      setTabs((prev) => moveTab(prev, fromId, toId, before))
+    },
+    [setTabs]
+  )
+
+  // Ctrl/Cmd+Tab cycling: step the active tab by delta with wraparound.
+  const switchRelativeTab = useCallback(
+    (delta: number) => {
+      const list = tabsRef.current
+      if (list.length < 2) {
+        return
+      }
+      const index = list.findIndex((tab) => tab.id === activeTabIdRef.current)
+      const nextIndex = (((index < 0 ? 0 : index) + delta) % list.length + list.length) % list.length
+      switchToTab(list[nextIndex].id)
+    },
+    [activeTabIdRef, switchToTab, tabsRef]
+  )
+
+  // Close a set of tabs at once (close-others / close-all). Dirty tabs are kept
+  // open so a batch close never silently discards unsaved work; the rest close
+  // and a surviving tab is activated (a fresh blank tab when none remain).
+  const closeTabSet = useCallback(
+    (ids: string[], preferActiveId?: string) => {
+      const editor = editorRef.current
+      const activeId = activeTabIdRef.current
+      const live = editor?.getValue()
+      // Patch the active tab's live content so its dirty check is accurate.
+      const effective = tabsRef.current.map((tab) =>
+        tab.id === activeId && live != null ? { ...tab, content: live } : tab
+      )
+      const { closable, dirty } = splitClosableTabs(effective, ids)
+      if (closable.length === 0) {
+        if (dirty.length > 0) {
+          notification.show('有未保存改动的标签未关闭', 'info')
+        }
+        return
+      }
+      closable.forEach((id) => snapshotsRef.current.delete(id))
+      const { remaining, nextActiveId } = applyCloseTabs(effective, closable, activeId, preferActiveId)
+      if (nextActiveId == null) {
+        const blank = createBlankTab()
+        setTabs([blank])
+        setActiveTabId(blank.id)
+        editor?.swapState(editor.createState(''))
+        void draftStorage.clearDraft().catch(() => undefined)
+      } else {
+        setTabs(remaining)
+        if (nextActiveId !== activeId) {
+          setActiveTabId(nextActiveId)
+          loadTabIntoEditor(nextActiveId)
+        }
+      }
+      if (dirty.length > 0) {
+        notification.show(`已关闭 ${closable.length} 个，${dirty.length} 个有未保存改动已保留`, 'info')
+      }
+    },
+    [activeTabIdRef, draftStorage, loadTabIntoEditor, notification, setActiveTabId, setTabs, snapshotsRef, tabsRef]
+  )
+
+  const closeOtherTabs = useCallback(
+    (keepId: string) => {
+      const ids = tabsRef.current.filter((tab) => tab.id !== keepId).map((tab) => tab.id)
+      if (ids.length === 0) {
+        return
+      }
+      closeTabSet(ids, keepId)
+    },
+    [closeTabSet, tabsRef]
+  )
+
+  const closeAllTabs = useCallback(() => {
+    closeTabSet(tabsRef.current.map((tab) => tab.id))
+  }, [closeTabSet, tabsRef])
 
   // Keep open tabs in sync when the tree renames/deletes their file.
   const handleFilePathRenamed = useCallback(
@@ -1251,6 +1342,31 @@ export default function App() {
         }
         return
       }
+      // Tab management shortcuts (global, regardless of focus).
+      if (key === 't' && !event.shiftKey) {
+        event.preventDefault()
+        newUntitledTab()
+        return
+      }
+      if (key === 'w') {
+        event.preventDefault()
+        requestCloseTab(activeTabIdRef.current)
+        return
+      }
+      // Cycle tabs. Ctrl/Cmd+Tab is swallowed by the OS, and plain Ctrl/Cmd+Arrow
+      // is the editor's caret navigation (line/doc start-end, word jump), so use
+      // PageUp/PageDown (universal) plus Alt+Arrow (Mac-style; the Alt keeps it off
+      // the caret shortcuts). Shift mirrors PageUp/Down for keyboards without them.
+      if (key === 'pageup' || (event.altKey && key === 'arrowleft')) {
+        event.preventDefault()
+        switchRelativeTab(-1)
+        return
+      }
+      if (key === 'pagedown' || (event.altKey && key === 'arrowright')) {
+        event.preventDefault()
+        switchRelativeTab(1)
+        return
+      }
 
       // Toast UI handles undo/redo natively when its editing surface is focused;
       // only intercept when focus is elsewhere (toolbar, outline, dialogs).
@@ -1280,7 +1396,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeydown)
     }
-  }, [handleRedo, handleSaveFile, handleSaveFileAs, handleUndo, openAiPanel, openFind, persistDraft])
+  }, [activeTabIdRef, handleRedo, handleSaveFile, handleSaveFileAs, handleUndo, newUntitledTab, openAiPanel, openFind, persistDraft, requestCloseTab, switchRelativeTab])
 
   const documentName = activeFilePath ? basename(activeFilePath) : '未命名.md'
 
@@ -2198,6 +2314,52 @@ export default function App() {
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
+  // ---- Tab right-click menu ----
+  const openTabMenu = useCallback((id: string, x: number, y: number) => {
+    setContextMenu(null)
+    setTabMenu({ x, y, tabId: id })
+  }, [])
+
+  const closeTabMenu = useCallback(() => setTabMenu(null), [])
+
+  const handleTabMenuSelect = useCallback(
+    (actionId: string) => {
+      const id = tabMenu?.tabId
+      if (!id) {
+        return
+      }
+      const tab = tabsRef.current.find((item) => item.id === id)
+      switch (actionId) {
+        case 'tab-close':
+          requestCloseTab(id)
+          break
+        case 'tab-close-others':
+          closeOtherTabs(id)
+          break
+        case 'tab-close-all':
+          closeAllTabs()
+          break
+        case 'tab-copy-path':
+          if (tab?.filePath) {
+            void clipboard
+              .writeText(tab.filePath)
+              .then(() => notification.show('已复制路径', 'success'))
+              .catch(() => notification.show('复制失败', 'error'))
+          }
+          break
+        case 'tab-reveal':
+          if (tab?.filePath) {
+            selectLeftTab('files')
+            void explorer.revealPath(tab.filePath)
+          }
+          break
+        default:
+          break
+      }
+    },
+    [clipboard, closeAllTabs, closeOtherTabs, explorer, notification, requestCloseTab, selectLeftTab, tabMenu, tabsRef]
+  )
+
   useEffect(() => {
     const host = hostRef.current
     if (!host) {
@@ -2600,6 +2762,31 @@ export default function App() {
         />
       )}
 
+      {tabMenu && (
+        <ContextMenu
+          x={tabMenu.x}
+          y={tabMenu.y}
+          items={(() => {
+            const tab = tabs.find((item) => item.id === tabMenu.tabId)
+            const items: MenuItem[] = [
+              { id: 'tab-close', label: '关闭', shortcut: '⌘W' },
+              { id: 'tab-close-others', label: '关闭其他', disabled: tabs.length <= 1 },
+              { id: 'tab-close-all', label: '关闭全部' }
+            ]
+            if (tab?.filePath) {
+              items.push(
+                { id: 'sep-tab', separator: true },
+                { id: 'tab-copy-path', label: '复制路径' },
+                { id: 'tab-reveal', label: '在文件树中显示' }
+              )
+            }
+            return items
+          })()}
+          onSelect={handleTabMenuSelect}
+          onClose={closeTabMenu}
+        />
+      )}
+
       <ImageGenDialog
         open={imageGenOpen}
         ai={ai}
@@ -2720,6 +2907,8 @@ export default function App() {
                   onSelect={switchToTab}
                   onClose={requestCloseTab}
                   onNew={newUntitledTab}
+                  onReorder={reorderTabs}
+                  onContextMenu={openTabMenu}
                 />
                 <div className="editor-pane-header editor-canvas-header">
                   <span className="pane-header-label">{isDirty ? '• ' : ''}{documentName}</span>
