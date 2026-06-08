@@ -42,6 +42,12 @@ export interface LiveMarkdownEditorHandle {
   posForLine: (line: number) => number
   lineForPos: (pos: number) => number
   getView: () => EditorView | null
+  /** Snapshot of the current state (per-tab history/selection live here). */
+  getState: () => EditorState | null
+  /** Build a fresh state for `value`, wired with the same extensions/compartments. */
+  createState: (value: string) => EditorState
+  /** Load a previously snapshotted state, re-asserting the current theme/resolver. */
+  swapState: (state: EditorState) => void
 }
 
 interface LiveMarkdownEditorProps {
@@ -112,6 +118,15 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
     const onSelectionChangeRef = useRef(onSelectionChange)
     onChangeRef.current = onChange
     onSelectionChangeRef.current = onSelectionChange
+    // Mirror theme/resolver so freshly built states (new tabs) start with the
+    // current config instead of whatever was captured at first render.
+    const themeRef = useRef(theme)
+    const resolverRef = useRef(resolveImageUrl)
+    themeRef.current = theme
+    resolverRef.current = resolveImageUrl
+    // True while a tab-swap (view.setState) is in flight, so the change/selection
+    // listeners don't fire onChange or pop the AI bubble for the restored state.
+    const swappingRef = useRef(false)
     // True while the mouse button is held inside the editor (dragging out a
     // selection). Selection reports are deferred until release so the floating
     // AI bubble appears only after the selection is finished, not mid-drag.
@@ -138,10 +153,14 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
           codeFolding(),
           listFoldService,
           livePreviewExtension(),
-          resolverCompartment.of(imageUrlResolver.of(resolveImageUrl ?? ((href: string) => href))),
-          themeCompartment.of([baseTheme, themeExtension(theme)]),
+          resolverCompartment.of(imageUrlResolver.of(resolverRef.current ?? ((href: string) => href))),
+          themeCompartment.of([baseTheme, themeExtension(themeRef.current)]),
           cmPlaceholder(placeholder ?? ''),
           EditorView.updateListener.of((update) => {
+            // Loading a tab snapshot must not look like a user edit or selection.
+            if (swappingRef.current) {
+              return
+            }
             if (update.docChanged) {
               onChangeRef.current(update.state.doc.toString())
             }
@@ -353,7 +372,35 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
           return view.state.doc.line(clamped).from
         },
         lineForPos: (pos) => viewRef.current?.state.doc.lineAt(Math.max(0, pos)).number ?? 1,
-        getView: () => viewRef.current
+        getView: () => viewRef.current,
+        getState: () => viewRef.current?.state ?? null,
+        createState: (value) =>
+          EditorState.create({ doc: value, extensions: buildExtensions() }),
+        swapState: (state) => {
+          const view = viewRef.current
+          if (!view) {
+            return
+          }
+          // Suppress change/selection reporting for the whole swap (setState +
+          // reconfigure + focus) so the restored state doesn't masquerade as an
+          // edit or summon the AI bubble.
+          swappingRef.current = true
+          view.setState(state)
+          // The snapshot may carry stale theme/resolver compartment config if the
+          // theme or bound document changed while this tab was inactive.
+          view.dispatch({
+            effects: [
+              themeCompartment.reconfigure([baseTheme, themeExtension(themeRef.current)]),
+              resolverCompartment.reconfigure(
+                imageUrlResolver.of(resolverRef.current ?? ((href: string) => href))
+              )
+            ]
+          })
+          view.focus()
+          requestAnimationFrame(() => {
+            swappingRef.current = false
+          })
+        }
       }),
       [buildExtensions, themeCompartment, resolverCompartment, resolveImageUrl]
     )

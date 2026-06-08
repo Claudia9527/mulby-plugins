@@ -36,8 +36,12 @@ import {
 import { useMulby } from './hooks/useMulby'
 import { useDraftStorage } from './hooks/useDraftStorage'
 import { useFileExplorer } from './hooks/useFileExplorer'
+import { useTabs } from './hooks/useTabs'
+import { createBlankTab, deriveTabTitle, findTabByPath, makeTabId, nextActiveTabId, type EditorTab } from './services/tabs'
+import { normalizeSession, serializeSession, type PersistedSession } from './services/session'
 import { getFsBridge, isFsBridgeAvailable } from './services/fsBridge'
 import { FileExplorer } from './components/FileExplorer'
+import { TabBar } from './components/TabBar'
 import { FindReplaceBar, type FindReplaceMode } from './components/FindReplaceBar'
 import { AiPanel } from './components/AiPanel'
 import { AiBubble } from './components/AiBubble'
@@ -96,6 +100,7 @@ import {
 
 const PLUGIN_ID = 'markdown-editor'
 const STORAGE_DRAFT_KEY = 'draft:markdown-editor:v1'
+const STORAGE_SESSION_KEY = 'session:markdown-editor:v1'
 const STORAGE_CHROME_KEY = 'ui:markdown-editor:chrome-collapsed:v1'
 const STORAGE_AI_MODEL_KEY = 'ai:markdown-editor:model:v1'
 const STORAGE_AI_IMAGE_MODEL_KEY = 'ai:markdown-editor:image-model:v1'
@@ -315,16 +320,14 @@ function parseOutline(markdown: string): OutlineEntry[] {
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
-  const [content, setContent] = useState('')
   const [hydrated, setHydrated] = useState(false)
-  const [savedAt, setSavedAt] = useState<number | null>(null)
   const [, setSourceLabel] = useState('新草稿')
-  const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Tab id pending an unsaved-changes confirmation before closing (null = none).
+  const [closeConfirmId, setCloseConfirmId] = useState<string | null>(null)
   const [chromeCollapsed, setChromeCollapsed] = useState(false)
   const [leftTab, setLeftTab] = useState<'files' | 'outline'>('files')
   const [activeOutlineId, setActiveOutlineId] = useState<string | null>(null)
-  const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [findOpen, setFindOpen] = useState(false)
   const [findMode, setFindMode] = useState<FindReplaceMode>('find')
@@ -354,8 +357,7 @@ export default function App() {
   const menuTargetRef = useRef<EditorNodeContext | null>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<LiveMarkdownEditorHandle | null>(null)
-  const contentRef = useRef(content)
-  const lastPersistedRef = useRef('')
+  const contentRef = useRef('')
   const activeFilePathRef = useRef<string | null>(null)
   const hasInitPayloadRef = useRef(false)
   const aiOpenRef = useRef(false)
@@ -368,19 +370,261 @@ export default function App() {
   const imageHistoryMapRef = useRef<ImageHistoryMap>({})
   const { ai, clipboard, dialog, filesystem, notification, storage, system } = useMulby(PLUGIN_ID)
   const draftStorage = useDraftStorage(storage, STORAGE_DRAFT_KEY)
-  // Keep the editor's bound file path in sync when the tree renames/deletes it.
-  const handleFilePathRenamed = useCallback((oldPath: string, newPath: string) => {
-    if (activeFilePathRef.current === oldPath) {
-      setActiveFilePath(newPath)
+
+  // ---- Multi-tab document model ----
+  // Each tab owns its markdown plus a CodeMirror state snapshot (history / cursor
+  // / scroll). The single editor view loads the active tab's snapshot, and the
+  // active tab's content drives everything downstream (outline / find / export /
+  // AI / status bar). `content` / `activeFilePath` / `savedAt` are derived from
+  // the active tab so the rest of App keeps using the same names.
+  const { tabs, setTabs, activeTabId, setActiveTabId, tabsRef, activeTabIdRef, snapshotsRef } = useTabs()
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
+  const content = activeTab?.content ?? ''
+  const activeFilePath = activeTab?.filePath ?? null
+  const savedAt = activeTab?.savedAt ?? null
+
+  // Mirror editor edits into the active tab (drives the dirty dot + downstream).
+  const setContent = useCallback(
+    (value: string) => {
+      setTabs((prev) => prev.map((tab) => (tab.id === activeTabIdRef.current ? { ...tab, content: value } : tab)))
+    },
+    [activeTabIdRef, setTabs]
+  )
+
+  // Snapshot the active tab's editor state (history / selection / scroll) and
+  // sync its content mirror, so leaving and returning preserves everything.
+  const snapshotActiveTab = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) {
+      return
+    }
+    const fromId = activeTabIdRef.current
+    const state = editor.getState()
+    if (state) {
+      snapshotsRef.current.set(fromId, {
+        state,
+        scrollTop: editor.getView()?.scrollDOM.scrollTop ?? 0
+      })
+    }
+    const latest = editor.getValue()
+    setTabs((prev) => prev.map((tab) => (tab.id === fromId ? { ...tab, content: latest } : tab)))
+  }, [activeTabIdRef, setTabs, snapshotsRef])
+
+  // Load a tab into the editor: restore its snapshot if present, otherwise build
+  // a fresh state from its content (new / never-visited tabs).
+  const loadTabIntoEditor = useCallback(
+    (tabId: string) => {
+      const editor = editorRef.current
+      if (!editor) {
+        return
+      }
+      const snap = snapshotsRef.current.get(tabId)
+      if (snap) {
+        editor.swapState(snap.state)
+        const { scrollTop } = snap
+        requestAnimationFrame(() => {
+          const view = editor.getView()
+          if (view) {
+            view.scrollDOM.scrollTop = scrollTop
+          }
+        })
+        return
+      }
+      const target = tabsRef.current.find((tab) => tab.id === tabId)
+      editor.swapState(editor.createState(target?.content ?? ''))
+    },
+    [snapshotsRef, tabsRef]
+  )
+
+  const switchToTab = useCallback(
+    (id: string) => {
+      if (id === activeTabIdRef.current) {
+        editorRef.current?.focus()
+        return
+      }
+      if (!tabsRef.current.some((tab) => tab.id === id)) {
+        return
+      }
+      snapshotActiveTab()
+      setActiveTabId(id)
+      loadTabIntoEditor(id)
+    },
+    [activeTabIdRef, loadTabIntoEditor, setActiveTabId, snapshotActiveTab, tabsRef]
+  )
+
+  // Open a file path in a tab: activate an existing tab for it, reuse a pristine
+  // blank tab in place, otherwise append and activate a new tab.
+  const openInTab = useCallback(
+    (path: string, fileContent: string) => {
+      const editor = editorRef.current
+      const existing = findTabByPath(tabsRef.current, path)
+      if (existing) {
+        switchToTab(existing.id)
+        return
+      }
+      const fromId = activeTabIdRef.current
+      const current = tabsRef.current.find((tab) => tab.id === fromId)
+      const reuseBlank =
+        !!current && !current.filePath && current.content === '' && current.savedContent === ''
+      if (reuseBlank) {
+        snapshotsRef.current.delete(fromId)
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === fromId
+              ? { ...tab, filePath: path, content: fileContent, savedContent: fileContent, savedAt: Date.now() }
+              : tab
+          )
+        )
+        editor?.swapState(editor.createState(fileContent))
+        return
+      }
+      snapshotActiveTab()
+      const tab: EditorTab = {
+        id: makeTabId(),
+        filePath: path,
+        content: fileContent,
+        savedContent: fileContent,
+        savedAt: Date.now()
+      }
+      setTabs((prev) => [...prev, tab])
+      setActiveTabId(tab.id)
+      editor?.swapState(editor.createState(fileContent))
+    },
+    [activeTabIdRef, setActiveTabId, setTabs, snapshotActiveTab, snapshotsRef, switchToTab, tabsRef]
+  )
+
+  const newUntitledTab = useCallback(() => {
+    const editor = editorRef.current
+    snapshotActiveTab()
+    const tab = createBlankTab()
+    setTabs((prev) => [...prev, tab])
+    setActiveTabId(tab.id)
+    editor?.swapState(editor.createState(''))
+  }, [setActiveTabId, setTabs, snapshotActiveTab])
+
+  // Remove a tab (no dirty check — callers gate that). Closing the active tab
+  // activates a neighbor; closing the last tab leaves one blank untitled tab.
+  const performCloseTab = useCallback(
+    (id: string) => {
+      const editor = editorRef.current
+      const tabsNow = tabsRef.current
+      if (!tabsNow.some((tab) => tab.id === id)) {
+        return
+      }
+      snapshotsRef.current.delete(id)
+      if (tabsNow.length === 1) {
+        const blank = createBlankTab()
+        setTabs([blank])
+        setActiveTabId(blank.id)
+        editor?.swapState(editor.createState(''))
+        void draftStorage.clearDraft().catch(() => undefined)
+        return
+      }
+      const wasActive = activeTabIdRef.current === id
+      const nextId = nextActiveTabId(tabsNow, id, activeTabIdRef.current)
+      setTabs((prev) => prev.filter((tab) => tab.id !== id))
+      if (wasActive && nextId) {
+        setActiveTabId(nextId)
+        loadTabIntoEditor(nextId)
+      }
+    },
+    [activeTabIdRef, draftStorage, loadTabIntoEditor, setActiveTabId, setTabs, snapshotsRef, tabsRef]
+  )
+
+  // Persist a specific tab to a path and mark it saved. Operates by tab id so it
+  // never relies on which tab is active at call time (used by close-with-save).
+  const writeTabToPath = useCallback(
+    async (tabId: string, path: string, value: string) => {
+      await filesystem.writeFile(path, value, 'utf-8')
+      setTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === tabId
+            ? { ...tab, filePath: path, content: value, savedContent: value, savedAt: Date.now() }
+            : tab
+        )
+      )
+      if (tabId === activeTabIdRef.current) {
+        await draftStorage.clearDraft().catch(() => undefined)
+      }
+    },
+    [activeTabIdRef, draftStorage, filesystem, setTabs]
+  )
+
+  // "Save" choice in the close-confirm: persist the tab (prompting for a path
+  // when untitled) then close it. Cancelling the save dialog keeps the tab open.
+  const saveTabAndClose = useCallback(
+    async (id: string) => {
+      const editor = editorRef.current
+      const tab = tabsRef.current.find((item) => item.id === id)
+      setCloseConfirmId(null)
+      if (!tab) {
+        return
+      }
+      const value = id === activeTabIdRef.current && editor ? editor.getValue() : tab.content
+      try {
+        let path = tab.filePath
+        if (!path) {
+          const target = await dialog.showSaveDialog({
+            title: '保存 Markdown 文件',
+            defaultPath: DEFAULT_EXPORT_NAME,
+            buttonLabel: '保存',
+            filters: [
+              { name: 'Markdown', extensions: ['md', 'markdown'] },
+              { name: 'Text', extensions: ['txt'] }
+            ]
+          })
+          if (!target) {
+            return
+          }
+          path = target
+        }
+        await writeTabToPath(id, path, value)
+        notification.show(`已保存到 ${basename(path)}`, 'success')
+        performCloseTab(id)
+      } catch (error) {
+        console.error('[markdown-editor] saveTabAndClose', error)
+        notification.show('保存文件失败', 'error')
+      }
+    },
+    [activeTabIdRef, dialog, notification, performCloseTab, tabsRef, writeTabToPath]
+  )
+
+  // Close request from the tab bar: confirm first when the tab has unsaved edits.
+  const requestCloseTab = useCallback(
+    (id: string) => {
+      const editor = editorRef.current
+      const tab = tabsRef.current.find((item) => item.id === id)
+      if (!tab) {
+        return
+      }
+      const live = id === activeTabIdRef.current && editor ? editor.getValue() : tab.content
+      if (live !== tab.savedContent) {
+        setCloseConfirmId(id)
+        return
+      }
+      performCloseTab(id)
+    },
+    [activeTabIdRef, performCloseTab, tabsRef]
+  )
+
+  // Keep open tabs in sync when the tree renames/deletes their file.
+  const handleFilePathRenamed = useCallback(
+    (oldPath: string, newPath: string) => {
+      setTabs((prev) => prev.map((tab) => (tab.filePath === oldPath ? { ...tab, filePath: newPath } : tab)))
       setSourceLabel(`已重命名 ${basename(newPath)}`)
-    }
-  }, [])
-  const handleFilePathDeleted = useCallback((path: string) => {
-    if (activeFilePathRef.current === path) {
-      setActiveFilePath(null)
+    },
+    [setTabs]
+  )
+  const handleFilePathDeleted = useCallback(
+    (path: string) => {
+      const victim = tabsRef.current.find((tab) => tab.filePath === path)
+      if (victim) {
+        performCloseTab(victim.id)
+      }
       setSourceLabel('文件已删除')
-    }
-  }, [])
+    },
+    [performCloseTab, tabsRef]
+  )
   const explorer = useFileExplorer({
     storage,
     dialog,
@@ -436,26 +680,70 @@ export default function App() {
 
       hasInitPayloadRef.current = true
       setSourceLabel('来自划词内容')
-      setActiveFilePath(null)
-      setSavedAt(null)
-      lastPersistedRef.current = ''
+      // Load the selection into the active tab (untitled, dirty so it can be saved).
       startTransition(() => {
-        setContent(incoming)
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === activeTabIdRef.current
+              ? { ...tab, filePath: null, content: incoming, savedContent: '', savedAt: null }
+              : tab
+          )
+        )
       })
     })
 
     let cancelled = false
 
-    async function loadDraft() {
+    // Rebuild tabs from a persisted session: clean file tabs reload from disk;
+    // untitled / dirty tabs restore their stored content (unsaved work kept).
+    async function restoreSessionTabs(session: PersistedSession) {
+      const built = await Promise.all(
+        session.tabs.map(async (pt): Promise<EditorTab | null> => {
+          if (pt.filePath) {
+            let disk: string | null = null
+            try {
+              disk = isFsBridgeAvailable()
+                ? await getFsBridge().readText(pt.filePath)
+                : await readFileAsUtf8(filesystem.readFile, pt.filePath)
+            } catch {
+              disk = null
+            }
+            if (pt.content == null) {
+              // Was clean → reload from disk; skip the tab if the file is gone.
+              if (disk == null) {
+                return null
+              }
+              return { id: makeTabId(), filePath: pt.filePath, content: disk, savedContent: disk, savedAt: pt.savedAt }
+            }
+            // Was dirty → keep edits; refresh the baseline from disk if readable.
+            const savedContent = disk ?? pt.savedContent ?? ''
+            return { id: makeTabId(), filePath: pt.filePath, content: pt.content, savedContent, savedAt: pt.savedAt }
+          }
+          // Untitled tab → restore its content.
+          const content = pt.content ?? ''
+          return { id: makeTabId(), filePath: null, content, savedContent: pt.savedContent ?? '', savedAt: pt.savedAt }
+        })
+      )
+      const restored = built.filter((tab): tab is EditorTab => tab !== null)
+      if (restored.length === 0) {
+        return null
+      }
+      const activeIndex = Math.min(session.activeIndex, restored.length - 1)
+      return { tabs: restored, activeIndex }
+    }
+
+    async function loadSession() {
       try {
-        const [draft, collapsedValue, savedModel, savedImageModel, savedImageHistory, savedLeftTab] = await Promise.all([
-          draftStorage.loadDraft(),
-          storage.get(STORAGE_CHROME_KEY),
-          storage.get(STORAGE_AI_MODEL_KEY),
-          storage.get(STORAGE_AI_IMAGE_MODEL_KEY),
-          storage.get(STORAGE_AI_IMAGE_HISTORY_KEY),
-          storage.get(STORAGE_LEFT_TAB_KEY)
-        ])
+        const [sessionRaw, draft, collapsedValue, savedModel, savedImageModel, savedImageHistory, savedLeftTab] =
+          await Promise.all([
+            storage.get(STORAGE_SESSION_KEY),
+            draftStorage.loadDraft(),
+            storage.get(STORAGE_CHROME_KEY),
+            storage.get(STORAGE_AI_MODEL_KEY),
+            storage.get(STORAGE_AI_IMAGE_MODEL_KEY),
+            storage.get(STORAGE_AI_IMAGE_HISTORY_KEY),
+            storage.get(STORAGE_LEFT_TAB_KEY)
+          ])
 
         if (!cancelled) {
           setChromeCollapsed(collapsedValue === true)
@@ -471,10 +759,35 @@ export default function App() {
           setImageHistoryMap(normalizeHistoryMap(savedImageHistory))
         }
 
-        if (!cancelled && !hasInitPayloadRef.current && draft) {
-          lastPersistedRef.current = draft.content
-          setContent(draft.content)
-          setSavedAt(draft.updatedAt)
+        // A 划词 (edit-selection) launch owns the active tab; don't restore over it.
+        if (cancelled || hasInitPayloadRef.current) {
+          return
+        }
+
+        const session = normalizeSession(sessionRaw)
+        if (session) {
+          const restored = await restoreSessionTabs(session)
+          if (!cancelled && restored) {
+            setTabs(restored.tabs)
+            const active = restored.tabs[restored.activeIndex] ?? restored.tabs[0]
+            setActiveTabId(active.id)
+            // Seed the editor with the active tab's content + a clean history.
+            editorRef.current?.setValue(active.content, { resetHistory: true })
+            setSourceLabel('已恢复上次会话')
+            return
+          }
+        }
+
+        // Legacy single-draft fallback (users upgrading from the pre-session build).
+        if (!cancelled && draft) {
+          setTabs((prev) =>
+            prev.map((tab) =>
+              tab.id === activeTabIdRef.current
+                ? { ...tab, content: draft.content, savedContent: draft.content, savedAt: draft.updatedAt }
+                : tab
+            )
+          )
+          editorRef.current?.setValue(draft.content, { resetHistory: true })
           setSourceLabel('已恢复上次草稿')
         }
       } finally {
@@ -484,12 +797,12 @@ export default function App() {
       }
     }
 
-    void loadDraft()
+    void loadSession()
 
     return () => {
       cancelled = true
     }
-  }, [draftStorage, storage])
+  }, [activeTabIdRef, draftStorage, filesystem, setActiveTabId, setTabs, storage])
 
   // Resolves Markdown image hrefs so the live preview can load them: relative
   // paths resolve against the bound document's directory; data/http/file pass
@@ -502,10 +815,10 @@ export default function App() {
     [activeFilePath]
   )
 
-  // Editor edits flow up as the markdown source of truth.
+  // Editor edits flow up into the active tab as the markdown source of truth.
   const handleEditorChange = useCallback((value: string) => {
     setContent(value)
-  }, [])
+  }, [setContent])
 
   // Drives the floating AI bubble from the live editor selection. The CM6
   // selection rect is read straight from the view, so it works in any scroll
@@ -623,18 +936,41 @@ export default function App() {
     editor.focus()
   }, [])
 
-  const isDirty = hydrated && content !== lastPersistedRef.current
+  const isDirty = hydrated && content !== (activeTab?.savedContent ?? '')
+
+  // Persist the whole open-tab set (+ active tab) so reopening restores the
+  // session. Captures the active tab's latest editor value at write time.
+  const saveSession = useCallback(async () => {
+    const editor = editorRef.current
+    const activeContent = editor?.getValue()
+    const snapshot = tabsRef.current.map((tab) =>
+      tab.id === activeTabIdRef.current && activeContent != null ? { ...tab, content: activeContent } : tab
+    )
+    try {
+      await storage.set(STORAGE_SESSION_KEY, serializeSession(snapshot, activeTabIdRef.current))
+    } catch (error) {
+      console.error('[markdown-editor] saveSession', error)
+    }
+  }, [activeTabIdRef, storage, tabsRef])
 
   const persistDraft = useCallback(async (showToast: boolean) => {
     setSaving(true)
     try {
       const current = editorRef.current?.getValue() ?? contentRef.current
-      const payload = await draftStorage.saveDraft(current)
-      lastPersistedRef.current = current
-      setSavedAt(payload?.updatedAt ?? Date.now())
-      setContent(current)
+      // Mark the active tab saved (clears the dirty dot) and flush the session.
+      setTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === activeTabIdRef.current
+            ? { ...tab, content: current, savedContent: current, savedAt: Date.now() }
+            : tab
+        )
+      )
+      await saveSession()
+      // The session supersedes the legacy single-draft key; drop it so it never
+      // double-restores for users upgrading from the pre-session build.
+      await draftStorage.clearDraft().catch(() => undefined)
       if (showToast) {
-        notification.show(current.trim() ? '草稿已保存' : '空草稿已清除', 'success')
+        notification.show('草稿已保存', 'success')
       }
     } catch (error) {
       console.error('[markdown-editor] persistDraft', error)
@@ -643,28 +979,40 @@ export default function App() {
       setSaving(false)
       focusEditor()
     }
-  }, [draftStorage, focusEditor, notification])
+  }, [activeTabIdRef, draftStorage, focusEditor, notification, saveSession, setTabs])
 
+  // Debounced session autosave: any tab edit / open / close / switch persists the
+  // full session (crash recovery for every untitled tab, not just one draft).
+  // Skipped during a 划词 (edit-selection) launch so it never clobbers the saved
+  // session with a throwaway tab.
   useEffect(() => {
-    if (!hydrated || !isDirty) {
+    if (!hydrated || hasInitPayloadRef.current) {
       return
     }
-
-    // When bound to a file, the file is the source of truth and the user saves
-    // explicitly (Ctrl/Cmd+S); skip the recovery-draft autosave so reopening
-    // never surfaces a stale draft.
-    if (activeFilePath) {
-      return
-    }
-
     const timer = window.setTimeout(() => {
-      void persistDraft(false)
+      void saveSession()
     }, 600)
-
     return () => {
       window.clearTimeout(timer)
     }
-  }, [activeFilePath, hydrated, isDirty, persistDraft])
+  }, [activeTabId, hydrated, saveSession, tabs])
+
+  // Best-effort flush when the window hides / unloads so edits made in the last
+  // debounce window aren't lost.
+  useEffect(() => {
+    if (!hydrated || hasInitPayloadRef.current) {
+      return
+    }
+    const flush = () => {
+      void saveSession()
+    }
+    window.addEventListener('beforeunload', flush)
+    document.addEventListener('visibilitychange', flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      document.removeEventListener('visibilitychange', flush)
+    }
+  }, [hydrated, saveSession])
 
   const handleOpenFile = useCallback(async () => {
     try {
@@ -681,13 +1029,8 @@ export default function App() {
       }
 
       const fileContent = await readFileAsUtf8(filesystem.readFile, path)
-      lastPersistedRef.current = fileContent
-      setActiveFilePath(path)
       setSourceLabel(`载入 ${basename(path)}`)
-      setSavedAt(Date.now())
-      startTransition(() => {
-        setContent(fileContent)
-      })
+      openInTab(path, fileContent)
       explorer.noteRecentFile(path)
       notification.show('文件已载入', 'success')
       focusEditor()
@@ -695,7 +1038,7 @@ export default function App() {
       console.error('[markdown-editor] handleOpenFile', error)
       notification.show('读取文件失败', 'error')
     }
-  }, [dialog, explorer, filesystem, focusEditor, notification])
+  }, [dialog, explorer, filesystem, focusEditor, notification, openInTab])
 
   // Open a file by path (from the file tree / recent list). Reads through the
   // preload fs bridge so paths that never came from a native dialog are readable
@@ -706,13 +1049,8 @@ export default function App() {
         const fileContent = isFsBridgeAvailable()
           ? await getFsBridge().readText(path)
           : await readFileAsUtf8(filesystem.readFile, path)
-        lastPersistedRef.current = fileContent
-        setActiveFilePath(path)
         setSourceLabel(`载入 ${basename(path)}`)
-        setSavedAt(Date.now())
-        startTransition(() => {
-          setContent(fileContent)
-        })
+        openInTab(path, fileContent)
         explorer.noteRecentFile(path)
         void explorer.revealPath(path)
         notification.show('文件已载入', 'success')
@@ -722,7 +1060,7 @@ export default function App() {
         notification.show('读取文件失败', 'error')
       }
     },
-    [explorer, filesystem, focusEditor, notification]
+    [explorer, filesystem, focusEditor, notification, openInTab]
   )
 
   const selectLeftTab = useCallback(
@@ -736,14 +1074,17 @@ export default function App() {
   const writeToFile = useCallback(async (path: string) => {
     const current = editorRef.current?.getValue() ?? contentRef.current
     await filesystem.writeFile(path, current, 'utf-8')
-    lastPersistedRef.current = current
-    setActiveFilePath(path)
-    setSavedAt(Date.now())
-    setContent(current)
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === activeTabIdRef.current
+          ? { ...tab, filePath: path, content: current, savedContent: current, savedAt: Date.now() }
+          : tab
+      )
+    )
     setSourceLabel(`已保存 ${basename(path)}`)
     // The file is now the source of truth; clear the recovery draft.
     await draftStorage.clearDraft().catch(() => undefined)
-  }, [draftStorage, filesystem])
+  }, [activeTabIdRef, draftStorage, filesystem, setTabs])
 
   const promptMarkdownSavePath = useCallback(() => {
     return dialog.showSaveDialog({
@@ -1022,6 +1363,16 @@ export default function App() {
 
       if (format === 'markdown') {
         await filesystem.writeFile(target, exportDocument.markdown, 'utf-8')
+        // Exporting Markdown is effectively "save as .md": bind the active tab to
+        // the new path so it's no longer dirty. Other formats don't rebind (the
+        // tab keeps editing the original Markdown document).
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === activeTabIdRef.current
+              ? { ...tab, filePath: target, savedContent: exportDocument.markdown, savedAt: Date.now() }
+              : tab
+          )
+        )
       } else if (format === 'html') {
         await exportHtmlFile(exportDocument, target, filesystem)
       } else if (format === 'pdf') {
@@ -1030,7 +1381,6 @@ export default function App() {
         await exportDocxFile(exportDocument, target, filesystem, resolveExportImage)
       }
 
-      setActiveFilePath(target)
       setExportMenuOpen(false)
       notification.show(`已导出到 ${basename(target)}`, 'success')
       focusEditor()
@@ -1040,7 +1390,7 @@ export default function App() {
       notification.show('导出文件失败', 'error')
       focusEditor()
     }
-  }, [activeFilePath, closeExportMenu, dialog, filesystem, focusEditor, getCurrentExportDocument, notification, resolveExportImage])
+  }, [activeFilePath, activeTabIdRef, closeExportMenu, dialog, filesystem, focusEditor, getCurrentExportDocument, notification, resolveExportImage, setTabs])
 
   const handleOpenExportMenu = useCallback(() => {
     setExportMenuOpen(true)
@@ -1512,35 +1862,26 @@ export default function App() {
     }
   }, [clipboard, focusEditor, notification])
 
-  const clearDocument = useCallback(() => {
-    setContent('')
-    setSourceLabel('新草稿')
-    setActiveFilePath(null)
-    setSavedAt(null)
-    lastPersistedRef.current = ''
-    setClearConfirmOpen(false)
-    void draftStorage.clearDraft().catch(() => undefined)
-    focusEditor()
-    notification.show('已新建空白文档', 'info')
-  }, [draftStorage, focusEditor, notification])
-
-  const handleClear = useCallback(() => {
-    if (isDirty) {
-      setClearConfirmOpen(true)
-      return
-    }
-
-    clearDocument()
-  }, [clearDocument, isDirty])
-
-  const handleCancelClear = useCallback(() => {
-    setClearConfirmOpen(false)
+  // Close-tab confirmation (unsaved changes): keep / discard / save-then-close.
+  const handleCancelCloseTab = useCallback(() => {
+    setCloseConfirmId(null)
     focusEditor()
   }, [focusEditor])
 
-  const handleConfirmClear = useCallback(() => {
-    clearDocument()
-  }, [clearDocument])
+  const handleDiscardCloseTab = useCallback(() => {
+    const id = closeConfirmId
+    setCloseConfirmId(null)
+    if (id) {
+      performCloseTab(id)
+    }
+  }, [closeConfirmId, performCloseTab])
+
+  const handleSaveCloseTab = useCallback(() => {
+    const id = closeConfirmId
+    if (id) {
+      void saveTabAndClose(id)
+    }
+  }, [closeConfirmId, saveTabAndClose])
 
   const handleInsertLink = useCallback(() => {
     const editor = editorRef.current
@@ -2012,9 +2353,9 @@ export default function App() {
     [
       {
         key: 'new',
-        title: '新建文档',
+        title: '新建标签 (Ctrl/Cmd+T)',
         icon: FilePlus2,
-        onClick: handleClear
+        onClick: newUntitledTab
       },
       {
         key: 'open',
@@ -2123,28 +2464,29 @@ export default function App() {
 
   return (
     <div className={`app theme-${theme}`}>
-      {clearConfirmOpen && (
-        <div className="confirm-overlay" role="presentation" onClick={handleCancelClear}>
+      {closeConfirmId && (
+        <div className="confirm-overlay" role="presentation" onClick={handleCancelCloseTab}>
           <div
             className="confirm-dialog"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="clear-confirm-title"
-            aria-describedby="clear-confirm-desc"
+            aria-labelledby="close-confirm-title"
+            aria-describedby="close-confirm-desc"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="confirm-dialog-header">
-              <h2 id="clear-confirm-title" className="confirm-dialog-title">新建空白文档</h2>
+              <h2 id="close-confirm-title" className="confirm-dialog-title">关闭未保存的标签</h2>
             </div>
-            <p id="clear-confirm-desc" className="confirm-dialog-desc">
-              当前文档还有未保存改动。新建后将清空当前内容，建议先保存到文件或草稿。
+            <p id="close-confirm-desc" className="confirm-dialog-desc">
+              「{deriveTabTitle(tabs.find((tab) => tab.id === closeConfirmId) ?? { filePath: null })}」
+              还有未保存的改动。关闭前是否保存？
             </p>
             <div className="confirm-dialog-actions">
               <button
                 type="button"
                 className="action-btn"
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={handleCancelClear}
+                onClick={handleCancelCloseTab}
               >
                 取消
               </button>
@@ -2152,9 +2494,17 @@ export default function App() {
                 type="button"
                 className="action-btn action-btn-danger confirm-danger-btn"
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={handleConfirmClear}
+                onClick={handleDiscardCloseTab}
               >
-                确认新建
+                不保存
+              </button>
+              <button
+                type="button"
+                className="action-btn action-btn-primary"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={handleSaveCloseTab}
+              >
+                保存
               </button>
             </div>
           </div>
@@ -2364,6 +2714,13 @@ export default function App() {
                 )}
               </aside>
               <div className="editor-canvas">
+                <TabBar
+                  tabs={tabs}
+                  activeTabId={activeTabId}
+                  onSelect={switchToTab}
+                  onClose={requestCloseTab}
+                  onNew={newUntitledTab}
+                />
                 <div className="editor-pane-header editor-canvas-header">
                   <span className="pane-header-label">{isDirty ? '• ' : ''}{documentName}</span>
                   <div className="canvas-header-meta">

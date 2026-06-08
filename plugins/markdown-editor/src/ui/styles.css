@@ -331,6 +331,18 @@ button {
   color: var(--danger);
 }
 
+.action-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.action-btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
+}
+
 .action-btn:disabled {
   opacity: 0.6;
   cursor: wait;
@@ -518,6 +530,159 @@ button {
 
 .editor-host {
   flex: 1;
+}
+
+/* ── Editor tab bar (multi-document) ─────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  background: var(--panel-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tab-strip::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: 200px;
+  padding: 0 8px 0 14px;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-item:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
+}
+
+.tab-item.active {
+  background: var(--editor-paper);
+  color: var(--text-primary);
+}
+
+/* Accent strip on the active tab. */
+.tab-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.tab-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.tab-item.dirty .tab-title {
+  font-style: italic;
+}
+
+.tab-close {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-close:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.tab-dirty-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  display: none;
+}
+
+.tab-close-x {
+  display: inline-flex;
+  opacity: 0;
+}
+
+/* Show the close icon for the active tab and on hover; hide it (showing the
+   dirty dot instead) when the tab is dirty and not hovered — VS Code behavior. */
+.tab-item:hover .tab-close-x,
+.tab-item.active .tab-close-x {
+  opacity: 0.75;
+}
+
+.tab-close:hover .tab-close-x {
+  opacity: 1;
+}
+
+.tab-item.dirty .tab-dirty-dot {
+  display: block;
+}
+
+.tab-item.dirty:hover .tab-dirty-dot,
+.tab-item.dirty .tab-close:hover .tab-dirty-dot {
+  display: none;
+}
+
+.tab-item.dirty:hover .tab-close-x {
+  opacity: 0.75;
+}
+
+.tab-item.dirty .tab-close:hover .tab-close-x {
+  opacity: 1;
+}
+
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-new:hover {
+  background: var(--panel-strong);
+  color: var(--text-primary);
 }
 
 /* CodeMirror live-preview editor */
