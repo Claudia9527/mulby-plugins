@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
   ChevronRight,
+  ChevronsDownUp,
+  Crosshair,
   File as FileIcon,
   FilePlus,
   FileText,
@@ -11,7 +13,7 @@ import {
   X
 } from 'lucide-react'
 import type { FileExplorerState } from '../hooks/useFileExplorer'
-import type { FsEntry } from '../services/fileTree'
+import type { FsEntry, TreeRow } from '../services/fileTree'
 import { basename, dirname, isMarkdownFile, isSameOrInside } from '../services/filePath'
 import { ContextMenu } from './ContextMenu'
 import type { MenuItem } from '../services/contextMenu'
@@ -24,6 +26,10 @@ interface FileExplorerProps {
 
 const INDENT_BASE = 6
 const INDENT_STEP = 14
+const ROW_H = 26
+// Above this many visible rows the tree windows its rendering for performance.
+const VIRTUAL_THRESHOLD = 80
+const OVERSCAN = 8
 
 /** Inline text input for renaming / creating an entry directly in the tree. */
 function InlineNameInput({
@@ -63,6 +69,7 @@ function InlineNameInput({
       defaultValue={initialName}
       spellCheck={false}
       onKeyDown={(e) => {
+        e.stopPropagation()
         if (e.key === 'Enter') {
           e.preventDefault()
           commit()
@@ -79,30 +86,60 @@ function InlineNameInput({
 }
 
 /**
- * VS Code / Obsidian-style file tree sidebar. Renders the recent list plus the
- * lazily-loaded workspace tree, with inline create/rename inputs and a themed
- * right-click menu. All file IO is owned by the explorer hook.
+ * VS Code / Obsidian-style file tree sidebar: recent list + lazily-loaded
+ * workspace tree with inline create/rename, themed right-click menu, drag-drop
+ * move, keyboard navigation, and windowed rendering for large trees. File IO is
+ * owned by the explorer hook.
  */
 export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorerProps) {
   const [recentOpen, setRecentOpen] = useState(true)
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const [focusedPath, setFocusedPath] = useState<string | null>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportH, setViewportH] = useState(480)
   const dragSrcRef = useRef<FsEntry | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const typeaheadRef = useRef<{ buffer: string; at: number }>({ buffer: '', at: 0 })
 
   const edit = state.inlineEdit
+  const rows = state.rows
+  const rootPath = state.rootPath
 
-  // A drag is a valid drop into destDir when the source isn't already there and
-  // a folder isn't being dropped into itself or a descendant.
-  const canDropInto = (destDir: string): boolean => {
-    const src = dragSrcRef.current
-    if (!src) {
-      return false
+  // Measure the scroll viewport so virtualization knows how many rows fit.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) {
+      return
     }
-    if (dirname(src.path) === destDir) {
-      return false
+    setViewportH(el.clientHeight)
+    const ro = new ResizeObserver(() => setViewportH(el.clientHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [rootPath])
+
+  // Keep keyboard focus aligned with the active file when it changes externally.
+  useEffect(() => {
+    if (activeFilePath) {
+      setFocusedPath(activeFilePath)
     }
-    return !(src.isDirectory && isSameOrInside(src.path, destDir))
-  }
+  }, [activeFilePath])
+
+  // Scroll the active file into view when it (or the visible set) changes.
+  useEffect(() => {
+    if (!activeFilePath) {
+      return
+    }
+    const idx = rows.findIndex((r) => r.entry.path === activeFilePath)
+    const el = scrollRef.current
+    if (idx < 0 || !el) {
+      return
+    }
+    const top = idx * ROW_H
+    if (top < el.scrollTop || top + ROW_H > el.scrollTop + el.clientHeight) {
+      el.scrollTop = Math.max(0, top - el.clientHeight / 2)
+    }
+  }, [activeFilePath, rows])
 
   const handleCommit = (name: string) => {
     void state.commitInline(name).then((result) => {
@@ -112,12 +149,22 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     })
   }
 
-  // Directory a new entry should be created under, given the right-clicked entry.
   const createDirFor = (entry: FsEntry | null): string | undefined => {
     if (!entry) {
-      return state.rootPath ?? undefined
+      return rootPath ?? undefined
     }
     return entry.isDirectory ? entry.path : dirname(entry.path)
+  }
+
+  const canDropInto = (destDir: string): boolean => {
+    const src = dragSrcRef.current
+    if (!src) {
+      return false
+    }
+    if (dirname(src.path) === destDir) {
+      return false
+    }
+    return !(src.isDirectory && isSameOrInside(src.path, destDir))
   }
 
   const buildMenu = (entry: FsEntry | null): MenuItem[] => {
@@ -154,9 +201,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     const entry = menu?.entry ?? null
     switch (id) {
       case 'open':
-        if (entry) {
-          onOpenFile(entry.path)
-        }
+        if (entry) onOpenFile(entry.path)
         break
       case 'new-file':
         void state.beginCreate('file', createDirFor(entry))
@@ -165,49 +210,33 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         void state.beginCreate('folder', createDirFor(entry))
         break
       case 'cut':
-        if (entry) {
-          state.markCut(entry)
-        }
+        if (entry) state.markCut(entry)
         break
       case 'copy':
-        if (entry) {
-          state.markCopy(entry)
-        }
+        if (entry) state.markCopy(entry)
         break
       case 'duplicate':
-        if (entry) {
-          void state.duplicateEntry(entry)
-        }
+        if (entry) void state.duplicateEntry(entry)
         break
       case 'paste': {
-        const dir = entry ? (entry.isDirectory ? entry.path : dirname(entry.path)) : state.rootPath
-        if (dir) {
-          void state.pasteInto(dir)
-        }
+        const dir = entry ? (entry.isDirectory ? entry.path : dirname(entry.path)) : rootPath
+        if (dir) void state.pasteInto(dir)
         break
       }
       case 'rename':
-        if (entry) {
-          state.beginRename(entry)
-        }
+        if (entry) state.beginRename(entry)
         break
       case 'delete':
-        if (entry) {
-          void state.deleteEntry(entry)
-        }
+        if (entry) void state.deleteEntry(entry)
         break
       case 'reveal': {
-        const target = entry?.path ?? state.rootPath
-        if (target) {
-          void state.reveal(target)
-        }
+        const target = entry?.path ?? rootPath
+        if (target) void state.reveal(target)
         break
       }
       case 'copy-path': {
-        const target = entry?.path ?? state.rootPath
-        if (target) {
-          void state.copyPath(target)
-        }
+        const target = entry?.path ?? rootPath
+        if (target) void state.copyPath(target)
         break
       }
       case 'refresh':
@@ -224,6 +253,250 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     setMenu({ x: e.clientX, y: e.clientY, entry })
   }
 
+  // ── Keyboard navigation (roving focus on the tree) ─────────────────────
+  const focusIndex = focusedPath ? rows.findIndex((r) => r.entry.path === focusedPath) : -1
+
+  const scrollIndexIntoView = (idx: number) => {
+    const el = scrollRef.current
+    if (!el || idx < 0) {
+      return
+    }
+    const top = idx * ROW_H
+    if (top < el.scrollTop) {
+      el.scrollTop = top
+    } else if (top + ROW_H > el.scrollTop + el.clientHeight) {
+      el.scrollTop = top - el.clientHeight + ROW_H
+    }
+  }
+
+  const focusRow = (idx: number) => {
+    if (idx < 0 || idx >= rows.length) {
+      return
+    }
+    setFocusedPath(rows[idx].entry.path)
+    scrollIndexIntoView(idx)
+  }
+
+  const handleTreeKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (edit || rows.length === 0) {
+      return
+    }
+    const idx = focusIndex
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      focusRow(idx < 0 ? 0 : Math.min(rows.length - 1, idx + 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      focusRow(idx < 0 ? rows.length - 1 : Math.max(0, idx - 1))
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      focusRow(0)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      focusRow(rows.length - 1)
+    } else if (e.key === 'ArrowRight') {
+      if (idx < 0) {
+        return
+      }
+      e.preventDefault()
+      const row = rows[idx]
+      if (row.entry.isDirectory && !row.expanded) {
+        void state.toggleDir(row.entry.path)
+      } else if (row.entry.isDirectory && row.expanded) {
+        focusRow(idx + 1)
+      }
+    } else if (e.key === 'ArrowLeft') {
+      if (idx < 0) {
+        return
+      }
+      e.preventDefault()
+      const row = rows[idx]
+      if (row.entry.isDirectory && row.expanded) {
+        void state.toggleDir(row.entry.path)
+      } else {
+        for (let i = idx - 1; i >= 0; i -= 1) {
+          if (rows[i].depth < row.depth) {
+            focusRow(i)
+            break
+          }
+        }
+      }
+    } else if (e.key === 'Enter') {
+      if (idx < 0) {
+        return
+      }
+      e.preventDefault()
+      const row = rows[idx]
+      if (row.entry.isDirectory) {
+        void state.toggleDir(row.entry.path)
+      } else {
+        onOpenFile(row.entry.path)
+      }
+    } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Typeahead: jump to the next row whose name starts with the typed prefix.
+      const now = Date.now()
+      const ta = typeaheadRef.current
+      ta.buffer = now - ta.at > 600 ? e.key : ta.buffer + e.key
+      ta.at = now
+      const prefix = ta.buffer.toLowerCase()
+      const start = idx < 0 ? 0 : idx
+      for (let step = 1; step <= rows.length; step += 1) {
+        const i = (start + step) % rows.length
+        if (rows[i].entry.name.toLowerCase().startsWith(prefix)) {
+          focusRow(i)
+          break
+        }
+      }
+    }
+  }
+
+  const renderRow = (row: TreeRow): ReactNode => {
+    const isRenaming = edit?.mode === 'rename' && edit.targetPath === row.entry.path
+    const isActive = !row.entry.isDirectory && row.entry.path === activeFilePath
+    const isFocused = row.entry.path === focusedPath
+    const isCut = state.clip?.op === 'cut' && state.clip.path === row.entry.path
+    return (
+      <div
+        key={row.entry.path}
+        role="treeitem"
+        aria-level={row.depth + 1}
+        aria-expanded={row.hasChildren ? row.expanded : undefined}
+        aria-selected={isActive}
+        className={`fm-row ${isActive ? 'active' : ''} ${isFocused ? 'fm-focused' : ''} ${
+          row.entry.isDirectory ? 'is-dir' : 'is-file'
+        } ${dropTarget === row.entry.path ? 'fm-drop-target' : ''} ${isCut ? 'fm-cut' : ''}`}
+        style={{ paddingLeft: INDENT_BASE + row.depth * INDENT_STEP, height: ROW_H }}
+        title={row.entry.path}
+        draggable={!isRenaming}
+        onDragStart={(e) => {
+          dragSrcRef.current = row.entry
+          e.dataTransfer.effectAllowed = 'move'
+          try {
+            e.dataTransfer.setData('text/plain', row.entry.path)
+          } catch {
+            // some environments disallow setData; the ref carries the source
+          }
+        }}
+        onDragEnd={() => {
+          dragSrcRef.current = null
+          setDropTarget(null)
+        }}
+        onDragOver={
+          row.entry.isDirectory
+            ? (e) => {
+                if (canDropInto(row.entry.path)) {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  setDropTarget(row.entry.path)
+                }
+              }
+            : undefined
+        }
+        onDragLeave={
+          row.entry.isDirectory ? () => setDropTarget((t) => (t === row.entry.path ? null : t)) : undefined
+        }
+        onDrop={
+          row.entry.isDirectory
+            ? (e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                const src = dragSrcRef.current
+                setDropTarget(null)
+                dragSrcRef.current = null
+                if (src) {
+                  void state.moveEntry(src, row.entry.path)
+                }
+              }
+            : undefined
+        }
+        onContextMenu={(e) => openMenu(e, row.entry)}
+        onClick={() => {
+          if (isRenaming) {
+            return
+          }
+          setFocusedPath(row.entry.path)
+          if (row.entry.isDirectory) {
+            void state.toggleDir(row.entry.path)
+          } else {
+            onOpenFile(row.entry.path)
+          }
+        }}
+      >
+        <span className={`fm-twistie-slot ${row.hasChildren ? '' : 'is-leaf'}`}>
+          {row.hasChildren && (
+            <ChevronRight size={13} className={`fm-twistie ${row.expanded ? 'open' : ''}`} />
+          )}
+        </span>
+        <span className="fm-row-icon">
+          {row.entry.isDirectory ? (
+            row.expanded ? (
+              <FolderOpen size={14} />
+            ) : (
+              <Folder size={14} />
+            )
+          ) : isMarkdownFile(row.entry.name) ? (
+            <FileText size={14} />
+          ) : (
+            <FileIcon size={14} />
+          )}
+        </span>
+        {isRenaming ? (
+          <InlineNameInput
+            initialName={edit?.initialName ?? row.entry.name}
+            onCommit={handleCommit}
+            onCancel={state.cancelInline}
+          />
+        ) : (
+          <span className="fm-row-label">{row.entry.name}</span>
+        )}
+      </div>
+    )
+  }
+
+  const inlineInputRow = (depth: number, kind: 'create-file' | 'create-folder') => (
+    <div
+      className="fm-row"
+      style={{ paddingLeft: INDENT_BASE + depth * INDENT_STEP, height: ROW_H }}
+      key="__inline_create"
+    >
+      <span className="fm-twistie-slot is-leaf" />
+      <span className="fm-row-icon">
+        {kind === 'create-folder' ? <Folder size={14} /> : <FileText size={14} />}
+      </span>
+      <InlineNameInput initialName="" onCommit={handleCommit} onCancel={state.cancelInline} />
+    </div>
+  )
+
+  // Full (non-windowed) render with inline create/rename inputs injected.
+  const renderAllRows = (): ReactNode[] => {
+    const out: ReactNode[] = []
+    const createMode = edit && edit.mode !== 'rename' ? edit.mode : null
+    const createParent = edit && edit.mode !== 'rename' ? edit.parentDir : null
+    if (createMode && createParent === rootPath) {
+      out.push(inlineInputRow(0, createMode))
+    }
+    for (const row of rows) {
+      out.push(renderRow(row))
+      if (createMode && createParent === row.entry.path) {
+        out.push(inlineInputRow(row.depth + 1, createMode))
+      }
+    }
+    return out
+  }
+
+  // Windowed render for large trees (disabled while an inline input is active).
+  const renderWindowedRows = (): ReactNode => {
+    const total = rows.length
+    const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
+    const end = Math.min(total, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN)
+    const slice = rows.slice(start, end)
+    return (
+      <div style={{ paddingTop: start * ROW_H, paddingBottom: (total - end) * ROW_H }}>
+        {slice.map(renderRow)}
+      </div>
+    )
+  }
+
   if (!state.available) {
     return (
       <div className="fm-panel">
@@ -235,128 +508,8 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     )
   }
 
-  const inlineInputRow = (depth: number, kind: 'create-file' | 'create-folder') => (
-    <div className="fm-row" style={{ paddingLeft: INDENT_BASE + depth * INDENT_STEP }} key="__inline_create">
-      <span className="fm-twistie-slot is-leaf" />
-      <span className="fm-row-icon">
-        {kind === 'create-folder' ? <Folder size={14} /> : <FileText size={14} />}
-      </span>
-      <InlineNameInput initialName="" onCommit={handleCommit} onCancel={state.cancelInline} />
-    </div>
-  )
-
-  const renderTreeRows = (): ReactNode[] => {
-    const out: ReactNode[] = []
-    const createMode = edit && edit.mode !== 'rename' ? edit.mode : null
-    const createParent = edit && edit.mode !== 'rename' ? edit.parentDir : null
-    if (createMode && createParent === state.rootPath) {
-      out.push(inlineInputRow(0, createMode))
-    }
-    for (const row of state.rows) {
-      const isRenaming = edit?.mode === 'rename' && edit.targetPath === row.entry.path
-      const isActive = !row.entry.isDirectory && row.entry.path === activeFilePath
-      out.push(
-        <div
-          key={row.entry.path}
-          role="treeitem"
-          aria-level={row.depth + 1}
-          aria-expanded={row.hasChildren ? row.expanded : undefined}
-          className={`fm-row ${isActive ? 'active' : ''} ${row.entry.isDirectory ? 'is-dir' : 'is-file'} ${
-            dropTarget === row.entry.path ? 'fm-drop-target' : ''
-          } ${state.clip?.op === 'cut' && state.clip.path === row.entry.path ? 'fm-cut' : ''}`}
-          style={{ paddingLeft: INDENT_BASE + row.depth * INDENT_STEP }}
-          title={row.entry.path}
-          draggable={!isRenaming}
-          onDragStart={(e) => {
-            dragSrcRef.current = row.entry
-            e.dataTransfer.effectAllowed = 'move'
-            try {
-              e.dataTransfer.setData('text/plain', row.entry.path)
-            } catch {
-              // some environments disallow setData; the ref carries the source
-            }
-          }}
-          onDragEnd={() => {
-            dragSrcRef.current = null
-            setDropTarget(null)
-          }}
-          onDragOver={
-            row.entry.isDirectory
-              ? (e) => {
-                  if (canDropInto(row.entry.path)) {
-                    e.preventDefault()
-                    e.dataTransfer.dropEffect = 'move'
-                    setDropTarget(row.entry.path)
-                  }
-                }
-              : undefined
-          }
-          onDragLeave={
-            row.entry.isDirectory
-              ? () => setDropTarget((t) => (t === row.entry.path ? null : t))
-              : undefined
-          }
-          onDrop={
-            row.entry.isDirectory
-              ? (e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  const src = dragSrcRef.current
-                  setDropTarget(null)
-                  dragSrcRef.current = null
-                  if (src) {
-                    void state.moveEntry(src, row.entry.path)
-                  }
-                }
-              : undefined
-          }
-          onContextMenu={(e) => openMenu(e, row.entry)}
-          onClick={() => {
-            if (isRenaming) {
-              return
-            }
-            if (row.entry.isDirectory) {
-              void state.toggleDir(row.entry.path)
-            } else {
-              onOpenFile(row.entry.path)
-            }
-          }}
-        >
-          <span className={`fm-twistie-slot ${row.hasChildren ? '' : 'is-leaf'}`}>
-            {row.hasChildren && (
-              <ChevronRight size={13} className={`fm-twistie ${row.expanded ? 'open' : ''}`} />
-            )}
-          </span>
-          <span className="fm-row-icon">
-            {row.entry.isDirectory ? (
-              row.expanded ? (
-                <FolderOpen size={14} />
-              ) : (
-                <Folder size={14} />
-              )
-            ) : isMarkdownFile(row.entry.name) ? (
-              <FileText size={14} />
-            ) : (
-              <FileIcon size={14} />
-            )}
-          </span>
-          {isRenaming ? (
-            <InlineNameInput
-              initialName={edit?.initialName ?? row.entry.name}
-              onCommit={handleCommit}
-              onCancel={state.cancelInline}
-            />
-          ) : (
-            <span className="fm-row-label">{row.entry.name}</span>
-          )}
-        </div>
-      )
-      if (createMode && createParent === row.entry.path) {
-        out.push(inlineInputRow(row.depth + 1, createMode))
-      }
-    }
-    return out
-  }
+  const creating = !!edit && edit.mode !== 'rename'
+  const virtualize = rows.length > VIRTUAL_THRESHOLD && !edit
 
   return (
     <div className="fm-panel">
@@ -376,7 +529,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="新建文件"
           aria-label="新建文件"
-          disabled={!state.rootPath}
+          disabled={!rootPath}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.beginCreate('file')}
         >
@@ -387,7 +540,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="新建文件夹"
           aria-label="新建文件夹"
-          disabled={!state.rootPath}
+          disabled={!rootPath}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.beginCreate('folder')}
         >
@@ -396,9 +549,33 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         <button
           type="button"
           className="fm-tool-btn"
+          title="定位当前文件"
+          aria-label="定位当前文件"
+          disabled={!rootPath || !activeFilePath}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            if (activeFilePath) void state.revealPath(activeFilePath)
+          }}
+        >
+          <Crosshair size={14} />
+        </button>
+        <button
+          type="button"
+          className="fm-tool-btn"
+          title="折叠全部"
+          aria-label="折叠全部"
+          disabled={!rootPath}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => state.collapseAll()}
+        >
+          <ChevronsDownUp size={14} />
+        </button>
+        <button
+          type="button"
+          className="fm-tool-btn"
           title="刷新"
           aria-label="刷新"
-          disabled={!state.rootPath}
+          disabled={!rootPath}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.refresh()}
         >
@@ -454,7 +631,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
       )}
 
       <div className="fm-tree">
-        {!state.rootPath ? (
+        {!rootPath ? (
           <div className="fm-empty">
             <p>未打开文件夹</p>
             <button
@@ -470,29 +647,29 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         ) : (
           <>
             <div
-              className={`fm-root-header ${dropTarget === state.rootPath ? 'fm-drop-target' : ''}`}
-              title={state.rootPath}
+              className={`fm-root-header ${dropTarget === rootPath ? 'fm-drop-target' : ''}`}
+              title={rootPath}
               onContextMenu={(e) => openMenu(e, null)}
               onDragOver={(e) => {
-                if (state.rootPath && canDropInto(state.rootPath)) {
+                if (rootPath && canDropInto(rootPath)) {
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'move'
-                  setDropTarget(state.rootPath)
+                  setDropTarget(rootPath)
                 }
               }}
-              onDragLeave={() => setDropTarget((t) => (t === state.rootPath ? null : t))}
+              onDragLeave={() => setDropTarget((t) => (t === rootPath ? null : t))}
               onDrop={(e) => {
                 e.preventDefault()
                 const src = dragSrcRef.current
                 setDropTarget(null)
                 dragSrcRef.current = null
-                if (src && state.rootPath) {
-                  void state.moveEntry(src, state.rootPath)
+                if (src && rootPath) {
+                  void state.moveEntry(src, rootPath)
                 }
               }}
             >
               <FolderOpen size={13} />
-              <span className="fm-root-name">{basename(state.rootPath)}</span>
+              <span className="fm-root-name">{basename(rootPath)}</span>
               <button
                 type="button"
                 className="fm-row-action"
@@ -504,16 +681,20 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
                 <X size={12} />
               </button>
             </div>
-            {state.rows.length === 0 && !(edit && edit.mode !== 'rename') ? (
+            {rows.length === 0 && !creating ? (
               <div className="fm-empty-inline">此文件夹没有 Markdown 文件</div>
             ) : (
               <div
                 className="fm-rows"
                 role="tree"
                 aria-label="文件树"
+                tabIndex={0}
+                ref={scrollRef}
+                onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+                onKeyDown={handleTreeKeyDown}
                 onContextMenu={(e) => openMenu(e, null)}
                 onDragOver={(e) => {
-                  if (state.rootPath && canDropInto(state.rootPath)) {
+                  if (rootPath && canDropInto(rootPath)) {
                     e.preventDefault()
                     e.dataTransfer.dropEffect = 'move'
                   }
@@ -523,12 +704,12 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
                   const src = dragSrcRef.current
                   setDropTarget(null)
                   dragSrcRef.current = null
-                  if (src && state.rootPath) {
-                    void state.moveEntry(src, state.rootPath)
+                  if (src && rootPath) {
+                    void state.moveEntry(src, rootPath)
                   }
                 }}
               >
-                {renderTreeRows()}
+                {virtualize ? renderWindowedRows() : renderAllRows()}
               </div>
             )}
           </>

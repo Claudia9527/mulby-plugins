@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ancestorsWithin,
   flattenTree,
   type ChildrenByDir,
   type FsEntry,
@@ -129,6 +130,8 @@ export interface FileExplorerState {
   pasteInto: (destDir: string) => Promise<void>
   moveEntry: (src: FsEntry, destDir: string) => Promise<string | null>
   duplicateEntry: (entry: FsEntry) => Promise<string | null>
+  collapseAll: () => void
+  revealPath: (path: string) => Promise<void>
 }
 
 /**
@@ -582,6 +585,39 @@ export function useFileExplorer({
     [loadDir, notification]
   )
 
+  const collapseAll = useCallback(() => {
+    const empty = new Set<string>()
+    setExpanded(empty)
+    persistExpanded(empty)
+  }, [persistExpanded])
+
+  // Expand every ancestor of `path` (loading them as needed) so the file becomes
+  // visible in the tree; the component then scrolls it into view.
+  const revealPath = useCallback(
+    async (path: string) => {
+      if (!rootPath) {
+        return
+      }
+      const ancestors = ancestorsWithin(rootPath, path)
+      if (ancestors.length === 0) {
+        return
+      }
+      const next = new Set(expandedRef.current)
+      for (const dir of ancestors) {
+        if (dir !== rootPath) {
+          next.add(dir)
+        }
+        if (!childrenByDirRef.current[dir]) {
+          // eslint-disable-next-line no-await-in-loop
+          await loadDir(dir)
+        }
+      }
+      setExpanded(next)
+      persistExpanded(next)
+    },
+    [loadDir, persistExpanded, rootPath]
+  )
+
   // Restore persisted root + expanded set + recents on mount.
   useEffect(() => {
     if (!available) {
@@ -704,6 +740,8 @@ export function useFileExplorer({
     markCopy,
     pasteInto,
     moveEntry,
-    duplicateEntry
+    duplicateEntry,
+    collapseAll,
+    revealPath
   }
 }

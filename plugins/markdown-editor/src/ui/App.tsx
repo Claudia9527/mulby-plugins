@@ -714,6 +714,7 @@ export default function App() {
           setContent(fileContent)
         })
         explorer.noteRecentFile(path)
+        void explorer.revealPath(path)
         notification.show('文件已载入', 'success')
         focusEditor()
       } catch (error) {

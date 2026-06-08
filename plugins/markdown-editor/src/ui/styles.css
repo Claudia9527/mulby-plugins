@@ -2443,6 +2443,10 @@ button {
 }
 .fm-section {
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .fm-section-header {
   display: flex;
@@ -2466,12 +2470,14 @@ button {
 }
 .fm-recent-list {
   padding-bottom: 4px;
+  max-height: 26vh;
+  overflow-y: auto;
 }
 .fm-tree {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding-bottom: 12px;
+  display: flex;
+  flex-direction: column;
 }
 .fm-root-header {
   display: flex;
@@ -2483,10 +2489,7 @@ button {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  position: sticky;
-  top: 0;
   background: var(--outline-bg);
-  z-index: 1;
 }
 .fm-root-name {
   flex: 1;
@@ -2495,8 +2498,15 @@ button {
   white-space: nowrap;
 }
 .fm-rows {
-  display: flex;
-  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 12px;
+  outline: none;
+}
+.fm-row.fm-focused {
+  outline: 1px solid var(--accent, var(--border-strong, var(--border)));
+  outline-offset: -1px;
 }
 .fm-row {
   display: flex;
