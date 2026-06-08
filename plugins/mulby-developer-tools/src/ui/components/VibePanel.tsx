@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Sparkles, Wand2, FolderSearch, Loader2, Check, ChevronRight, X,
   Hammer, ShieldCheck, FolderOpen, AlertTriangle,
-  RefreshCw, Image as ImageIcon, Settings2, Rocket, FileText, Lightbulb,
+  RefreshCw, Image as ImageIcon, Rocket, FileText, Lightbulb,
   Pencil, Boxes, FileEdit, FileSearch, Terminal, Bug, Wrench, ListChecks,
   ChevronUp, ChevronDown, History, RotateCcw, GitCommit, Tag
 } from 'lucide-react'
@@ -297,7 +297,6 @@ export function VibePanel({
   const [sentence, setSentence] = useState('')
   const [targetDir, setTargetDir] = useState('')
   const [editPath, setEditPath] = useState('')
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   // 生成深度：full=一次性完整实现（默认）；minimal=先最小可跑再扩展（适合复杂/不确定需求）
   const [genDepth, setGenDepth] = useState<'full' | 'minimal'>('full')
@@ -2296,7 +2295,6 @@ export function VibePanel({
               targetDir={targetDir} setTargetDir={setTargetDir}
               editPath={editPath} setEditPath={setEditPath}
               knownPlugins={knownPlugins}
-              showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced}
               genDepth={genDepth} setGenDepth={setGenDepth}
               onPickDir={onPickDir} disabled={busy}
             />
@@ -2412,13 +2410,12 @@ function ModeBtn({ active, disabled, onClick, icon, label }: { active: boolean; 
 
 function DescribeStage({
   vibeMode, setVibeMode, targetDir, setTargetDir,
-  editPath, setEditPath, knownPlugins, showAdvanced, setShowAdvanced, genDepth, setGenDepth, onPickDir, disabled
+  editPath, setEditPath, knownPlugins, genDepth, setGenDepth, onPickDir, disabled
 }: {
   vibeMode: VibeMode; setVibeMode: (m: VibeMode) => void
   targetDir: string; setTargetDir: (s: string) => void
   editPath: string; setEditPath: (s: string) => void
   knownPlugins: KnownPlugin[]
-  showAdvanced: boolean; setShowAdvanced: (v: boolean) => void
   genDepth: 'full' | 'minimal'; setGenDepth: (m: 'full' | 'minimal') => void
   onPickDir: () => Promise<string | null>
   disabled?: boolean
@@ -2437,7 +2434,6 @@ function DescribeStage({
         </div>
         <div>
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{isEdit ? '选一个插件，在对话里说要改什么' : '设好目标，在对话里描述你的插件'}</h2>
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">{isEdit ? 'AI 会读懂现有代码，按需改写、构建并重新载入' : '先确认结构化「契约」，再由 AI 实现、构建、载入'}</p>
         </div>
       </div>
 
@@ -2470,30 +2466,13 @@ function DescribeStage({
         </Field>
       )}
 
-      <Field label="生成方式" hint={genDepth === 'full' ? '一次性生成尽量完整、开箱即用的版本（推荐）' : '先生成能跑通的最小骨架，之后在对话里说「继续完善」即可逐步补全（适合复杂/不确定需求）'}>
+      <Field label="生成方式" hint={genDepth === 'full' ? '一次性生成完整版本（推荐）' : '先生成最小骨架，之后说「继续完善」逐步补全'}>
         <div className="inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/70">
           <ModeBtn active={genDepth === 'full'} disabled={disabled} onClick={() => setGenDepth('full')} icon={<Rocket size={14} />} label="完整实现" />
           <ModeBtn active={genDepth === 'minimal'} disabled={disabled} onClick={() => setGenDepth('minimal')} icon={<Lightbulb size={14} />} label="最小可跑" />
         </div>
       </Field>
 
-      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-[12px] text-slate-600 dark:text-slate-300 flex items-start gap-2 leading-relaxed">
-        <Sparkles size={15} className="text-emerald-500 shrink-0 mt-0.5" />
-        <span>
-          {isEdit
-            ? '选好上面的插件后，在对话框直接说要改什么（例如「界面改成暗色，并加一个复制按钮」），我会读懂代码再改写。'
-            : '设好目标目录与生成方式后，在对话框用一句话描述你想要的插件，我会先帮你想几个方向，挑一个就开始生成。'}
-        </span>
-      </div>
-
-      <button className="text-xs text-slate-400 dark:text-slate-500 flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-300" onClick={() => setShowAdvanced(!showAdvanced)}>
-        <Settings2 size={13} /> 关于流程
-      </button>
-      {showAdvanced && (
-        <div className="text-[12px] text-slate-500 dark:text-slate-400 rounded-lg border border-slate-200 dark:border-slate-700 p-3 leading-relaxed">
-          下一步会生成一份可编辑的「契约」（功能/触发词/模式/权限），确认后由本工具确定性写出 manifest.json，再让 AI 实现代码并立即构建载入。生成方式为「完整实现」时一次性产出可用版本；「最小可跑」则先产出最小骨架，之后在对话里继续描述需求即可逐步完善（构建若没通过可一键「AI 修复」，也能「打开调试」）。
-        </div>
-      )}
     </div>
   )
 }
@@ -2684,7 +2663,6 @@ function DeliverStage({
             <button className="btn-secondary" onClick={onOpenDir}><FolderOpen size={15} /> 打开目录</button>
             <button className="btn-ghost" onClick={onRebuild} disabled={building}><Hammer size={15} /> 重新构建</button>
           </div>
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">「打开 / 试用 / 打包」已收进对话栏顶部的状态条，可随时操作；想继续完善，直接在对话里说「帮我改…」即可。</p>
           {smoke.length > 0 && <SmokeList smoke={smoke} />}
         </div>
       )}
@@ -2701,7 +2679,6 @@ function DeliverStage({
               <button className="btn-secondary shrink-0" onClick={onEnableDevtools} disabled={devtoolsBusy}>{devtoolsBusy ? <Loader2 size={14} className="animate-spin" /> : <Bug size={14} />} 开启 DevTools</button>
             </div>
           )}
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">改完代码点「重新构建」即热载入；点「打开插件」复现问题，在 DevTools 控制台看运行错误。</p>
         </div>
       )}
 

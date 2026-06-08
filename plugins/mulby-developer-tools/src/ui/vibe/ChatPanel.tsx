@@ -173,12 +173,11 @@ export function ChatPanel({
           {allMessages.length === 0 ? (
             <div className="space-y-3">
               <div className="text-[11px] text-slate-400 dark:text-slate-500 leading-relaxed">
-                在这里用大白话和 AI 对话：可以<strong className="text-slate-500 dark:text-slate-300">提问</strong>（只看代码、不改动），
-                也可以说<strong className="text-slate-500 dark:text-slate-300">「帮我改…」</strong>让 AI 修改。
+                用大白话描述你想要的插件，或问我项目情况。
               </div>
               {examples && examples.length > 0 && (
                 <div className="space-y-1.5">
-                  <div className="text-[10px] text-slate-400 dark:text-slate-500">试试这些（点一下直接发）：</div>
+                  <div className="text-[10px] text-slate-400 dark:text-slate-500">试试：</div>
                   <div className="flex flex-wrap gap-1.5">
                     {examples.map((ex) => (
                       <button
@@ -313,7 +312,7 @@ export function ChatPanel({
                     </button>
                   </div>
                   {plan && plan.some((t) => t.status === 'done' || t.status === 'failed') && (
-                    <div className="mt-1.5 text-[10px] text-slate-400 dark:text-slate-500">上次未跑完，点「继续执行」或在下方输入「继续」即可接着完成。</div>
+                    <div className="mt-1.5 text-[10px] text-slate-400 dark:text-slate-500">上次未跑完，点「继续执行」接着完成。</div>
                   )}
                 </>
               )}
@@ -372,7 +371,7 @@ export function ChatPanel({
           )}
         </div>
         <div className="px-3 pb-1.5 text-[10px] text-slate-400 dark:text-slate-500">
-          ⌘/Ctrl + Enter 发送 · 提问只读不改码，说「改/修复」才动手
+          ⌘/Ctrl + Enter 发送
         </div>
       </div>
     </div>
