@@ -2,7 +2,7 @@
 // filtering, and flattening the loaded/expanded tree into the ordered list of
 // visible rows the virtualized renderer consumes. No React, no filesystem.
 
-import { isMarkdownFile, naturalCompare } from './filePath'
+import { basename, isMarkdownFile, naturalCompare } from './filePath'
 
 /** A raw directory entry as returned by the fs bridge (window.mdeFs.list). */
 export interface FsEntry {
@@ -21,6 +21,8 @@ export interface TreeRow {
   /** Directories always show a twistie (children are lazy-loaded on expand). */
   hasChildren: boolean
   expanded: boolean
+  /** True for a workspace-root header row (multi-root explorer). */
+  isRoot?: boolean
 }
 
 /** Loaded children keyed by their parent directory path. */
@@ -65,11 +67,34 @@ export function prepareChildren(entries: FsEntry[], options: FlattenOptions): Fs
 }
 
 /**
- * Walk the loaded tree from `rootPath`, emitting a visible row for every entry
- * whose ancestors are all expanded. Unloaded or collapsed directories simply
- * contribute their own row without descending. Recursion is bounded by the
- * loaded data, so cycles are impossible.
+ * Walk a directory's loaded/expanded subtree, pushing a row for every entry
+ * whose ancestors are all expanded. Unloaded or collapsed directories contribute
+ * only their own row. Recursion is bounded by the loaded data, so cycles are
+ * impossible.
  */
+function walkDir(
+  dir: string,
+  depth: number,
+  childrenByDir: ChildrenByDir,
+  expanded: ReadonlySet<string>,
+  options: FlattenOptions,
+  rows: TreeRow[]
+): void {
+  const raw = childrenByDir[dir]
+  if (!raw) {
+    return
+  }
+  const visible = prepareChildren(raw, options)
+  for (const entry of visible) {
+    const isExpanded = entry.isDirectory && expanded.has(entry.path)
+    rows.push({ entry, depth, hasChildren: entry.isDirectory, expanded: isExpanded })
+    if (isExpanded) {
+      walkDir(entry.path, depth + 1, childrenByDir, expanded, options, rows)
+    }
+  }
+}
+
+/** Flatten a single root's subtree from depth 0 (root itself is not a row). */
 export function flattenTree(
   rootPath: string,
   childrenByDir: ChildrenByDir,
@@ -77,28 +102,35 @@ export function flattenTree(
   options: FlattenOptions
 ): TreeRow[] {
   const rows: TreeRow[] = []
+  walkDir(rootPath, 0, childrenByDir, expanded, options, rows)
+  return rows
+}
 
-  const walk = (dir: string, depth: number) => {
-    const raw = childrenByDir[dir]
-    if (!raw) {
-      return
-    }
-    const visible = prepareChildren(raw, options)
-    for (const entry of visible) {
-      const isExpanded = entry.isDirectory && expanded.has(entry.path)
-      rows.push({
-        entry,
-        depth,
-        hasChildren: entry.isDirectory,
-        expanded: isExpanded
-      })
-      if (isExpanded) {
-        walk(entry.path, depth + 1)
-      }
+/**
+ * Flatten multiple workspace roots into one ordered row list: each root emits a
+ * collapsible header row (depth 0, `isRoot`), and when expanded its subtree
+ * follows at depth 1+. Drives the multi-root explorer's unified virtualized list.
+ */
+export function flattenRoots(
+  roots: string[],
+  childrenByDir: ChildrenByDir,
+  expanded: ReadonlySet<string>,
+  options: FlattenOptions
+): TreeRow[] {
+  const rows: TreeRow[] = []
+  for (const root of roots) {
+    const rootExpanded = expanded.has(root)
+    rows.push({
+      entry: { name: basename(root), path: root, isDirectory: true, isFile: false },
+      depth: 0,
+      hasChildren: true,
+      expanded: rootExpanded,
+      isRoot: true
+    })
+    if (rootExpanded) {
+      walkDir(root, 1, childrenByDir, expanded, options, rows)
     }
   }
-
-  walk(rootPath, 0)
   return rows
 }
 

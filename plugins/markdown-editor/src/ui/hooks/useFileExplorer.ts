@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ancestorsWithin,
-  flattenTree,
+  flattenRoots,
   type ChildrenByDir,
   type FsEntry,
   type TreeRow
@@ -21,6 +21,8 @@ import {
 } from '../services/filePath'
 import { getFsBridge, isFsBridgeAvailable } from '../services/fsBridge'
 
+const STORAGE_FM_ROOTS = 'fm:markdown-editor:roots:v1'
+// Legacy single-root key (pre multi-root); migrated into STORAGE_FM_ROOTS on load.
 const STORAGE_FM_ROOT = 'fm:markdown-editor:root:v1'
 const STORAGE_FM_EXPANDED = 'fm:markdown-editor:expanded:v1'
 const STORAGE_FM_RECENTS = 'fm:markdown-editor:recents:v1'
@@ -63,23 +65,28 @@ interface ExplorerDeps {
   dialog: ExplorerDialog
   notification: ExplorerNotification
   clipboard: ExplorerClipboard
+  /**
+   * A workspace root that is always shown first and cannot be removed (used for
+   * the auto-draft folder). Provided once it has been resolved + created.
+   */
+  pinnedRoot?: string | null
   /** Called after a rename so the editor can re-bind the active file path. */
   onFileRenamed?: (oldPath: string, newPath: string) => void
   /** Called after a delete so the editor can detach if the active file went away. */
   onFileDeleted?: (path: string) => void
 }
 
-function firstDirFromDialog(result: unknown): string | undefined {
-  if (Array.isArray(result) && typeof result[0] === 'string') {
-    return result[0]
+function dirsFromDialog(result: unknown): string[] {
+  if (Array.isArray(result)) {
+    return result.filter((p): p is string => typeof p === 'string')
   }
   if (result && typeof result === 'object' && 'filePaths' in result) {
     const paths = (result as { filePaths?: string[] }).filePaths
-    if (Array.isArray(paths) && typeof paths[0] === 'string') {
-      return paths[0]
+    if (Array.isArray(paths)) {
+      return paths.filter((p): p is string => typeof p === 'string')
     }
   }
-  return undefined
+  return []
 }
 
 /** Transient inline rename / create-input state shown in the tree. */
@@ -101,7 +108,10 @@ export interface ClipEntry {
 
 export interface FileExplorerState {
   available: boolean
-  rootPath: string | null
+  /** All workspace roots in display order (the pinned drafts root comes first). */
+  roots: string[]
+  /** The non-removable pinned root (auto-draft folder), or null. */
+  pinnedRoot: string | null
   rows: TreeRow[]
   recents: RecentEntry[]
   loading: boolean
@@ -111,7 +121,7 @@ export interface FileExplorerState {
   openRootPath: (path: string) => Promise<void>
   toggleDir: (path: string) => Promise<void>
   refresh: () => Promise<void>
-  closeFolder: () => void
+  removeRoot: (path: string) => void
   noteRecentFile: (path: string) => void
   removeRecent: (path: string) => void
   clearRecents: () => void
@@ -145,11 +155,14 @@ export function useFileExplorer({
   dialog,
   notification,
   clipboard,
+  pinnedRoot = null,
   onFileRenamed,
   onFileDeleted
 }: ExplorerDeps): FileExplorerState {
   const [available] = useState(() => isFsBridgeAvailable())
-  const [rootPath, setRootPath] = useState<string | null>(null)
+  // User-added workspace roots (persisted). The pinned root is layered on top at
+  // render time so it's never persisted as a user root (its path is host-derived).
+  const [userRoots, setUserRoots] = useState<string[]>([])
   const [childrenByDir, setChildrenByDir] = useState<ChildrenByDir>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [recents, setRecents] = useState<RecentEntry[]>([])
@@ -159,6 +172,12 @@ export function useFileExplorer({
   // P1 ships markdown-only per product decision; kept as state for a future toggle.
   const [showOnlyMarkdown] = useState(true)
 
+  // Display roots: the pinned drafts root first, then user roots (deduped).
+  const roots = useMemo(
+    () => (pinnedRoot ? [pinnedRoot, ...userRoots.filter((r) => r !== pinnedRoot)] : userRoots),
+    [pinnedRoot, userRoots]
+  )
+
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
   const recentsRef = useRef(recents)
@@ -167,6 +186,12 @@ export function useFileExplorer({
   clipRef.current = clip
   const childrenByDirRef = useRef(childrenByDir)
   childrenByDirRef.current = childrenByDir
+  const userRootsRef = useRef(userRoots)
+  userRootsRef.current = userRoots
+  const rootsRef = useRef(roots)
+  rootsRef.current = roots
+  const pinnedRootRef = useRef(pinnedRoot)
+  pinnedRootRef.current = pinnedRoot
   const watchersRef = useRef<Map<string, () => void>>(new Map())
 
   const persistExpanded = useCallback(
@@ -179,6 +204,13 @@ export function useFileExplorer({
   const persistRecents = useCallback(
     (next: RecentEntry[]) => {
       void storage.set(STORAGE_FM_RECENTS, next).catch(() => undefined)
+    },
+    [storage]
+  )
+
+  const persistRoots = useCallback(
+    (next: string[]) => {
+      void storage.set(STORAGE_FM_ROOTS, next).catch(() => undefined)
     },
     [storage]
   )
@@ -218,23 +250,40 @@ export function useFileExplorer({
     [persistRecents]
   )
 
-  const openRootPath = useCallback(
+  // Add a workspace root (idempotent). Expands + lazily loads it. The pinned
+  // drafts root is managed separately, so adding it here is a no-op.
+  const addRoot = useCallback(
     async (path: string) => {
+      if (!isFsBridgeAvailable() || path === pinnedRootRef.current) {
+        return
+      }
+      if (userRootsRef.current.includes(path)) {
+        const next = new Set(expandedRef.current)
+        next.add(path)
+        setExpanded(next)
+        persistExpanded(next)
+        return
+      }
       setLoading(true)
       try {
-        setRootPath(path)
-        setExpanded(new Set())
-        setChildrenByDir({})
+        const nextRoots = [...userRootsRef.current, path]
+        setUserRoots(nextRoots)
+        persistRoots(nextRoots)
+        const nextExpanded = new Set(expandedRef.current)
+        nextExpanded.add(path)
+        setExpanded(nextExpanded)
+        persistExpanded(nextExpanded)
         await loadDir(path)
-        void storage.set(STORAGE_FM_ROOT, path).catch(() => undefined)
-        void storage.set(STORAGE_FM_EXPANDED, []).catch(() => undefined)
         noteRecentFolder(path)
       } finally {
         setLoading(false)
       }
     },
-    [loadDir, noteRecentFolder, storage]
+    [loadDir, noteRecentFolder, persistExpanded, persistRoots]
   )
+
+  // Recent-folder click reuses addRoot (opens the folder as a root if not open).
+  const openRootPath = addRoot
 
   const openFolder = useCallback(async () => {
     if (!available) {
@@ -243,19 +292,19 @@ export function useFileExplorer({
     }
     try {
       const result = await dialog.showOpenDialog({
-        title: '打开文件夹',
-        properties: ['openDirectory']
+        title: '添加文件夹到工作区',
+        properties: ['openDirectory', 'multiSelections']
       })
-      const dir = firstDirFromDialog(result)
-      if (!dir) {
-        return
+      const dirs = dirsFromDialog(result)
+      for (const dir of dirs) {
+        // eslint-disable-next-line no-await-in-loop
+        await addRoot(dir)
       }
-      await openRootPath(dir)
     } catch (error) {
       console.error('[markdown-editor] openFolder', error)
       notification.show('打开文件夹失败', 'error')
     }
-  }, [available, dialog, notification, openRootPath])
+  }, [addRoot, available, dialog, notification])
 
   const toggleDir = useCallback(
     async (path: string) => {
@@ -278,26 +327,18 @@ export function useFileExplorer({
   )
 
   const refresh = useCallback(async () => {
-    if (!rootPath) {
+    if (rootsRef.current.length === 0) {
       return
     }
     setLoading(true)
     try {
-      // Re-list the root plus every currently-loaded directory still in the tree.
-      const dirs = [rootPath, ...Object.keys(childrenByDir).filter((d) => d !== rootPath)]
+      // Re-list every root plus every currently-loaded directory still in the tree.
+      const dirs = Array.from(new Set([...rootsRef.current, ...Object.keys(childrenByDirRef.current)]))
       await Promise.all(dirs.map((dir) => loadDir(dir)))
     } finally {
       setLoading(false)
     }
-  }, [childrenByDir, loadDir, rootPath])
-
-  const closeFolder = useCallback(() => {
-    setRootPath(null)
-    setChildrenByDir({})
-    setExpanded(new Set())
-    void storage.remove(STORAGE_FM_ROOT).catch(() => undefined)
-    void storage.remove(STORAGE_FM_EXPANDED).catch(() => undefined)
-  }, [storage])
+  }, [loadDir])
 
   const removeRecent = useCallback(
     (path: string) => {
@@ -336,20 +377,40 @@ export function useFileExplorer({
     })
   }, [])
 
+  // Remove a user root from the workspace (the pinned drafts root can't be
+  // removed). Only detaches it from the explorer — the folder stays on disk.
+  const removeRoot = useCallback(
+    (path: string) => {
+      if (path === pinnedRootRef.current) {
+        notification.show('草稿文件夹不可移除', 'info')
+        return
+      }
+      if (!userRootsRef.current.includes(path)) {
+        return
+      }
+      const next = userRootsRef.current.filter((root) => root !== path)
+      setUserRoots(next)
+      persistRoots(next)
+      pruneUnder(path)
+    },
+    [notification, persistRoots, pruneUnder]
+  )
+
   const beginCreate = useCallback(
     async (kind: 'file' | 'folder', dir?: string) => {
-      const parentDir = dir ?? rootPath
+      // Default target: the first user root (your project), else the drafts root.
+      const parentDir = dir ?? userRootsRef.current[0] ?? pinnedRootRef.current ?? null
       if (!parentDir) {
         return
       }
       // Ensure the target directory is expanded + loaded so the inline input shows.
-      if (parentDir !== rootPath && !expandedRef.current.has(parentDir)) {
+      if (!expandedRef.current.has(parentDir)) {
         const next = new Set(expandedRef.current)
         next.add(parentDir)
         setExpanded(next)
         persistExpanded(next)
       }
-      if (parentDir !== rootPath && !childrenByDir[parentDir]) {
+      if (!childrenByDirRef.current[parentDir]) {
         await loadDir(parentDir)
       }
       setInlineEdit({
@@ -358,7 +419,7 @@ export function useFileExplorer({
         initialName: ''
       })
     },
-    [childrenByDir, loadDir, persistExpanded, rootPath]
+    [loadDir, persistExpanded]
   )
 
   const beginRename = useCallback((entry: FsEntry) => {
@@ -586,27 +647,27 @@ export function useFileExplorer({
   )
 
   const collapseAll = useCallback(() => {
-    const empty = new Set<string>()
-    setExpanded(empty)
-    persistExpanded(empty)
+    // Keep root headers expanded; collapse every nested folder.
+    const next = new Set(rootsRef.current)
+    setExpanded(next)
+    persistExpanded(next)
   }, [persistExpanded])
 
-  // Expand every ancestor of `path` (loading them as needed) so the file becomes
-  // visible in the tree; the component then scrolls it into view.
+  // Expand the owning root + every ancestor of `path` (loading them as needed) so
+  // the file becomes visible in the tree; the component then scrolls it into view.
   const revealPath = useCallback(
     async (path: string) => {
-      if (!rootPath) {
+      const owner = rootsRef.current.find(
+        (root) => root === path || ancestorsWithin(root, path).length > 0
+      )
+      if (!owner) {
         return
       }
-      const ancestors = ancestorsWithin(rootPath, path)
-      if (ancestors.length === 0) {
-        return
-      }
+      const ancestors = ancestorsWithin(owner, path)
       const next = new Set(expandedRef.current)
+      next.add(owner)
       for (const dir of ancestors) {
-        if (dir !== rootPath) {
-          next.add(dir)
-        }
+        next.add(dir)
         if (!childrenByDirRef.current[dir]) {
           // eslint-disable-next-line no-await-in-loop
           await loadDir(dir)
@@ -615,10 +676,11 @@ export function useFileExplorer({
       setExpanded(next)
       persistExpanded(next)
     },
-    [loadDir, persistExpanded, rootPath]
+    [loadDir, persistExpanded]
   )
 
-  // Restore persisted root + expanded set + recents on mount.
+  // Restore persisted roots + expanded set + recents on mount, migrating the old
+  // single-root key into the roots array.
   useEffect(() => {
     if (!available) {
       return
@@ -626,7 +688,8 @@ export function useFileExplorer({
     let cancelled = false
     void (async () => {
       try {
-        const [savedRoot, savedExpanded, savedRecents] = await Promise.all([
+        const [savedRoots, savedRootLegacy, savedExpanded, savedRecents] = await Promise.all([
+          storage.get(STORAGE_FM_ROOTS),
           storage.get(STORAGE_FM_ROOT),
           storage.get(STORAGE_FM_EXPANDED),
           storage.get(STORAGE_FM_RECENTS)
@@ -636,30 +699,43 @@ export function useFileExplorer({
         }
         setRecents(normalizeRecent(savedRecents))
 
-        if (typeof savedRoot === 'string' && savedRoot) {
-          const bridge = getFsBridge()
-          const exists = await bridge.exists(savedRoot)
-          if (cancelled || !exists) {
-            return
-          }
-          setRootPath(savedRoot)
-          await loadDir(savedRoot)
-          // Restore expanded dirs that still exist, loading their children.
-          if (Array.isArray(savedExpanded)) {
-            const dirs = savedExpanded.filter((d): d is string => typeof d === 'string')
-            const restored = new Set<string>()
-            await Promise.all(
-              dirs.map(async (dir) => {
-                if (await bridge.exists(dir)) {
-                  restored.add(dir)
-                  await loadDir(dir)
-                }
-              })
-            )
-            if (!cancelled) {
-              setExpanded(restored)
-            }
-          }
+        const migrating = !Array.isArray(savedRoots)
+        let initial: string[] = []
+        if (Array.isArray(savedRoots)) {
+          initial = savedRoots.filter((r): r is string => typeof r === 'string')
+        } else if (typeof savedRootLegacy === 'string' && savedRootLegacy) {
+          initial = [savedRootLegacy]
+        }
+        if (initial.length === 0) {
+          return
+        }
+        const bridge = getFsBridge()
+        const exists = await Promise.all(initial.map((r) => bridge.exists(r).catch(() => false)))
+        if (cancelled) {
+          return
+        }
+        const live = initial.filter((_, i) => exists[i])
+        setUserRoots(live)
+        if (migrating || live.length !== initial.length) {
+          persistRoots(live)
+        }
+        await Promise.all(live.map((r) => loadDir(r)))
+        // Roots expand by default; restore any still-existing expanded subdirs.
+        const restored = new Set<string>(live)
+        if (Array.isArray(savedExpanded)) {
+          const dirs = savedExpanded.filter((d): d is string => typeof d === 'string')
+          await Promise.all(
+            dirs.map(async (dir) => {
+              if (await bridge.exists(dir).catch(() => false)) {
+                restored.add(dir)
+                await loadDir(dir)
+              }
+            })
+          )
+        }
+        if (!cancelled) {
+          // Merge so a pinned-root effect that already ran isn't clobbered.
+          setExpanded((prev) => new Set([...prev, ...restored]))
         }
       } catch (error) {
         console.error('[markdown-editor] restore explorer', error)
@@ -668,7 +744,43 @@ export function useFileExplorer({
     return () => {
       cancelled = true
     }
-  }, [available, loadDir, storage])
+  }, [available, loadDir, persistRoots, storage])
+
+  // Ensure the pinned drafts root is present (created, loaded, expanded) once its
+  // path is provided. Never persisted as a user root — it's re-added every run.
+  useEffect(() => {
+    if (!available || !pinnedRoot) {
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const bridge = getFsBridge()
+        await bridge.mkdir(pinnedRoot)
+        if (cancelled) {
+          return
+        }
+        if (!childrenByDirRef.current[pinnedRoot]) {
+          await loadDir(pinnedRoot)
+        }
+        if (!cancelled) {
+          setExpanded((prev) => {
+            if (prev.has(pinnedRoot)) {
+              return prev
+            }
+            const next = new Set(prev)
+            next.add(pinnedRoot)
+            return next
+          })
+        }
+      } catch (error) {
+        console.error('[markdown-editor] pinned root', error)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [available, loadDir, pinnedRoot])
 
   // Watch all loaded directories so external file changes refresh the tree.
   // Keyed by the SET of loaded dirs so value-only refreshes don't churn watchers.
@@ -708,13 +820,14 @@ export function useFileExplorer({
   )
 
   const rows = useMemo(
-    () => (rootPath ? flattenTree(rootPath, childrenByDir, expanded, { showOnlyMarkdown }) : []),
-    [rootPath, childrenByDir, expanded, showOnlyMarkdown]
+    () => flattenRoots(roots, childrenByDir, expanded, { showOnlyMarkdown }),
+    [roots, childrenByDir, expanded, showOnlyMarkdown]
   )
 
   return {
     available,
-    rootPath,
+    roots,
+    pinnedRoot,
     rows,
     recents,
     loading,
@@ -724,7 +837,7 @@ export function useFileExplorer({
     openRootPath,
     toggleDir,
     refresh,
-    closeFolder,
+    removeRoot,
     noteRecentFile,
     removeRecent,
     clearRecents,

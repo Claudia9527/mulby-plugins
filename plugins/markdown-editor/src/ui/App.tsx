@@ -50,6 +50,7 @@ import {
 } from './services/tabs'
 import { normalizeSession, serializeSession, type PersistedSession } from './services/session'
 import { getFsBridge, isFsBridgeAvailable } from './services/fsBridge'
+import { isSameOrInside } from './services/filePath'
 import { FileExplorer } from './components/FileExplorer'
 import { TabBar } from './components/TabBar'
 import { FindReplaceBar, type FindReplaceMode } from './components/FindReplaceBar'
@@ -117,6 +118,38 @@ const STORAGE_AI_IMAGE_MODEL_KEY = 'ai:markdown-editor:image-model:v1'
 const STORAGE_AI_IMAGE_HISTORY_KEY = 'ai:markdown-editor:image-history:v1'
 const STORAGE_LEFT_TAB_KEY = 'ui:markdown-editor:left-tab:v1'
 const IMAGE_HISTORY_DIRNAME = 'gen-history'
+// Auto-draft folder: untitled tabs with content are promoted to real .md files
+// here so casual notes are findable in the file manager and never lost.
+const DRAFTS_DIRNAME = 'drafts'
+
+/** Compact local timestamp (YYYYMMDD-HHmmss) for fallback draft file names. */
+function draftStamp(): string {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+}
+
+/**
+ * Derive a draft file name from the document's first non-empty line (heading /
+ * list markers stripped, illegal chars removed, truncated), falling back to a
+ * timestamp. Uniqueness is handled by the fs bridge's createFile.
+ */
+function draftFileName(text: string): string {
+  const firstLine = text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0) ?? ''
+  const cleaned = firstLine
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^>\s*/, '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40)
+    .trim()
+  return `${cleaned || `未命名-${draftStamp()}`}.md`
+}
 
 /** A document offset range in the CodeMirror editor. */
 interface EditorRange {
@@ -366,7 +399,11 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   // Right-click menu for a specific tab (close / close others / close all / …).
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
+  // Auto-draft folder path (under userData), resolved once the fs bridge is ready.
+  const [draftsDir, setDraftsDir] = useState<string | null>(null)
   const menuTargetRef = useRef<EditorNodeContext | null>(null)
+  // Tab ids currently being promoted to a drafts file (guards against re-entry).
+  const promotingRef = useRef<Set<string>>(new Set())
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<LiveMarkdownEditorHandle | null>(null)
   const contentRef = useRef('')
@@ -721,6 +758,7 @@ export default function App() {
     dialog,
     notification,
     clipboard,
+    pinnedRoot: draftsDir,
     onFileRenamed: handleFilePathRenamed,
     onFileDeleted: handleFilePathDeleted
   })
@@ -729,6 +767,97 @@ export default function App() {
   activeFilePathRef.current = activeFilePath
   aiOpenRef.current = aiOpen
   imageHistoryMapRef.current = imageHistoryMap
+
+  // Resolve + create the auto-draft folder under userData once the fs bridge is
+  // ready, so untitled tabs can be promoted to real files there.
+  useEffect(() => {
+    if (!isFsBridgeAvailable()) {
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const userData = await system.getPath('userData')
+        if (!userData || cancelled) {
+          return
+        }
+        const dir = `${userData.replace(/[/\\]+$/, '')}/${PLUGIN_ID}/${DRAFTS_DIRNAME}`
+        await getFsBridge().mkdir(dir)
+        if (!cancelled) {
+          setDraftsDir(dir)
+        }
+      } catch (error) {
+        console.error('[markdown-editor] draftsDir', error)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [system])
+
+  // Auto-draft: promote the active untitled tab (once it has real content) into a
+  // real .md in the drafts folder, then keep that draft file in sync on disk as
+  // the user edits. Only drafts auto-save; user-folder files still need a save.
+  const syncActiveDraft = useCallback(async () => {
+    const dir = draftsDir
+    if (!dir || !isFsBridgeAvailable()) {
+      return
+    }
+    const editor = editorRef.current
+    const activeId = activeTabIdRef.current
+    const tab = tabsRef.current.find((item) => item.id === activeId)
+    if (!tab) {
+      return
+    }
+    const text = editor?.getValue() ?? tab.content
+    if (!tab.filePath) {
+      if (!text.trim() || promotingRef.current.has(tab.id)) {
+        return
+      }
+      promotingRef.current.add(tab.id)
+      try {
+        const path = await getFsBridge().createFile(dir, draftFileName(text), text)
+        setTabs((prev) =>
+          prev.map((item) =>
+            item.id === tab.id ? { ...item, filePath: path, savedContent: text, savedAt: Date.now() } : item
+          )
+        )
+        void explorer.revealPath(path)
+      } catch (error) {
+        console.error('[markdown-editor] promote draft', error)
+      } finally {
+        promotingRef.current.delete(tab.id)
+      }
+      return
+    }
+    // Keep an already-promoted draft file current on disk as the user edits.
+    if (isSameOrInside(dir, tab.filePath) && text !== tab.savedContent) {
+      try {
+        await getFsBridge().writeText(tab.filePath, text)
+        setTabs((prev) =>
+          prev.map((item) =>
+            item.id === tab.id ? { ...item, savedContent: text, savedAt: Date.now() } : item
+          )
+        )
+      } catch (error) {
+        console.error('[markdown-editor] sync draft', error)
+      }
+    }
+  }, [activeTabIdRef, draftsDir, explorer, setTabs, tabsRef])
+
+  // Debounced draft sync (runs after the session autosave tick).
+  useEffect(() => {
+    if (!hydrated || hasInitPayloadRef.current || !draftsDir) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void syncActiveDraft()
+    }, 1200)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [activeTabId, content, draftsDir, hydrated, syncActiveDraft])
+
   const outlineEntries = useMemo(() => parseOutline(content), [content])
   const searchMatches = useMemo<SearchMatch[]>(
     () => (findOpen && findQuery ? findMatches(content, findQuery, { caseSensitive: findCaseSensitive, wholeWord: findWholeWord }) : []),

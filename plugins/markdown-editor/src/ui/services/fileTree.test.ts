@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   ancestorsWithin,
   filterEntries,
+  flattenRoots,
   flattenTree,
   prepareChildren,
   sortEntries,
@@ -84,5 +85,35 @@ assert.deepEqual(
 // ancestorsWithin: directories to expand to reveal a deep file.
 assert.deepEqual(ancestorsWithin('/r', '/r/docs/sub/deep.md'), ['/r', '/r/docs', '/r/docs/sub'])
 assert.deepEqual(ancestorsWithin('/r', '/other/x.md'), [])
+
+// --- flattenRoots (multi-root explorer) ---
+const multiChildren: ChildrenByDir = {
+  '/a': [dir('/a/docs'), file('/a/one.md')],
+  '/a/docs': [file('/a/docs/guide.md')],
+  '/b': [file('/b/two.md')]
+}
+
+// Collapsed roots show only their header rows (isRoot, depth 0).
+const rootsCollapsed = flattenRoots(['/a', '/b'], multiChildren, new Set(), opts)
+assert.deepEqual(
+  rootsCollapsed.map((r) => `${r.depth}:${r.entry.name}:${r.isRoot ? 'root' : 'entry'}`),
+  ['0:a:root', '0:b:root']
+)
+
+// Expanding a root reveals its children at depth 1; nested dir stays collapsed.
+const rootAOpen = flattenRoots(['/a', '/b'], multiChildren, new Set(['/a']), opts)
+assert.deepEqual(
+  rootAOpen.map((r) => `${r.depth}:${r.entry.name}`),
+  ['0:a', '1:docs', '1:one.md', '0:b']
+)
+
+// Expanding a root + a nested dir, with the second root still collapsed.
+const deepOpen = flattenRoots(['/a', '/b'], multiChildren, new Set(['/a', '/a/docs']), opts)
+assert.deepEqual(
+  deepOpen.map((r) => `${r.depth}:${r.entry.name}`),
+  ['0:a', '1:docs', '2:guide.md', '1:one.md', '0:b']
+)
+assert.equal(deepOpen[0].isRoot, true)
+assert.equal(deepOpen[1].isRoot, undefined)
 
 console.log('markdown-editor fileTree unit tests passed')

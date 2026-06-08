@@ -93,7 +93,9 @@ function InlineNameInput({
  */
 export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorerProps) {
   const [recentOpen, setRecentOpen] = useState(true)
-  const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null; isRoot: boolean } | null>(
+    null
+  )
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const [focusedPath, setFocusedPath] = useState<string | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
@@ -104,7 +106,9 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
 
   const edit = state.inlineEdit
   const rows = state.rows
-  const rootPath = state.rootPath
+  const roots = state.roots
+  const pinnedRoot = state.pinnedRoot
+  const hasRoots = roots.length > 0
 
   // Measure the scroll viewport so virtualization knows how many rows fit.
   useEffect(() => {
@@ -116,7 +120,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     const ro = new ResizeObserver(() => setViewportH(el.clientHeight))
     ro.observe(el)
     return () => ro.disconnect()
-  }, [rootPath])
+  }, [hasRoots])
 
   // Keep keyboard focus aligned with the active file when it changes externally.
   useEffect(() => {
@@ -151,7 +155,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
 
   const createDirFor = (entry: FsEntry | null): string | undefined => {
     if (!entry) {
-      return rootPath ?? undefined
+      return undefined // let the hook pick the default root
     }
     return entry.isDirectory ? entry.path : dirname(entry.path)
   }
@@ -167,8 +171,23 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     return !(src.isDirectory && isSameOrInside(src.path, destDir))
   }
 
-  const buildMenu = (entry: FsEntry | null): MenuItem[] => {
+  const buildMenu = (entry: FsEntry | null, isRoot: boolean): MenuItem[] => {
     const items: MenuItem[] = []
+    // Root header: workspace-level actions only (no cut/copy/rename/delete).
+    if (isRoot && entry) {
+      items.push({ id: 'new-file', label: '新建文件' })
+      items.push({ id: 'new-folder', label: '新建文件夹' })
+      items.push({ id: 'paste', label: '粘贴', disabled: !state.clip })
+      items.push({ id: 'sep-sys', separator: true })
+      items.push({ id: 'reveal', label: '在系统中显示' })
+      items.push({ id: 'copy-path', label: '复制路径' })
+      items.push({ id: 'refresh', label: '刷新' })
+      if (entry.path !== pinnedRoot) {
+        items.push({ id: 'sep-root', separator: true })
+        items.push({ id: 'remove-root', label: '从工作区移除', danger: true })
+      }
+      return items
+    }
     if (entry && !entry.isDirectory) {
       items.push({ id: 'open', label: '打开' })
       items.push({ id: 'sep-open', separator: true })
@@ -219,7 +238,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         if (entry) void state.duplicateEntry(entry)
         break
       case 'paste': {
-        const dir = entry ? (entry.isDirectory ? entry.path : dirname(entry.path)) : rootPath
+        const dir = entry ? (entry.isDirectory ? entry.path : dirname(entry.path)) : roots[0]
         if (dir) void state.pasteInto(dir)
         break
       }
@@ -229,13 +248,16 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
       case 'delete':
         if (entry) void state.deleteEntry(entry)
         break
+      case 'remove-root':
+        if (entry) state.removeRoot(entry.path)
+        break
       case 'reveal': {
-        const target = entry?.path ?? rootPath
+        const target = entry?.path ?? roots[0]
         if (target) void state.reveal(target)
         break
       }
       case 'copy-path': {
-        const target = entry?.path ?? rootPath
+        const target = entry?.path ?? roots[0]
         if (target) void state.copyPath(target)
         break
       }
@@ -247,10 +269,10 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     }
   }
 
-  const openMenu = (e: React.MouseEvent, entry: FsEntry | null) => {
+  const openMenu = (e: React.MouseEvent, entry: FsEntry | null, isRoot = false) => {
     e.preventDefault()
     e.stopPropagation()
-    setMenu({ x: e.clientX, y: e.clientY, entry })
+    setMenu({ x: e.clientX, y: e.clientY, entry, isRoot })
   }
 
   // ── Keyboard navigation (roving focus on the tree) ─────────────────────
@@ -351,10 +373,13 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
   }
 
   const renderRow = (row: TreeRow): ReactNode => {
+    const isRoot = !!row.isRoot
+    const isPinned = isRoot && row.entry.path === pinnedRoot
     const isRenaming = edit?.mode === 'rename' && edit.targetPath === row.entry.path
     const isActive = !row.entry.isDirectory && row.entry.path === activeFilePath
     const isFocused = row.entry.path === focusedPath
     const isCut = state.clip?.op === 'cut' && state.clip.path === row.entry.path
+    const label = isPinned ? '草稿' : row.entry.name
     return (
       <div
         key={row.entry.path}
@@ -362,21 +387,27 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         aria-level={row.depth + 1}
         aria-expanded={row.hasChildren ? row.expanded : undefined}
         aria-selected={isActive}
-        className={`fm-row ${isActive ? 'active' : ''} ${isFocused ? 'fm-focused' : ''} ${
-          row.entry.isDirectory ? 'is-dir' : 'is-file'
-        } ${dropTarget === row.entry.path ? 'fm-drop-target' : ''} ${isCut ? 'fm-cut' : ''}`}
+        className={`fm-row ${isRoot ? 'fm-root-row' : ''} ${isPinned ? 'fm-pinned-root' : ''} ${
+          isActive ? 'active' : ''
+        } ${isFocused ? 'fm-focused' : ''} ${row.entry.isDirectory ? 'is-dir' : 'is-file'} ${
+          dropTarget === row.entry.path ? 'fm-drop-target' : ''
+        } ${isCut ? 'fm-cut' : ''}`}
         style={{ paddingLeft: INDENT_BASE + row.depth * INDENT_STEP, height: ROW_H }}
-        title={row.entry.path}
-        draggable={!isRenaming}
-        onDragStart={(e) => {
-          dragSrcRef.current = row.entry
-          e.dataTransfer.effectAllowed = 'move'
-          try {
-            e.dataTransfer.setData('text/plain', row.entry.path)
-          } catch {
-            // some environments disallow setData; the ref carries the source
-          }
-        }}
+        title={isPinned ? `草稿（自动保存）: ${row.entry.path}` : row.entry.path}
+        draggable={!isRenaming && !isRoot}
+        onDragStart={
+          isRoot
+            ? undefined
+            : (e) => {
+                dragSrcRef.current = row.entry
+                e.dataTransfer.effectAllowed = 'move'
+                try {
+                  e.dataTransfer.setData('text/plain', row.entry.path)
+                } catch {
+                  // some environments disallow setData; the ref carries the source
+                }
+              }
+        }
         onDragEnd={() => {
           dragSrcRef.current = null
           setDropTarget(null)
@@ -409,7 +440,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
               }
             : undefined
         }
-        onContextMenu={(e) => openMenu(e, row.entry)}
+        onContextMenu={(e) => openMenu(e, row.entry, isRoot)}
         onClick={() => {
           if (isRenaming) {
             return
@@ -447,7 +478,22 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
             onCancel={state.cancelInline}
           />
         ) : (
-          <span className="fm-row-label">{row.entry.name}</span>
+          <span className="fm-row-label">{label}</span>
+        )}
+        {isRoot && !isPinned && (
+          <button
+            type="button"
+            className="fm-row-action"
+            title="从工作区移除"
+            aria-label="从工作区移除"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.stopPropagation()
+              state.removeRoot(row.entry.path)
+            }}
+          >
+            <X size={12} />
+          </button>
         )}
       </div>
     )
@@ -467,14 +513,12 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     </div>
   )
 
-  // Full (non-windowed) render with inline create/rename inputs injected.
+  // Full (non-windowed) render with inline create/rename inputs injected. The
+  // create input is nested under its parent row (root rows included).
   const renderAllRows = (): ReactNode[] => {
     const out: ReactNode[] = []
     const createMode = edit && edit.mode !== 'rename' ? edit.mode : null
     const createParent = edit && edit.mode !== 'rename' ? edit.parentDir : null
-    if (createMode && createParent === rootPath) {
-      out.push(inlineInputRow(0, createMode))
-    }
     for (const row of rows) {
       out.push(renderRow(row))
       if (createMode && createParent === row.entry.path) {
@@ -508,7 +552,6 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
     )
   }
 
-  const creating = !!edit && edit.mode !== 'rename'
   const virtualize = rows.length > VIRTUAL_THRESHOLD && !edit
 
   return (
@@ -517,8 +560,8 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         <button
           type="button"
           className="fm-tool-btn"
-          title="打开文件夹"
-          aria-label="打开文件夹"
+          title="添加文件夹到工作区"
+          aria-label="添加文件夹到工作区"
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.openFolder()}
         >
@@ -529,7 +572,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="新建文件"
           aria-label="新建文件"
-          disabled={!rootPath}
+          disabled={!hasRoots}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.beginCreate('file')}
         >
@@ -540,7 +583,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="新建文件夹"
           aria-label="新建文件夹"
-          disabled={!rootPath}
+          disabled={!hasRoots}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.beginCreate('folder')}
         >
@@ -551,7 +594,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="定位当前文件"
           aria-label="定位当前文件"
-          disabled={!rootPath || !activeFilePath}
+          disabled={!hasRoots || !activeFilePath}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
             if (activeFilePath) void state.revealPath(activeFilePath)
@@ -564,7 +607,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="折叠全部"
           aria-label="折叠全部"
-          disabled={!rootPath}
+          disabled={!hasRoots}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => state.collapseAll()}
         >
@@ -575,7 +618,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
           className="fm-tool-btn"
           title="刷新"
           aria-label="刷新"
-          disabled={!rootPath}
+          disabled={!hasRoots}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void state.refresh()}
         >
@@ -631,7 +674,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
       )}
 
       <div className="fm-tree">
-        {!rootPath ? (
+        {!hasRoots ? (
           <div className="fm-empty">
             <p>未打开文件夹</p>
             <button
@@ -645,74 +688,18 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
             </button>
           </div>
         ) : (
-          <>
-            <div
-              className={`fm-root-header ${dropTarget === rootPath ? 'fm-drop-target' : ''}`}
-              title={rootPath}
-              onContextMenu={(e) => openMenu(e, null)}
-              onDragOver={(e) => {
-                if (rootPath && canDropInto(rootPath)) {
-                  e.preventDefault()
-                  e.dataTransfer.dropEffect = 'move'
-                  setDropTarget(rootPath)
-                }
-              }}
-              onDragLeave={() => setDropTarget((t) => (t === rootPath ? null : t))}
-              onDrop={(e) => {
-                e.preventDefault()
-                const src = dragSrcRef.current
-                setDropTarget(null)
-                dragSrcRef.current = null
-                if (src && rootPath) {
-                  void state.moveEntry(src, rootPath)
-                }
-              }}
-            >
-              <FolderOpen size={13} />
-              <span className="fm-root-name">{basename(rootPath)}</span>
-              <button
-                type="button"
-                className="fm-row-action"
-                title="关闭文件夹"
-                aria-label="关闭文件夹"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => state.closeFolder()}
-              >
-                <X size={12} />
-              </button>
-            </div>
-            {rows.length === 0 && !creating ? (
-              <div className="fm-empty-inline">此文件夹没有 Markdown 文件</div>
-            ) : (
-              <div
-                className="fm-rows"
-                role="tree"
-                aria-label="文件树"
-                tabIndex={0}
-                ref={scrollRef}
-                onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-                onKeyDown={handleTreeKeyDown}
-                onContextMenu={(e) => openMenu(e, null)}
-                onDragOver={(e) => {
-                  if (rootPath && canDropInto(rootPath)) {
-                    e.preventDefault()
-                    e.dataTransfer.dropEffect = 'move'
-                  }
-                }}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  const src = dragSrcRef.current
-                  setDropTarget(null)
-                  dragSrcRef.current = null
-                  if (src && rootPath) {
-                    void state.moveEntry(src, rootPath)
-                  }
-                }}
-              >
-                {virtualize ? renderWindowedRows() : renderAllRows()}
-              </div>
-            )}
-          </>
+          <div
+            className="fm-rows"
+            role="tree"
+            aria-label="文件树"
+            tabIndex={0}
+            ref={scrollRef}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            onKeyDown={handleTreeKeyDown}
+            onContextMenu={(e) => openMenu(e, null)}
+          >
+            {virtualize ? renderWindowedRows() : renderAllRows()}
+          </div>
         )}
       </div>
 
@@ -720,7 +707,7 @@ export function FileExplorer({ state, activeFilePath, onOpenFile }: FileExplorer
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={buildMenu(menu.entry)}
+          items={buildMenu(menu.entry, menu.isRoot)}
           onSelect={handleMenuSelect}
           onClose={() => setMenu(null)}
         />

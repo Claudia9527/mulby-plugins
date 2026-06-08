@@ -2730,6 +2730,18 @@ button {
 .fm-row.active .fm-row-icon {
   color: var(--accent, var(--text-primary));
 }
+/* Workspace-root header rows (multi-root explorer). */
+.fm-row.fm-root-row {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.fm-row.fm-root-row .fm-row-label {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.fm-row.fm-pinned-root .fm-row-icon {
+  color: var(--accent, var(--text-primary));
+}
 .fm-row-label {
   flex: 1;
   overflow: hidden;
