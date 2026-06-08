@@ -2037,7 +2037,7 @@ export function VibePanel({
     '你是 Mulby 插件创意助手。根据用户的初步想法，发散出 3-4 个具体、可落地、彼此差异明显的 Mulby 桌面插件方向。',
     '只输出 JSON：{ "options": [ { "title": "简短中文方向名", "pitch": "一句话说明能做什么/卖点", "trigger": "触发方式（如：关键词唤起 / 处理选中文本 / 拖入图片 / 正则匹配金额）" } ] }。',
     '要求：贴近桌面效率/开发工具场景、对新手友好、避免雷同、可被一个小插件实现。',
-    '每个方向都必须能用本提示词末尾附带的「当前 Mulby 宿主真实可用的 API 清单」实现，不要臆造平台做不到的功能（无对应能力就不要发散需要它的方向）。',
+    '每个方向都要能用 Mulby 常见桌面能力（剪贴板 / 通知 / 文件读写 / 调用 AI / 图像处理 / 窗口 / 网络请求等）实现，不要臆造平台做不到的功能。',
     `用户的初步想法：${seed}`
   ].join('\n')
 
@@ -2057,10 +2057,10 @@ export function VibePanel({
     setBrainstorm({ loading: true, options: [], seed })
     resetAbort()
     try {
-      const obj = await aiJson('你是 Mulby 插件创意助手，只输出可解析的 JSON 对象。', withApiSurface(brainstormPrompt(seed)))
+      const obj = await aiJson('你是严格的 JSON 生成器，只输出一个可解析的 JSON 对象，不要任何解释、前后缀或 Markdown 代码块。', brainstormPrompt(seed))
       if (abortedRef.current) { setBrainstorm(null); addLog('info', '⏹ [Vibe] 已停止发散'); return }
       const options = normalizeBrainstorm(obj)
-      if (!options.length) { setBrainstorm(null); seedAsRequirement(seed); return }
+      if (!options.length) { addLog('warn', '⚠ [Vibe] 头脑风暴未解析出方向，转为直接规划'); setBrainstorm(null); seedAsRequirement(seed); return }
       setBrainstorm({ loading: false, options, seed })
     } catch {
       if (abortedRef.current) { setBrainstorm(null); return }
