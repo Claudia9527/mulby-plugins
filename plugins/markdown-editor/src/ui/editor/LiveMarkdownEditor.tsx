@@ -8,6 +8,7 @@ import { tags } from '@lezer/highlight'
 import { createMarkdownLanguage } from './markdownLanguage'
 import { listFoldService } from './listFold'
 import { imageUrlResolver, livePreviewExtension } from './livePreview'
+import { clearInlineCompletion, inlineCompletion } from './inlineCompletion'
 import { runMarkdownCommand, type CommandPayload } from './markdownCommands'
 
 export interface EditorSelectionInfo {
@@ -57,6 +58,10 @@ interface LiveMarkdownEditorProps {
   onChange: (value: string) => void
   onSelectionChange?: (info: EditorSelectionInfo) => void
   resolveImageUrl?: (href: string) => string
+  /** Whether inline AI completion (ghost text) is enabled. */
+  completionEnabled?: boolean
+  /** Fetches an inline completion for the caret context; resolve '' for none. */
+  requestCompletion?: (prefix: string, suffix: string, signal: AbortSignal) => Promise<string>
 }
 
 const markdownHighlight = HighlightStyle.define([
@@ -106,7 +111,16 @@ function themeExtension(mode: 'light' | 'dark') {
 
 export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkdownEditorProps>(
   function LiveMarkdownEditor(
-    { initialValue, theme, placeholder, onChange, onSelectionChange, resolveImageUrl },
+    {
+      initialValue,
+      theme,
+      placeholder,
+      onChange,
+      onSelectionChange,
+      resolveImageUrl,
+      completionEnabled,
+      requestCompletion
+    },
     ref
   ) {
     const hostRef = useRef<HTMLDivElement>(null)
@@ -118,6 +132,11 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
     const onSelectionChangeRef = useRef(onSelectionChange)
     onChangeRef.current = onChange
     onSelectionChangeRef.current = onSelectionChange
+    // Inline-completion config read live by the CM extension (no rebuild needed).
+    const completionEnabledRef = useRef(completionEnabled)
+    const requestCompletionRef = useRef(requestCompletion)
+    completionEnabledRef.current = completionEnabled
+    requestCompletionRef.current = requestCompletion
     // Mirror theme/resolver so freshly built states (new tabs) start with the
     // current config instead of whatever was captured at first render.
     const themeRef = useRef(theme)
@@ -153,6 +172,13 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
           codeFolding(),
           listFoldService,
           livePreviewExtension(),
+          inlineCompletion({
+            getEnabled: () => completionEnabledRef.current === true,
+            fetch: (prefix, suffix, signal) =>
+              requestCompletionRef.current
+                ? requestCompletionRef.current(prefix, suffix, signal)
+                : Promise.resolve('')
+          }),
           resolverCompartment.of(imageUrlResolver.of(resolverRef.current ?? ((href: string) => href))),
           themeCompartment.of([baseTheme, themeExtension(themeRef.current)]),
           cmPlaceholder(placeholder ?? ''),
@@ -242,6 +268,14 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
         )
       })
     }, [resolveImageUrl, resolverCompartment])
+
+    // Clear any showing ghost text when inline completion is turned off.
+    useEffect(() => {
+      const view = viewRef.current
+      if (view && !completionEnabled) {
+        clearInlineCompletion(view)
+      }
+    }, [completionEnabled])
 
     useImperativeHandle(
       ref,

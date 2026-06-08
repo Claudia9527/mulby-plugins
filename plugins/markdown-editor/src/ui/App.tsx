@@ -66,6 +66,7 @@ import {
   type ImageHistoryMap
 } from './services/imageHistory'
 import { type BubbleRect } from './services/bubble'
+import { requestCompletion } from './services/completion'
 import { findMatches, replaceAll as replaceAllInText, replaceRange, type SearchMatch } from './services/search'
 import {
   base64ToBytes,
@@ -101,6 +102,7 @@ const STORAGE_AI_MODEL_KEY = 'ai:markdown-editor:model:v1'
 const STORAGE_AI_IMAGE_MODEL_KEY = 'ai:markdown-editor:image-model:v1'
 const STORAGE_AI_IMAGE_HISTORY_KEY = 'ai:markdown-editor:image-history:v1'
 const STORAGE_LEFT_TAB_KEY = 'ui:markdown-editor:left-tab:v1'
+const STORAGE_COMPLETION_KEY = 'ai:markdown-editor:inline-completion:v1'
 const IMAGE_HISTORY_DIRNAME = 'gen-history'
 // Auto-draft folder: untitled tabs with content are promoted to real .md files
 // here so casual notes are findable in the file manager and never lost.
@@ -373,6 +375,8 @@ export default function App() {
   const [imageGenOpen, setImageGenOpen] = useState(false)
   const [imageGenPrompt, setImageGenPrompt] = useState('')
   const [imageModel, setImageModel] = useState('')
+  // Inline AI completion (ghost text) toggle — off by default (costs tokens).
+  const [completionEnabled, setCompletionEnabled] = useState(false)
   // Per-document AI image-generation history (persisted so reopening the
   // generator shows everything produced for the current document).
   const [imageHistoryMap, setImageHistoryMap] = useState<ImageHistoryMap>({})
@@ -399,6 +403,8 @@ export default function App() {
   const activeFilePathRef = useRef<string | null>(null)
   const hasInitPayloadRef = useRef(false)
   const aiOpenRef = useRef(false)
+  // Mirrors completionEnabled for the once-attached contextmenu handler.
+  const completionEnabledRef = useRef(false)
   const bubblePinnedRef = useRef(false)
   const bubbleRangeRef = useRef<EditorRange | null>(null)
   // Editor range captured when the image generator opens, so an inserted image
@@ -755,6 +761,7 @@ export default function App() {
   contentRef.current = content
   activeFilePathRef.current = activeFilePath
   aiOpenRef.current = aiOpen
+  completionEnabledRef.current = completionEnabled
   imageHistoryMapRef.current = imageHistoryMap
 
   // Resolve + create the auto-draft folder under userData once the fs bridge is
@@ -943,19 +950,29 @@ export default function App() {
 
     async function loadSession() {
       try {
-        const [sessionRaw, draft, collapsedValue, savedModel, savedImageModel, savedImageHistory, savedLeftTab] =
-          await Promise.all([
-            storage.get(STORAGE_SESSION_KEY),
-            draftStorage.loadDraft(),
-            storage.get(STORAGE_CHROME_KEY),
-            storage.get(STORAGE_AI_MODEL_KEY),
-            storage.get(STORAGE_AI_IMAGE_MODEL_KEY),
-            storage.get(STORAGE_AI_IMAGE_HISTORY_KEY),
-            storage.get(STORAGE_LEFT_TAB_KEY)
-          ])
+        const [
+          sessionRaw,
+          draft,
+          collapsedValue,
+          savedModel,
+          savedImageModel,
+          savedImageHistory,
+          savedLeftTab,
+          savedCompletion
+        ] = await Promise.all([
+          storage.get(STORAGE_SESSION_KEY),
+          draftStorage.loadDraft(),
+          storage.get(STORAGE_CHROME_KEY),
+          storage.get(STORAGE_AI_MODEL_KEY),
+          storage.get(STORAGE_AI_IMAGE_MODEL_KEY),
+          storage.get(STORAGE_AI_IMAGE_HISTORY_KEY),
+          storage.get(STORAGE_LEFT_TAB_KEY),
+          storage.get(STORAGE_COMPLETION_KEY)
+        ])
 
         if (!cancelled) {
           setChromeCollapsed(collapsedValue === true)
+          setCompletionEnabled(savedCompletion === true)
           if (savedLeftTab === 'files' || savedLeftTab === 'outline') {
             setLeftTab(savedLeftTab)
           }
@@ -1726,6 +1743,23 @@ export default function App() {
     void storage.set(STORAGE_AI_MODEL_KEY, model).catch(() => undefined)
   }, [storage])
 
+  // Fetches an inline ghost-text completion using the current AI model.
+  const requestInlineCompletion = useCallback(
+    (prefix: string, suffix: string, signal: AbortSignal) =>
+      requestCompletion(ai, aiModel || undefined, prefix, suffix, signal),
+    [ai, aiModel]
+  )
+
+  const toggleInlineCompletion = useCallback(() => {
+    setCompletionEnabled((prev) => {
+      const next = !prev
+      void storage.set(STORAGE_COMPLETION_KEY, next).catch(() => undefined)
+      notification.show(next ? '已开启行内 AI 补全（停顿后给灰色建议，Tab 接受）' : '已关闭行内 AI 补全', 'info')
+      return next
+    })
+    focusEditor()
+  }, [focusEditor, notification, storage])
+
   // Inserts Markdown text at the caret. The live editor renders Markdown in
   // place, so the raw source is exactly what should be inserted.
   const insertMarkdownText = useCallback(
@@ -2427,6 +2461,9 @@ export default function App() {
         case 'organize-images':
           void handleOrganizeImages()
           break
+        case 'toggle-completion':
+          toggleInlineCompletion()
+          break
         case 'find':
           openFind('find')
           break
@@ -2509,7 +2546,7 @@ export default function App() {
           break
       }
     },
-    [applyTableEdit, clipboard, execCommand, handleInsertImage, handleInsertLink, handleOrganizeImages, handlePasteClipboard, openFind, openImageGen, summonBubble]
+    [applyTableEdit, clipboard, execCommand, handleInsertImage, handleInsertLink, handleOrganizeImages, handlePasteClipboard, openFind, openImageGen, summonBubble, toggleInlineCompletion]
   )
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
@@ -2608,7 +2645,8 @@ export default function App() {
         items: buildContextMenu({
           hasSelection,
           node: node.kind === 'text' ? null : node.kind,
-          tableHeader: node.kind === 'table' ? node.header : undefined
+          tableHeader: node.kind === 'table' ? node.header : undefined,
+          completionEnabled: completionEnabledRef.current
         })
       })
     }
@@ -3005,6 +3043,8 @@ export default function App() {
                     onChange={handleEditorChange}
                     onSelectionChange={handleEditorSelection}
                     resolveImageUrl={resolveEditorImageUrl}
+                    completionEnabled={completionEnabled}
+                    requestCompletion={requestInlineCompletion}
                   />
                 </div>
               </div>

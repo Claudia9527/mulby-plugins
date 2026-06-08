@@ -28,6 +28,8 @@ export interface MenuContext {
   node: 'link' | 'image' | 'table' | null
   /** For a table cell: true when the click is on the header row. */
   tableHeader?: boolean
+  /** Whether inline AI completion is currently on (for its toggle label). */
+  completionEnabled?: boolean
 }
 
 const sep = (id: string): MenuItem => ({ id, separator: true })
@@ -147,7 +149,8 @@ export function buildContextMenu(ctx: MenuContext): MenuItem[] {
       },
       { id: 'ai', label: 'AI 工具条', shortcut: '⌘J' },
       { id: 'ai-image', label: 'AI 生图' },
-      { id: 'organize-images', label: '整理图片（内联 base64 转文件）' }
+      { id: 'organize-images', label: '整理图片（内联 base64 转文件）' },
+      { id: 'toggle-completion', label: ctx.completionEnabled ? '关闭行内 AI 补全' : '开启行内 AI 补全' }
     )
   }
   items.push(sep('sep-edit'))

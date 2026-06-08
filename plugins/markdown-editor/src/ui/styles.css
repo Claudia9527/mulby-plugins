@@ -712,6 +712,15 @@ button {
 }
 
 /* CodeMirror live-preview editor */
+/* Inline AI completion ghost text (Copilot-style dimmed suggestion at caret). */
+.cm-ghost-text {
+  color: var(--text-muted);
+  opacity: 0.55;
+  white-space: pre-wrap;
+  /* Never capture clicks — let the caret land in the real document. */
+  pointer-events: none;
+}
+
 .cm-editor-host {
   height: 100%;
   min-height: 0;
