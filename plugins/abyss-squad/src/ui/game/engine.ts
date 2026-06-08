@@ -1843,6 +1843,9 @@ export class GameEngine {
     this.state.floor.loot = []
     this.portalSpawned = false
 
+    // 每层通关奖励 +2 水晶
+    this.state.crystals += 2
+
     // === 事件房间：每 2 层触发，跳过第 10 层 Boss ===
     if (this.state.floorLevel % 2 === 0 && this.state.floorLevel < 10) {
       this.state.isEventPending = true

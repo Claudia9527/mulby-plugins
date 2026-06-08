@@ -1,9 +1,13 @@
 import type { RoomEvent } from '../types'
 
 export function generateEvent(floorLevel: number, crystals: number, heroHasItems = false): RoomEvent {
-  const types: Array<'merchant' | 'altar' | 'treasure_trap'> = ['merchant', 'altar', 'treasure_trap']
-  // 每 3 层必出商人，其余随机
-  const type = (floorLevel % 3 === 0) ? 'merchant' : types[Math.floor(Math.random() * types.length)]
+  // 商人仅 floor 4+ 出现，前期只出祭坛/宝箱
+  const canMerchant = floorLevel >= 4
+  const types: Array<'merchant' | 'altar' | 'treasure_trap'> = canMerchant
+    ? ['merchant', 'altar', 'treasure_trap']
+    : ['altar', 'treasure_trap']
+  // 每 3 层必出商人（前提是已 floor 4+）
+  const type = (canMerchant && floorLevel % 3 === 0) ? 'merchant' : types[Math.floor(Math.random() * types.length)]
 
   switch (type) {
     case 'merchant':
@@ -13,8 +17,8 @@ export function generateEvent(floorLevel: number, crystals: number, heroHasItems
         title: '神秘商人',
         desc: '一位裹着斗篷的商人从阴影中走出，展示他的货物...',
         choices: [
-          { label: '购买随机道具', cost: 20, costType: 'crystal', reward: 'random_item', disabled: crystals < 20 },
-          { label: '全队回复 50% HP', cost: 15, costType: 'crystal', reward: 'heal_50', disabled: crystals < 15 },
+          { label: '购买随机道具', cost: 8, costType: 'crystal', reward: 'random_item', disabled: crystals < 8 },
+          { label: '全队回复 50% HP', cost: 6, costType: 'crystal', reward: 'heal_50', disabled: crystals < 6 },
           { label: '离开', reward: 'none' },
         ],
       }
@@ -38,7 +42,7 @@ export function generateEvent(floorLevel: number, crystals: number, heroHasItems
         desc: '房间中央放着一个金光闪闪的宝箱，但周围似乎有危险的气息...',
         choices: [
           { label: '开启宝箱（稀有道具 + 3个强敌）', reward: 'rare_item_plus_enemies' },
-          { label: '谨慎搜刮（10 水晶 + 15% HP）', reward: 'safe_loot' },
+          { label: '谨慎搜刮（5 水晶 + 15% HP）', reward: 'safe_loot' },
           { label: '离开', reward: 'none' },
         ],
       }
