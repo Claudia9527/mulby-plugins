@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, MessageSquarePlus, Image as ImageIcon, StopCircle, RotateCcw, ListChecks, CheckCircle2, Circle } from 'lucide-react'
+import { Send, Loader2, Sparkles, Wrench, Lightbulb, RefreshCw, X, Play, FileText, ExternalLink, Rocket, Package, AlertTriangle, Trash2, ChevronDown, ChevronUp, Image as ImageIcon, StopCircle, RotateCcw, ListChecks, CheckCircle2, Circle } from 'lucide-react'
 import { useSession } from './SessionProvider'
 import { Markdown } from './Markdown'
 import type { VibeMessage, VibeSessionState, BrainstormOption, VibePlanTodo, VibePlanPhase } from './types'
@@ -65,7 +65,6 @@ interface Props {
   onUndoToBefore?: () => void
   undoing?: boolean
   onClearMessages?: () => void
-  onNewConversation?: () => void
 }
 
 export function ChatPanel({
@@ -74,7 +73,7 @@ export function ChatPanel({
   contractPending, onConfirmGenerate,
   plan, planPhase, onStartPlan, onReplan,
   pendingPrompt, onPromptDismiss,
-  status, statusBusy, iconBusy, iconProgress, packed, onOpenPlugin, onTryIt, onPack, onRegenIcon, onUndoToBefore, undoing, onClearMessages, onNewConversation
+  status, statusBusy, iconBusy, iconProgress, packed, onOpenPlugin, onTryIt, onPack, onRegenIcon, onUndoToBefore, undoing, onClearMessages
 }: Props) {
   const { activeSession } = useSession()
   const [text, setText] = useState('')
@@ -109,16 +108,6 @@ export function ChatPanel({
       <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 text-[11px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
         <Sparkles size={12} className="text-emerald-500" /> 对话
         <span className="flex-1" />
-        {activeSession && onNewConversation && (
-          <button
-            onClick={onNewConversation}
-            disabled={disabled || busy}
-            className="text-slate-400 hover:text-sky-500 transition-colors disabled:opacity-40 disabled:hover:text-slate-400"
-            title="在当前项目下新建一段对话（保留项目与代码）"
-          >
-            <MessageSquarePlus size={13} />
-          </button>
-        )}
         {allMessages.length > 0 && (
           <>
             <button
@@ -140,7 +129,7 @@ export function ChatPanel({
       </div>
 
       {status && (
-        <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 shrink-0">
+        <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 shrink-0 anim-in">
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="relative w-5 h-5 rounded-md overflow-hidden shrink-0 border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-800/60 flex items-center justify-center">
               {status.icon ? <img src={status.icon} alt="图标" className="w-full h-full object-contain" /> : <span className={`w-2 h-2 rounded-full ${status.loaded ? 'bg-emerald-400' : 'bg-amber-400'}`} />}
@@ -209,8 +198,8 @@ export function ChatPanel({
             allMessages.map((msg) => <MessageBubble key={msg.id} msg={msg} />)
           )}
           {routing && !busy && (
-            <div className="flex items-center gap-1.5 text-[11px] text-indigo-500 dark:text-indigo-400">
-              <Loader2 size={11} className="animate-spin" /> 正在理解你的意图…
+            <div className="flex items-center gap-1.5 text-[11px] text-indigo-500 dark:text-indigo-400 anim-in">
+              <span className="thinking-dots"><span /><span /><span /></span> 正在理解你的意图…
             </div>
           )}
           {busy && (streamingText && streamingText.trim() ? (
@@ -224,8 +213,8 @@ export function ChatPanel({
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
-              <Loader2 size={11} className="animate-spin" /> {iconProgress || 'AI 处理中…'}
+            <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 anim-in">
+              <span className="thinking-dots"><span /><span /><span /></span> {iconProgress || 'AI 处理中…'}
             </div>
           ))}
           <div ref={messagesEndRef} />
@@ -233,7 +222,7 @@ export function ChatPanel({
       )}
 
       {brainstorm && (
-        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-amber-50/60 dark:bg-amber-950/10 space-y-1.5 max-h-64 overflow-auto">
+        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-amber-50/60 dark:bg-amber-950/10 space-y-1.5 max-h-64 overflow-auto anim-in">
           <div className="flex items-center justify-between text-[11px] font-medium text-amber-700 dark:text-amber-300">
             <span className="flex items-center gap-1"><Lightbulb size={12} /> 选个方向开始</span>
             <button onClick={onDismissBrainstorm} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" title="关闭，自己描述"><X size={13} /></button>
@@ -269,7 +258,7 @@ export function ChatPanel({
       )}
 
       {pendingPrompt && (
-        <div className={`border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 ${pendingPrompt.danger ? 'bg-rose-50/60 dark:bg-rose-950/10' : 'bg-sky-50/60 dark:bg-sky-950/10'}`}>
+        <div className={`border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 anim-in ${pendingPrompt.danger ? 'bg-rose-50/60 dark:bg-rose-950/10' : 'bg-sky-50/60 dark:bg-sky-950/10'}`}>
           <div className={`flex items-center gap-1 text-[11px] font-medium mb-0.5 ${pendingPrompt.danger ? 'text-rose-700 dark:text-rose-300' : 'text-sky-700 dark:text-sky-300'}`}>
             {pendingPrompt.danger ? <AlertTriangle size={12} /> : <Wrench size={12} />} {pendingPrompt.title}
           </div>
@@ -284,7 +273,7 @@ export function ChatPanel({
       )}
 
       {!pendingPrompt && planPhase && planPhase !== 'idle' && planPhase !== 'done' && (
-        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-indigo-50/60 dark:bg-indigo-950/10">
+        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-indigo-50/60 dark:bg-indigo-950/10 anim-in">
           <div className="flex items-center justify-between text-[11px] font-medium text-indigo-700 dark:text-indigo-300 mb-1">
             <span className="flex items-center gap-1">
               <ListChecks size={12} /> 开发计划{plan && plan.length > 0 ? `（${plan.filter((t) => t.status === 'done').length}/${plan.length}）` : ''}
@@ -337,7 +326,7 @@ export function ChatPanel({
       )}
 
       {!brainstorm && !pendingPrompt && contractPending && (
-        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-emerald-50/60 dark:bg-emerald-950/10">
+        <div className="border-t border-slate-200 dark:border-slate-700 px-3 py-2.5 bg-emerald-50/60 dark:bg-emerald-950/10 anim-in">
           <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 mb-1">
             <FileText size={12} /> 插件设定已就绪
           </div>
@@ -394,7 +383,7 @@ function MessageBubble({ msg }: { msg: VibeMessage }) {
   const isUser = msg.role === 'user'
   if (isUser) {
     return (
-      <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-col items-end gap-1 anim-in">
         {msg.intent && INTENT_LABEL[msg.intent] && (
           <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${INTENT_CLASS[msg.intent] || 'bg-slate-200 text-slate-600'}`}>
             {INTENT_LABEL[msg.intent]}
@@ -407,7 +396,7 @@ function MessageBubble({ msg }: { msg: VibeMessage }) {
     )
   }
   return (
-    <div className="flex flex-col items-start gap-1">
+    <div className="flex flex-col items-start gap-1 anim-in">
       <div className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500">
         <Sparkles size={10} className="text-emerald-500" /> AI
       </div>

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Sparkles, Wand2, FolderSearch, Loader2, Check, ChevronRight, ChevronLeft,
-  Hammer, ShieldCheck, FolderOpen, Play, AlertTriangle,
-  StopCircle, RefreshCw, Image as ImageIcon, Settings2, Rocket, FileText, Lightbulb,
+  Hammer, ShieldCheck, FolderOpen, AlertTriangle,
+  RefreshCw, Image as ImageIcon, Settings2, Rocket, FileText, Lightbulb,
   Pencil, Boxes, FileEdit, FileSearch, Terminal, Bug, Wrench, ListChecks,
-  ChevronUp, ChevronDown, History, RotateCcw, GitCommit, Tag, Plus
+  ChevronUp, ChevronDown, History, RotateCcw, GitCommit, Tag
 } from 'lucide-react'
 import type { LogLevel } from '../types'
 import type { UseDeveloperResult } from '../hooks/useDeveloper'
@@ -2321,7 +2321,7 @@ export function VibePanel({
           )}
         </div>
 
-        {/* 底部操作条 */}
+        {/* 底部：仅保留阶段导航；动作（停止/重新生成/状态）统一在右侧对话与状态卡，避免重复入口 */}
         <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 dark:border-slate-800 shrink-0">
           <button className="btn-ghost" onClick={() => setStage((s) => Math.max(0, s - 1) as Stage)} disabled={stage === 0 || busy}>
             <ChevronLeft size={15} /> 上一步
@@ -2341,12 +2341,7 @@ export function VibePanel({
 
           {stage === 1 && (
             generated ? (
-              <div className="flex gap-2">
-                <button className="btn-ghost" onClick={generatePlan} disabled={generating} title="按当前契约重新制定开发计划并生成（会覆盖现有实现）">
-                  <Play size={15} /> 重新生成
-                </button>
-                <button className="btn-primary" onClick={() => setStage((maxStage >= 3 ? 3 : 2) as Stage)}>下一步 <ChevronRight size={15} /></button>
-              </div>
+              <button className="btn-primary" onClick={() => setStage((maxStage >= 3 ? 3 : 2) as Stage)}>下一步 <ChevronRight size={15} /></button>
             ) : (
               <span className="text-[12px] text-slate-400 dark:text-slate-500">在右侧对话点「确认并生成」开始 →</span>
             )
@@ -2354,32 +2349,28 @@ export function VibePanel({
 
           {stage === 2 && (
             (generating || expanding) ? (
-              <button className="btn-danger" onClick={stopAgent}><StopCircle size={15} /> 停止</button>
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-500 dark:text-slate-400">
+                <Loader2 size={14} className="animate-spin" /> 生成中…（在右侧对话可停止）
+              </span>
             ) : generated ? (
-              // 纯导航：不重置 deliverStartedRef，避免来回切换重复触发构建
               <button className="btn-primary" onClick={() => setStage(3)}>
                 <Rocket size={15} /> 去构建与交付 <ChevronRight size={15} />
               </button>
             ) : (
-              <button className="btn-primary" onClick={generatePlan} disabled={!contract}><Play size={15} /> 重新生成</button>
+              <span className="text-[12px] text-slate-400 dark:text-slate-500">在右侧对话操作 →</span>
             )
           )}
 
           {stage === 3 && (
-            <span className={`badge ${loaded ? 'badge-green' : built ? 'badge-amber' : 'badge-slate'}`}>
-              {loaded ? <><Check size={12} /> 已载入 Mulby</> : built ? '已构建' : building ? '构建中…' : '待构建'}
-            </span>
+            <span className="text-[12px] text-slate-400 dark:text-slate-500">插件状态见右侧对话栏顶部 →</span>
           )}
         </div>
       </div>
 
       {/* 右：会话列表 + 全局对话主线 */}
       <aside className="w-80 shrink-0 border-l border-slate-200 dark:border-slate-800 flex flex-col bg-white/40 dark:bg-slate-900/30">
-        <div className="p-2 border-b border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-1.5">
-          <div className="flex-1 min-w-0"><SessionSwitcher onNewSession={startNewProject} onNewConversation={newConversation} /></div>
-          <button onClick={startNewProject} disabled={busy} className="btn-primary h-7 px-2 text-[11px] shrink-0" title="新建一个全新的插件项目">
-            <Plus size={13} /> 新建项目
-          </button>
+        <div className="p-2 border-b border-slate-200 dark:border-slate-700 shrink-0">
+          <SessionSwitcher onNewSession={startNewProject} onNewConversation={newConversation} />
         </div>
         <div className="flex-1 min-h-0">
           <ChatPanel
@@ -2416,7 +2407,6 @@ export function VibePanel({
             onUndoToBefore={undoToBeforeAI}
             undoing={!!restoringHash}
             onClearMessages={() => { if (activeId) clearMessages(activeId) }}
-            onNewConversation={newConversation}
           />
         </div>
       </aside>
