@@ -1069,6 +1069,7 @@ export function VibePanel({
     turnEventsRef.current = [] // 收集本轮生成的操作明细，供对话内联
     setExpanded(false)
     setStage(2)
+    setDrawerOpen(true) // 展开详情抽屉，让生成过程(思考 + 工具调用时间线)可见
     try {
       const prep = await prepareProject()
       if (!prep) return
@@ -1219,6 +1220,7 @@ export function VibePanel({
     turnEventsRef.current = []
     setExpanded(false)
     setStage(2)
+    setDrawerOpen(true) // 展开详情抽屉，让逐步执行过程(思考 + 工具调用时间线)可见
     resetAbort()
     try {
       const prep = await prepareProject(resume)
@@ -2361,7 +2363,7 @@ export function VibePanel({
               {contract && (
                 <ContractStage contract={contract} setContract={setContract} editable={!generating && !generated} />
               )}
-              {stage >= 2 && events.length > 0 && (
+              {stage >= 2 && (
                 <GenerateStage contract={contract} events={events} toolCalls={toolCalls} narration={narration} createdPath={createdPath} busy={generating || expanding} />
               )}
               {stage === 3 && contract && (
