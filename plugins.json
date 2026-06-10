@@ -1014,6 +1014,25 @@
       "sha256": "8009a70e726c918cc093c1cfcdc6d6c29460fe337d41bdf9132b6d63115fb582",
       "homepage": "https://github.com/Unicellular-SU/mulby-plugins",
       "repository": "https://github.com/Unicellular-SU/mulby-plugins/tree/main/plugins/abyss-squad"
+    },
+    {
+      "id": "git-report-generator",
+      "name": "git-report-generator",
+      "displayName": "Git日报生成器",
+      "version": "1.0.0",
+      "author": "Mulby",
+      "description": "输入Git项目路径，自动抓取提交日志，用AI生成总结日报/周报，支持自定义模板",
+      "downloadUrl": "https://github.com/Unicellular-SU/mulby-plugins/releases/download/v2026.06.10-0354/git-report-generator-1.0.0.inplugin",
+      "lastPackageTime": "2026-06-10T03:55:48.459Z",
+      "type": "productivity",
+      "details": "# Git 日报生成器 (git-report-generator)\n\n> 输入 Git 项目路径，自动抓取提交日志，用 AI 生成总结日报/周报，支持自定义模板与 GitHub 风格排版。\n\n## 功能特性\n\n- 🔍 **自动识别 Git 仓库** - 输入路径即可自动检测仓库信息（分支、远程地址）\n- 📊 **日报/周报/自定义报告** - 支持按天、按周或自定义时间范围生成报告\n- 🤖 **AI 智能总结** - 调用 Mulby AI 对提交记录进行分类、总结和深度分析\n- 📝 **多种内置模板** - 日报模板、周报模板、GitHub Release Notes 风格\n- ✏️ **自定义模板** - 支持创建、编辑、删除个人模板，使用变量占位符\n- 📋 **一键复制/保存** - 生成的 Markdown 报告可复制到剪贴板或保存为 .md 文件\n- 🌗 **亮暗主题** - 自动跟随 Mulby 主题切换\n\n## 触发方式\n\n| 触发方式 | 说明 |\n|---------|------|\n| 关键词 `git日报` | 在 Mulby 搜索框中输入触发 |\n| 关键词 `git报告` | 在 Mulby 搜索框中输入触发 |\n| 拖入文件夹 | 将 Git 项目文件夹拖入 Mulby 输入框 |\n\n## 使用方法\n\n1. **打开插件** - 通过关键词或拖入文件夹触发\n2. **输入/确认项目路径** - 支持手动输入、浏览选择或拖入\n3. **选择报告类型** - 日报/周报/自定义\n4. **设置时间范围** - 自动填充或手动调整\n5. **选择模板** - 从内置或自定义模板中选择\n6. **（可选）添加额外提示** - 为 AI 添加特殊要求\n7. **点击「生成报告」** - AI 将分析提交记录并生成结构化报告\n8. **复制或保存** - 将报告复制到剪贴板或保存为文件\n\n## 模板变量\n\n自定义模板支持以下占位符：\n\n| 变量 | 说明 |\n|------|------|\n| `{{repo_name}}` | 仓库名称 |\n| `{{branch}}` | 当前分支 |\n| `{{remote_url}}` | 远程仓库地址 |\n| `{{date_range}}` | 报告时间范围 |\n| `{{commit_count}}` | 提交总数 |\n| `{{contributor_count}}` | 贡献者人数 |\n| `{{files_changed}}` | 变更文件数 |\n| `{{insertions}}` | 新增行数 |\n| `{{deletions}}` | 删除行数 |\n| `{{contributors}}` | 贡献者列表 |\n| `{{commits}}` | 提交记录列表 |\n| `{{commits_github_style}}` | GitHub 风格提交列表 |\n| `{{summary}}` | AI 生成的总结 |\n| `{{ai_insights}}` | AI 深度洞察 |\n| `{{diff_details}}` | 文件差异详情 |\n| `{{generated_at}}` | 生成时间戳 |\n\n## 开发\n\n### 安装依赖\n\n```bash\npnpm install\n```\n\n### 构建\n\n```bash\npnpm run build\n```\n\n### 打包\n\n```bash\npnpm run pack\n```\n\n## 项目结构\n\n```\ngit-report-generator/\n├── manifest.json          # 插件配置\n├── package.json\n├── src/\n│   ├── main.ts            # 后端：Git 操作 + AI 调用 + RPC\n│   ├── types/\n│   │   └── mulby.d.ts     # Mulby API 类型定义\n│   ├── ui/\n│   │   ├── App.tsx        # 主界面（完整 UI）\n│   │   ├── main.tsx       # React 入口\n│   │   ├── index.html     # HTML 模板\n│   │   ├── styles.css     # 全局样式（含 Markdown 渲染）\n│   │   └── hooks/\n│   │       └── useMulby.ts\n├── dist/                  # 后端构建输出\n├── ui/                    # 前端构建输出\n└── icon.png               # 插件图标\n```\n\n## 许可\n\nMIT License",
+      "icon": {
+        "type": "url",
+        "value": "https://raw.githubusercontent.com/Unicellular-SU/mulby-plugins/main/plugins/git-report-generator/icon.png"
+      },
+      "sha256": "6cf8de0ad9deecab5f25206d9ca4296e8c438a8d117e292eb21cf36c1e39afea",
+      "homepage": "https://github.com/Unicellular-SU/mulby-plugins",
+      "repository": "https://github.com/Unicellular-SU/mulby-plugins/tree/main/plugins/git-report-generator"
     }
   ]
 }
